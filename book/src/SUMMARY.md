@@ -25,6 +25,9 @@
 
 - [Deterministic work, deliberate inference](concepts/determinism.md)
 - [Language & compiler](concepts/rituals.md)
+  - [Tutorial: Composing a ritual](guides/composing-rituals.md)
+  - [Tutorial: Live summons & bindings](guides/live-sessions.md)
+  - [Tutorial: Research & model evaluation](guides/research-workflows.md)
   - [Writing clean rituals](guides/writing-rituals.md)
   - [Validating before inference](guides/validation.md)
   - [Python authoring and strict JSON](guides/python-authoring.md)
