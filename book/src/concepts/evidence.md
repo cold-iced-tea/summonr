@@ -47,7 +47,7 @@ An operation with `hold: true`, or `hold: "${inputs.hold}"`, is not performed. I
 - the verification to run with it;
 - the summon's selection (which messages it may touch);
 - **because**: the outputs of the model and ritual steps in that frame, so you can see the reasoning;
-- a **digest** of the resource it would act on. For a mail move this is SHA-256 of the message's folder and bytes. The list shows its prefix (and, at a terminal, its [seal](lessons-from-marain.md#what-was-not-taken)).
+- a **digest** of the resource it would act on. For a mail move this is SHA-256 of the message's folder and bytes. The list shows its prefix (and, at a terminal, its M9 seal).
 
 `hold` is only allowed on writes; holding a read is a validation error.
 

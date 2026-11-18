@@ -18,7 +18,7 @@
 
 ## Rehearsal, Replay, and Drift
 - **Cassettes & simulation:** `invoke ... recording PATH` saves a cassette of every model call and every read/write tool call; `replaying PATH` re-runs offline from it, authorizing tools first, computing pure `data` operations, simulating writes, and never falling back to live calls; `simulating` authorizes writes without performing them. `summonr drill R against FILE` runs scripted cases and exits `14` on failure. See [Safe building](../guides/safe-building.md).
-- **Drift assays & touchstones:** `assay R against SET baseline` records a baseline account and multi-site model fingerprint; `assay R` re-runs the set and reports `within tolerance`, `drifted`, or `inconclusive` (exit `0`, `12`, `13`). A drill or assay set can name a pure **touchstone** ritual to compute expected outputs without hand labels. See [Lessons from Marain](../concepts/lessons-from-marain.md).
+- **Drift assays & touchstones:** `assay R against SET baseline` records a baseline account and multi-site model fingerprint; `assay R` re-runs the set and reports `within tolerance`, `drifted`, or `inconclusive` (exit `0`, `12`, `13`). A drill or assay set can name a pure **touchstone** ritual to compute expected outputs without hand labels. See [Assays, touchstones, and drift](../concepts/assays.md).
 - **Gleaning & experiments:** `summonr glean R 10 against SET` samples real ended runs into unlabeled assay cases so the model under test never labels its own cases. `sweep`, `judge`, and `weigh` run parameterized sweeps across models, settings, and cases and rank or compare experiments.
 - **Elegies:** every summon records its exact outgoing payloads, a context manifest, usage, timing, and whether output structure was enforced by the decoder.
 

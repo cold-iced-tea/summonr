@@ -49,7 +49,6 @@
   - [Epitaphs, petition seals, and witnesses](concepts/epitaphs.md)
   - [Pacts: agent-to-agent contracts](concepts/pacts.md)
   - [Running pacts across three devices](guides/pacts-three-devices.md)
-  - [Lessons from Marain](concepts/lessons-from-marain.md)
 
 # Part IV — Reference & Horizon
 
