@@ -176,22 +176,23 @@ impl App {
             last_poll: Instant::now() - Duration::from_secs(1),
         };
         app.append(Ink::Gold, "S U M M O N R   /   THE WORKBENCH");
-        app.append(Ink::Bone, "Deterministic work. Deliberate inference.");
         app.append(
-            Ink::Dim,
-            "Type commands directly. There is no need to prefix them with summonr.",
+            Ink::Bone,
+            "Type Summonr commands directly (no `summonr` prefix needed; `exit` or Ctrl-D to quit).",
         );
+        app.append(Ink::Dim, "");
+        app.append(Ink::Gold, "Get started:");
+        app.append(Ink::Dim, "  demo                                              Run the offline Git playground");
+        app.append(Ink::Dim, "  inscribe examples/04-route-form/route-form.yaml   Save a ritual to your grimoire");
+        app.append(Ink::Dim, "  rituals                                           List saved rituals");
+        app.append(Ink::Dim, "  inspect NAME                                      Draw a saved ritual's plan");
+        app.append(Ink::Dim, "  run NAME --arg key=value --wait                   Run a saved ritual");
+        app.append(Ink::Dim, "  petition                                          Review held writes awaiting approval");
+        app.append(Ink::Dim, "  help                                              Show all commands and flags");
+        app.append(Ink::Dim, "");
         app.append(
             Ink::Dim,
-            "rituals   |   run NAME --arg key=value   |   inspect NAME",
-        );
-        app.append(
-            Ink::Dim,
-            "F2 status/plan  F3 next run  F4 sidebar  PgUp/Dn scroll  exit leaves work running",
-        );
-        app.append(
-            Ink::Dim,
-            "This is a Summonr console, not a system shell. Use quotes for values with spaces.",
+            "Keys: F1 help | F2 status/plan | F3 next run | F4 sidebar | PgUp/Dn scroll",
         );
         app.append(Ink::Dim, "");
         app
