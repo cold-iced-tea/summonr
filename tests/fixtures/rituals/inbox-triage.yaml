@@ -1,0 +1,40 @@
+ritual: inbox-triage
+description: Sort the newest inbox messages. Moves nothing unless apply=true; with hold=true (the default) each move waits for your approval.
+inputs:
+  count: {type: integer, default: 6, min: 1, max: 500}
+  apply: {type: boolean, default: false}
+  hold: {type: boolean, default: true, user_only: true}
+reagents:
+  mail: {select: [search, read, move, locate]}
+requires:
+  - {reagent: mail, action: search, on: {folder: Inbox}}
+  - {reagent: mail, action: read, on: {folder: Inbox}}
+  - {reagent: mail, action: move, on: {folder: Inbox}, into: {folder: [Receipts, Newsletters, Action]}}
+  - {reagent: mail, action: locate}
+essence: {requests: 60, tokens: 400000, time: 30m}
+steps:
+  - id: select
+    operation: mail.search
+    arguments: {folder: Inbox, newest: "${inputs.count}"}
+  - id: triage
+    each: message in steps.select.output
+    on_failure: continue
+    steps:
+      - id: body
+        operation: mail.read
+        arguments: {message: "${message.id}"}
+      - id: classify
+        ritual: classify-message
+        arguments: {text: "${steps.body.output.text}"}
+      - if: inputs.apply and steps.classify.output.folder != "abstain"
+        then:
+          - id: move
+            operation: mail.move
+            arguments: {message: "${message.id}", folder: "${steps.classify.output.folder}"}
+            hold: "${inputs.hold}"
+            verify:
+              observe: mail.locate
+              arguments: {message: "${message.id}"}
+              expect: {folder: "${steps.classify.output.folder}"}
+return:
+  triage: "${steps.triage.output}"

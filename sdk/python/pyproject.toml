@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "summonr-authoring"
+license = "Apache-2.0"
+version = "0.1.0"
+description = "Explicit Python builders for Summonr declarative definitions"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["summonr"]
+
+[tool.setuptools.package-data]
+summonr = ["*.pyi", "py.typed"]

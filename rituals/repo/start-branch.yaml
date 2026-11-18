@@ -1,0 +1,23 @@
+ritual: start-branch
+description: Create a new branch from an up-to-date trunk in its own worktree beside the main checkout.
+inputs:
+  repo: {type: string}
+  branch: {type: string}
+reagents:
+  git: {select: [worktree_add, branch_exists]}
+requires:
+  - {reagent: git, action: worktree_add}
+  - {reagent: git, action: branch_exists}
+essence: {requests: 0, tool_calls: 20, time: 2m}
+steps:
+  - id: add
+    operation: git.worktree_add
+    arguments: {repo: "${inputs.repo}", branch: "${inputs.branch}"}
+    verify:
+      observe: git.branch_exists
+      arguments: {repo: "${inputs.repo}", branch: "${inputs.branch}"}
+      expect: {exists: true}
+return:
+  path: "${steps.add.output.path}"
+  branch: "${steps.add.output.branch}"
+  commit: "${steps.add.output.commit}"

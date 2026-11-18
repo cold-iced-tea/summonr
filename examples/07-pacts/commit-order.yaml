@@ -1,0 +1,40 @@
+language_version: 1
+ritual: commit-order
+description: The supplier's side of an order pact. Files the newest order message as committed; flags orders over the agreed threshold so the buyer must approve them.
+inputs:
+  amount: {type: integer, min: 1}
+  threshold: {type: integer, min: 1}
+reagents:
+  mail: {select: [search, move, locate]}
+  data: {select: [compare]}
+requires:
+  - {reagent: mail, action: search, on: {folder: Orders}}
+  - {reagent: mail, action: move, on: {folder: Orders}, into: {folder: [Committed]}}
+  - {reagent: mail, action: locate}
+essence: {requests: 0, tool_calls: 20, time: 30s}
+steps:
+  - id: over_threshold
+    operation: data.compare
+    arguments: {left: "${inputs.amount}", right: "${inputs.threshold}", operator: gt}
+  - id: order
+    operation: mail.search
+    arguments: {folder: Orders, newest: 1}
+  - id: file
+    each: m in steps.order.output
+    steps:
+      - id: commit
+        operation: mail.move
+        arguments: {message: "${m.id}", folder: Committed}
+        verify:
+          observe: mail.locate
+          arguments: {message: "${m.id}"}
+          expect: {folder: Committed}
+return:
+  amount: "${inputs.amount}"
+  over_threshold: "${steps.over_threshold.output}"
+output_schema:
+  type: object
+  required: [amount, over_threshold]
+  properties:
+    amount: {type: integer}
+    over_threshold: {type: boolean}

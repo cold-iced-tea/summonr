@@ -1,0 +1,28 @@
+language_version: 1
+ritual: label-review
+description: Label the sentiment of one product review.
+inputs:
+  text: {type: string}
+model: ollama/qwen3:4b
+settings: {temperature: 0}
+essence: {requests: 1, tokens: 4000, time: 1m}
+steps:
+  - id: label
+    model:
+      instructions: |
+        Label the overall sentiment of this product review.
+        - positive: the reviewer is happy with the product.
+        - negative: the reviewer is unhappy with the product.
+        - mixed: the review contains both real praise and real complaints.
+        - abstain: the text is not a review of the product (a question, spam).
+        Answer with JSON only.
+      prompt: "${inputs.text}"
+      schema:
+        type: object
+        required: [sentiment]
+        additionalProperties: false
+        properties:
+          sentiment: {type: string, enum: [positive, negative, mixed, abstain]}
+      abstain_if: output.sentiment == "abstain"
+return:
+  sentiment: "${steps.label.output.sentiment}"

@@ -1,0 +1,9 @@
+target/
+demo/home/
+demo/mailbox/
+benchmarks/__pycache__/
+book/build/
+
+__pycache__/
+*.py[cod]
+*.egg-info/

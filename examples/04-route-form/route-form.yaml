@@ -1,0 +1,42 @@
+language_version: 1
+ritual: route-form
+description: Route a contact-form submission. Trust the form's own category; ask a model only when the sender picked "other".
+inputs:
+  form: {type: string}
+model: ollama/qwen3:4b
+settings: {temperature: 0}
+reagents:
+  data: {select: [parse_json]}
+essence: {requests: 1, tokens: 8000, tool_calls: 1, time: 2m}
+steps:
+  - id: submission
+    operation: data.parse_json
+    arguments:
+      text: "${inputs.form}"
+      schema:
+        type: object
+        required: [category, message]
+        additionalProperties: false
+        properties:
+          category: {type: string, enum: [sales, support, press, other]}
+          message: {type: string, minLength: 1, maxLength: 5000}
+  - if: steps.submission.output.category == "other"
+    then:
+      - id: judged
+        model:
+          instructions: |
+            A visitor sent this through a contact form without choosing a category.
+            Pick the category that fits: sales (buying, pricing, demos),
+            support (help with the product), press (journalists, interviews).
+            If none fits, answer abstain. Answer with JSON only.
+          prompt: "${steps.submission.output.message}"
+          schema:
+            type: object
+            required: [category]
+            additionalProperties: false
+            properties:
+              category: {type: string, enum: [sales, support, press, abstain]}
+          abstain_if: output.category == "abstain"
+return:
+  from_form: "${steps.submission.output.category}"
+  from_model: "${steps.judged.output.category}"

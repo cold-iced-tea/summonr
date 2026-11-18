@@ -1,0 +1,15 @@
+language_version: 1
+ritual: check-quote
+description: The buyer's acceptance check. Accepts a delivered order only if its amount is at most 1000.
+inputs:
+  delivery: {type: object}
+reagents:
+  data: {select: [compare]}
+essence: {requests: 0, tool_calls: 2, time: 5s}
+steps:
+  - id: small
+    operation: data.compare
+    arguments: {left: "${inputs.delivery.amount}", right: 1000, operator: le}
+return:
+  accept: "${steps.small.output}"
+  reason: amount checked against the 1000 acceptance limit

@@ -1,0 +1,27 @@
+ritual: classify-message
+description: Classify one email into a folder under the bound rules.
+inputs:
+  text: {type: string}
+bindings:
+  rules: {document: rules.md}
+model: ollama/qwen36-lite
+settings: {temperature: 0}
+essence: {requests: 1, tokens: 20000, time: 5m}
+steps:
+  - id: classify
+    model:
+      instructions: |
+        You sort email into folders. Follow the rules below exactly.
+        Answer with JSON only: the folder and a reason of one short sentence.
+      bind: [rules]
+      prompt: "${inputs.text}"
+      schema:
+        type: object
+        properties:
+          folder: {type: string, enum: [Receipts, Newsletters, Action, abstain]}
+          reason: {type: string}
+        required: [folder, reason]
+      abstain_if: output.folder == "abstain"
+return:
+  folder: "${steps.classify.output.folder}"
+  reason: "${steps.classify.output.reason}"

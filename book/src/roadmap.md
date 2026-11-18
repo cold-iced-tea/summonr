@@ -1,0 +1,22 @@
+# Robustness roadmap
+
+The deterministic/probabilistic boundary guides this roadmap: move precisely specified work into deterministic operations, use bounded inference for judgment, and return to deterministic checks before effects. The current implementation closes concrete execution and interface defects. The larger feature proposals remain explicit engineering work, not implicit promises of this version.
+
+| Area | Implemented now | Remaining work and acceptance boundary |
+| --- | --- | --- |
+| Durability | Exclusive ownership, checked persistence with fail-closed dispatch, atomic terminal records, durable intents, per-step `effect_fence` journal | Automated external reconciliation UI |
+| Approval | Atomic claims, duplicate rejection, retained authority snapshot, unknown state after interrupted claim, mail-move and `cmd.write` (`digest_command`) resource digests checked at permit, `authority.grant` petitions for missing authority | Digests for future write adapters, expiry, explicit reconciliation UI |
+| Contracts | Language version, offline compiler, strict schema subset with `$defs`/`$ref` reuse, return schemas, typed literal/rendered tool arguments, static reference type flow across steps/loops/children, nested typed input schemas, source spans | Language server |
+| Agent handoff | Faithful structured results, expected hash, invocation idempotency (with retained admission warnings and `reused` flag), lower caller limits, familiar-scoped run access and idempotency, per-ritual projected MCP tools (`ritual_<name>`), `get_record` event & result pagination, `compile_ritual`, `drill_ritual`, `simulate_ritual`, `record_ritual`, `replay_ritual`, `capabilities.experimental.summonr` handshake | — |
+| Authority | Owner grants narrowed to requirements and child requirements; user-only defaults; Ed25519 familiars with per-familiar ritual allowlists and revocation; passphrase-encrypted key files (`SUMMONR_KEY_PASSPHRASE`); offline root key and signed familiar grants; enforced HTTP egress policy (`allow_hosts`, `deny_hosts`, `block_private_ips`) | Opaque versioned resource handles |
+| Limits | Model requests/tokens/time, tool calls including verification reservations, loop items, active-run admission | Byte/CPU/memory quotas and provider-priced monetary budgets |
+| Recovery | Interrupted runs and partial item effects retained; unknown petitions never automatically retried; durable per-step/per-item checkpoints with `revive` and `recast`; bounded `retry` and `fallback` step branches; `effect_fence` blocks unsafe retries/revives of non-idempotent writes and caches applied writes | External adapter reconciliation |
+| Transport | Stdio with bounded concurrent tool calls, bounded custom HTTP, Host/Origin checks and secret URL, OAuth 2.1 Bearer JWT (`mcp_auth`) + RFC 9728 metadata, signed requests and replies over `listen` | Maintained transport implementation, conformance suite, TLS/proxy deployment |
+| Integrations | Ollama/mock, OpenAI/Anthropic/custom providers, fixture mail, scoped file/HTTP, repo git/gh/trial, cmd, owner-configured stdio `mcp_reagents` | Pinned provider capability/usage contracts |
+| Records | Signed, chained, fingerprint-only epitaphs for every ended run and post-run petition decision; chain marks; Merkle inclusion proofs (`epitaph_prove`); peer witnesses with fork detection and witness-to-witness comparison against split views; RFC 3161 timestamps via openssl | — |
+| Evaluation | Frozen pilots, separate parent/child accounting, mock integration and fault tests, simulated-by-default assays with admission, transitive backend fingerprints, touchstone-computed expectations, paired assay comparison, `sweep`/`judge`/`weigh` experiments | Completed parent delegation comparison, paired assay uncertainty, series-wide assay budgets |
+| Concurrency | Bounded top-level admission, shared result jobs with atomic batch claims and fenced commits, atomic ancestor reservations before parallel iteration, external-effect fencing (`effect_fence`) | Shared job budgets, capability scheduling |
+
+The order matters. Finish durable per-step recovery and caller isolation before enabling broad external writes or automatic retries. Add one narrowly scoped adapter with fake-service failure tests before claiming general integration support. Measure end-to-end agent workflow quality, supervision and total usage before claiming a delegation advantage.
+
+These are capability gaps. They do not justify silently granting a model additional authority, substituting a model, or rerunning a failed operation.

@@ -1,0 +1,35 @@
+language_version: 1
+ritual: collection-basics
+description: Multiply, filter, and reduce with pure computation and zero inference.
+reagents:
+  data: {select: [map, filter, fold, arithmetic]}
+essence: {requests: 0, tool_calls: 10, items: 10, time: 5s}
+steps:
+  - id: doubled
+    operation: data.map
+    arguments:
+      values: [-2, 1, 3]
+      operation: data.arithmetic
+      arguments: {left: "${item}", right: 2, operator: multiply}
+  - id: positive
+    operation: data.filter
+    arguments:
+      values: "${steps.doubled.output}"
+      predicate: item > 0
+  - id: total
+    operation: data.fold
+    arguments:
+      values: "${steps.positive.output}"
+      initial: 0
+      operation: data.arithmetic
+      arguments: {left: "${acc}", right: "${item}", operator: add}
+output_schema:
+  type: object
+  required: [positive, total]
+  additionalProperties: false
+  properties:
+    positive: {type: array, items: {type: integer}}
+    total: {type: integer}
+return:
+  positive: "${steps.positive.output}"
+  total: "${steps.total.output}"

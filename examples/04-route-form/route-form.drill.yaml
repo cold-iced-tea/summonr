@@ -1,0 +1,26 @@
+# Drill for route-form: each case runs the saved ritual with the model's
+# answers scripted below (by step id, in call order). Writes are never live.
+#   summonr inscribe examples/04-route-form/route-form.yaml
+#   summonr drill route-form against examples/04-route-form/route-form.drill.yaml
+drill: route-form-cases
+ritual: route-form
+cases:
+  - id: form-category-needs-no-model
+    inputs: {form: '{"category":"support","message":"The export button does nothing"}'}
+    expect:
+      outcome: returned
+      result: {from_form: support}
+      model_calls: 0
+  - id: other-goes-to-model
+    inputs: {form: '{"category":"other","message":"I write for a magazine and would like an interview"}'}
+    model: {judged: [{category: press}]}
+    expect:
+      outcome: returned
+      result: {from_form: other, from_model: press}
+      model_calls: 1
+  - id: other-model-abstains
+    inputs: {form: '{"category":"other","message":"hello?"}'}
+    model: {judged: [{category: abstain}]}
+    expect:
+      outcome: abstained
+      model_calls: 1

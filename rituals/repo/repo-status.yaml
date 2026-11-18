@@ -1,0 +1,40 @@
+ritual: repo-status
+description: Each configured repository's branch, uncommitted changes, standing against its remote, and worktrees. Read-only.
+reagents:
+  git: {select: [repos, info, status, ahead_behind, worktrees]}
+  data: {select: [get]}
+requires:
+  - {reagent: git, action: repos}
+  - {reagent: git, action: info}
+  - {reagent: git, action: status}
+  - {reagent: git, action: ahead_behind}
+  - {reagent: git, action: worktrees}
+essence: {requests: 0, tool_calls: 200, items: 50, time: 5m}
+steps:
+  - id: names
+    operation: git.repos
+    arguments: {}
+  - id: repos
+    each: name in steps.names.output
+    on_failure: continue
+    steps:
+      - id: info
+        operation: git.info
+        arguments: {repo: "${name}"}
+      - id: state
+        operation: git.status
+        arguments: {repo: "${name}"}
+      - id: upstream
+        operation: git.ahead_behind
+        arguments: {repo: "${name}", from: "${steps.info.output.trunk}", to: "${steps.info.output.remote}/${steps.info.output.trunk}"}
+      - id: trees
+        operation: git.worktrees
+        arguments: {repo: "${name}"}
+      # Reads aren't listed in a loop's results; one pure step gathers them.
+      - id: report
+        operation: data.get
+        arguments:
+          value: {repo: "${name}", status: "${steps.state.output}", upstream: "${steps.upstream.output}", worktrees: "${steps.trees.output}"}
+          path: ""
+return:
+  repos: "${steps.repos.output}"

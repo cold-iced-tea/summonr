@@ -1,0 +1,38 @@
+language_version: 1
+ritual: check-manifest
+description: Validate a service manifest and summarize it, with no model.
+inputs:
+  text: {type: string}
+reagents:
+  data: {select: [parse_json, project, count]}
+essence: {requests: 0, tool_calls: 3, time: 5s}
+steps:
+  - id: manifest
+    operation: data.parse_json
+    arguments:
+      text: "${inputs.text}"
+      schema:
+        type: object
+        required: [name, version, replicas, dependencies]
+        additionalProperties: false
+        properties:
+          name: {type: string, minLength: 1, maxLength: 63}
+          version: {type: string, minLength: 1}
+          replicas: {type: integer, minimum: 1, maximum: 50}
+          dependencies: {type: array, maxItems: 100, items: {type: string}}
+  - id: identity
+    operation: data.project
+    arguments: {value: "${steps.manifest.output}", fields: [name, version]}
+  - id: deps
+    operation: data.count
+    arguments: {value: "${steps.manifest.output.dependencies}"}
+output_schema:
+  type: object
+  required: [service, dependency_count]
+  additionalProperties: false
+  properties:
+    service: {type: object}
+    dependency_count: {type: integer, minimum: 0}
+return:
+  service: "${steps.identity.output}"
+  dependency_count: "${steps.deps.output}"

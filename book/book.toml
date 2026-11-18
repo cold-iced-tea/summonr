@@ -1,0 +1,17 @@
+[book]
+title = "The Summonr Book"
+description = "Working with bounded intelligence: the full-release vision, practical guide, and reference"
+language = "en"
+src = "src"
+
+[build]
+build-dir = "build"
+
+[output.html]
+default-theme = "coal"
+preferred-dark-theme = "coal"
+additional-css = ["theme/summonr.css"]
+no-section-label = false
+
+[output.html.search]
+enable = true

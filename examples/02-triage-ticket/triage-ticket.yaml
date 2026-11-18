@@ -1,0 +1,37 @@
+language_version: 1
+ritual: triage-ticket
+description: Route one support ticket to a team, or abstain when it is unclear.
+inputs:
+  text: {type: string}
+bindings:
+  teams: {document: teams.md}
+model: ollama/qwen3:4b
+settings: {temperature: 0}
+essence: {requests: 1, tokens: 8000, time: 2m}
+steps:
+  - id: route
+    model:
+      instructions: |
+        You route support tickets to the team that should handle them.
+        Use the team descriptions below. Answer with JSON only:
+        the team, and a reason of one short sentence.
+      bind: [teams]
+      prompt: "${inputs.text}"
+      schema:
+        type: object
+        required: [team, reason]
+        additionalProperties: false
+        properties:
+          team: {type: string, enum: [billing, bugs, account, abstain]}
+          reason: {type: string, maxLength: 200}
+      abstain_if: output.team == "abstain"
+output_schema:
+  type: object
+  required: [team, reason]
+  additionalProperties: false
+  properties:
+    team: {type: string, enum: [billing, bugs, account, abstain]}
+    reason: {type: string}
+return:
+  team: "${steps.route.output.team}"
+  reason: "${steps.route.output.reason}"

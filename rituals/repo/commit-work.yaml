@@ -1,0 +1,33 @@
+ritual: commit-work
+description: Commit everything in a branch's own worktree with the given message, refusing secrets, large files and the trunk.
+inputs:
+  repo: {type: string}
+  branch: {type: string}
+  message: {type: string}
+reagents:
+  git: {select: [worktree_for, commit, status]}
+  data: {select: [assert]}
+requires:
+  - {reagent: git, action: worktree_for}
+  - {reagent: git, action: commit}
+  - {reagent: git, action: status}
+essence: {requests: 0, tool_calls: 20, time: 2m}
+steps:
+  - id: tree
+    operation: git.worktree_for
+    arguments: {repo: "${inputs.repo}", branch: "${inputs.branch}"}
+  - if: steps.tree.output.path == null
+    then:
+      - id: no_tree
+        operation: data.assert
+        arguments: {condition: false, message: "the branch has no worktree; start it with start-branch"}
+  - id: commit
+    operation: git.commit
+    arguments: {repo: "${inputs.repo}", branch: "${inputs.branch}", message: "${inputs.message}"}
+    verify:
+      observe: git.status
+      arguments: {repo: "${inputs.repo}", worktree: "${steps.tree.output.path}"}
+      expect: {clean: true}
+return:
+  commit: "${steps.commit.output.commit}"
+  files: "${steps.commit.output.files}"

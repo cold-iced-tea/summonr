@@ -1,0 +1,60 @@
+import io
+import json
+import unittest
+from summonr import Ritual, Str, Int, List, Object
+
+
+class BuilderTests(unittest.TestCase):
+    def test_future_values_cannot_be_used_as_python_values(self):
+        r = Ritual('test')
+        value = r.input('value', Int)
+        for operation in [lambda:bool(value),lambda:bool(value > 2),lambda:str(value),
+                          lambda:int(value),lambda:float(value),lambda:iter(value),
+                          lambda:list(value),lambda:len(value),lambda:f'{value}',
+                          lambda:(value < 1) == True]:
+            with self.assertRaises(TypeError): operation()
+        with self.assertRaises(TypeError):
+            if value > 1:
+                self.fail('a future condition executed at authoring time')
+        with self.assertRaises(TypeError):
+            for _ in value:
+                self.fail('runtime iteration became a Python loop')
+
+    def test_scopes_expressions_and_literal_types(self):
+        r=Ritual('test', essence={'requests':0})
+        values=r.input('values',List)
+        with r.each(values,id='items',as_='entry') as item:
+            with r.when((item > 0) & (item < 10)):
+                r.data.count([item],id='size')
+        r.returns({'items':r.ref('items')})
+        definition=r.definition()
+        self.assertEqual(definition['steps'][0]['steps'][0]['if'],'(entry > 0) and (entry < 10)')
+        out=io.StringIO();r.emit(out)
+        self.assertEqual(json.loads(out.getvalue()),definition)
+        definition['ritual']='changed'
+        self.assertEqual(r.definition()['ritual'],'test')
+        with self.assertRaises(ValueError):r.input('values',List)
+        with self.assertRaises(ValueError):r.input('typed',List[Int])
+
+    def test_cross_builder_and_implicit_expression_arguments_fail(self):
+        a,b=Ritual('a'),Ritual('b')
+        x,y=a.input('x',Int),b.input('y',Int)
+        with self.assertRaises(ValueError):a.data.count(y)
+        with self.assertRaises(ValueError):x == y
+        with self.assertRaises(TypeError):a.op('data.assert',condition=x > 0)
+        with self.assertRaises(ValueError):a.returns({'not_finite':float('nan')})
+        with self.assertRaises(ValueError):a.data.get(x, 'x', id='bad.id')
+        with self.assertRaises(ValueError):x == 'a\tb'
+
+    def test_model_schema_and_abstention_are_declarative(self):
+        r=Ritual('test')
+        text=r.input('text',Str)
+        result=r.model(id='label',prompt=text,returns=Object({'label':Str(enum=['yes','abstain'])}),
+                       abstain_if=lambda output:output.label == 'abstain')
+        r.returns({'label':result.label})
+        d=r.definition()
+        self.assertEqual(d['steps'][0]['model']['abstain_if'],'output.label == "abstain"')
+        self.assertEqual(d['steps'][0]['model']['prompt'],'${inputs.text}')
+
+
+if __name__=='__main__':unittest.main()

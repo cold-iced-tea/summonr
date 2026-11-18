@@ -1,0 +1,1035 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:summonr:ritual:1",
+  "title": "Summonr language version 1 definition",
+  "description": "Structural authoring/interchange contract. Rust compilation remains mandatory for references, operations, scopes, bindings, budgets, and pins. This is not the restricted schema dialect used for model outputs.",
+  "type": "object",
+  "properties": {
+    "language_version": {
+      "const": 1,
+      "default": 1
+    },
+    "defs": {
+      "type": "object",
+      "additionalProperties": {}
+    },
+    "$defs": {
+      "type": "object",
+      "additionalProperties": {}
+    },
+    "ritual": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "description": {
+      "type": "string"
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/input"
+      }
+    },
+    "bindings": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/binding"
+      }
+    },
+    "model": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "settings": {
+      "type": "object",
+      "additionalProperties": {}
+    },
+    "reagents": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/reagent"
+      }
+    },
+    "requires": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/requirement"
+      }
+    },
+    "essence": {
+      "$ref": "#/$defs/essence"
+    },
+    "drift": {
+      "$ref": "#/$defs/drift"
+    },
+    "output_schema": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/valueSchema"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/step"
+      }
+    },
+    "return": {
+      "type": "object",
+      "additionalProperties": {}
+    }
+  },
+  "required": [
+    "ritual",
+    "steps"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "input": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "enum": [
+            "string",
+            "integer",
+            "decimal",
+            "boolean",
+            "list"
+          ]
+        },
+        "default": {},
+        "min": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "enum": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {}
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "user_only": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    "binding": {
+      "type": "object",
+      "properties": {
+        "document": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "content": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "hash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "reagent": {
+      "type": "object",
+      "properties": {
+        "select": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "version": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "requirement": {
+      "type": "object",
+      "properties": {
+        "reagent": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string"
+        },
+        "on": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "into": {
+          "type": "object",
+          "additionalProperties": {}
+        }
+      },
+      "required": [
+        "reagent",
+        "action"
+      ],
+      "additionalProperties": false
+    },
+    "essence": {
+      "type": "object",
+      "properties": {
+        "requests": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tokens": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tool_calls": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "items": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "time": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "drift": {
+      "type": "object",
+      "properties": {
+        "on_mismatch": {
+          "anyOf": [
+            {
+              "enum": [
+                "note",
+                "warn",
+                "refuse"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "valueSchema": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "enum": [
+            "object",
+            "array",
+            "string",
+            "boolean",
+            "integer",
+            "number",
+            "null"
+          ]
+        },
+        "enum": {
+          "type": "array",
+          "items": {},
+          "minItems": 1
+        },
+        "properties": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/valueSchema"
+          }
+        },
+        "items": {
+          "$ref": "#/$defs/valueSchema"
+        },
+        "required": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "additionalProperties": {
+          "type": "boolean"
+        },
+        "minimum": {
+          "type": "number"
+        },
+        "maximum": {
+          "type": "number"
+        },
+        "minLength": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "maxLength": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "minItems": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "maxItems": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "default": {}
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "model": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "settings": {
+          "type": "object",
+          "additionalProperties": {}
+        },
+        "instructions": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bind": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "schema": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/valueSchema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "abstain_if": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "prompt"
+      ],
+      "additionalProperties": false
+    },
+    "verify": {
+      "type": "object",
+      "properties": {
+        "observe": {
+          "type": "string"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": {}
+        },
+        "expect": {
+          "type": "object",
+          "additionalProperties": {}
+        }
+      },
+      "required": [
+        "observe",
+        "expect"
+      ],
+      "additionalProperties": false
+    },
+    "step": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "arguments": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": {}
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "verify": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/verify"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "hold": {
+          "type": [
+            "boolean",
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/model"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ritual": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "version": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "hash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "each": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "steps": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/step"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "on_failure": {
+          "anyOf": [
+            {
+              "enum": [
+                "stop",
+                "continue"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parallel": {
+          "anyOf": [
+            {
+              "const": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "if": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "then": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/step"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "else": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/step"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "operation": {
+              "type": "string"
+            },
+            "arguments": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": {}
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "verify": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/verify"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "hold": {
+              "type": [
+                "boolean",
+                "string",
+                "null"
+              ]
+            },
+            "model": {
+              "type": "null"
+            },
+            "ritual": {
+              "type": "null"
+            },
+            "version": {
+              "type": "null"
+            },
+            "hash": {
+              "type": "null"
+            },
+            "each": {
+              "type": "null"
+            },
+            "steps": {
+              "type": "null"
+            },
+            "on_failure": {
+              "type": "null"
+            },
+            "parallel": {
+              "type": "null"
+            },
+            "if": {
+              "type": "null"
+            },
+            "then": {
+              "type": "null"
+            },
+            "else": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "operation",
+            "id"
+          ]
+        },
+        {
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "operation": {
+              "type": "null"
+            },
+            "arguments": {
+              "type": "null"
+            },
+            "verify": {
+              "type": "null"
+            },
+            "hold": {
+              "type": "null"
+            },
+            "model": {
+              "$ref": "#/$defs/model"
+            },
+            "ritual": {
+              "type": "null"
+            },
+            "version": {
+              "type": "null"
+            },
+            "hash": {
+              "type": "null"
+            },
+            "each": {
+              "type": "null"
+            },
+            "steps": {
+              "type": "null"
+            },
+            "on_failure": {
+              "type": "null"
+            },
+            "parallel": {
+              "type": "null"
+            },
+            "if": {
+              "type": "null"
+            },
+            "then": {
+              "type": "null"
+            },
+            "else": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "model",
+            "id"
+          ]
+        },
+        {
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "operation": {
+              "type": "null"
+            },
+            "arguments": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": {}
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "verify": {
+              "type": "null"
+            },
+            "hold": {
+              "type": "null"
+            },
+            "model": {
+              "type": "null"
+            },
+            "ritual": {
+              "type": "string"
+            },
+            "version": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "hash": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "each": {
+              "type": "null"
+            },
+            "steps": {
+              "type": "null"
+            },
+            "on_failure": {
+              "type": "null"
+            },
+            "parallel": {
+              "type": "null"
+            },
+            "if": {
+              "type": "null"
+            },
+            "then": {
+              "type": "null"
+            },
+            "else": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "ritual",
+            "id"
+          ]
+        },
+        {
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "operation": {
+              "type": "null"
+            },
+            "arguments": {
+              "type": "null"
+            },
+            "verify": {
+              "type": "null"
+            },
+            "hold": {
+              "type": "null"
+            },
+            "model": {
+              "type": "null"
+            },
+            "ritual": {
+              "type": "null"
+            },
+            "version": {
+              "type": "null"
+            },
+            "hash": {
+              "type": "null"
+            },
+            "each": {
+              "type": "string"
+            },
+            "steps": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/step"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "on_failure": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "stop",
+                    "continue"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "parallel": {
+              "anyOf": [
+                {
+                  "const": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "if": {
+              "type": "null"
+            },
+            "then": {
+              "type": "null"
+            },
+            "else": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "each",
+            "id"
+          ]
+        },
+        {
+          "properties": {
+            "id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "operation": {
+              "type": "null"
+            },
+            "arguments": {
+              "type": "null"
+            },
+            "verify": {
+              "type": "null"
+            },
+            "hold": {
+              "type": "null"
+            },
+            "model": {
+              "type": "null"
+            },
+            "ritual": {
+              "type": "null"
+            },
+            "version": {
+              "type": "null"
+            },
+            "hash": {
+              "type": "null"
+            },
+            "each": {
+              "type": "null"
+            },
+            "steps": {
+              "type": "null"
+            },
+            "on_failure": {
+              "type": "null"
+            },
+            "parallel": {
+              "type": "null"
+            },
+            "if": {
+              "type": "string"
+            },
+            "then": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/step"
+              }
+            },
+            "else": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/step"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "if",
+            "then"
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,55 @@
+language_version: 1
+ritual: receipt-total
+description: Read a pasted receipt, extract the line amounts with a model, add them up in code, and check the sum against the printed subtotal.
+inputs:
+  text: {type: string}
+model: ollama/qwen3:4b
+settings: {temperature: 0}
+reagents:
+  data: {select: [sum_integers, count, assert]}
+essence: {requests: 1, tokens: 8000, tool_calls: 3, time: 2m}
+steps:
+  - id: extract
+    model:
+      instructions: |
+        You read receipts. Report two things, in cents, as integers (4.50 is 450):
+        - line_items_cents: the price of every purchased line item. Do not
+          include subtotals, tax, tips, totals, or payments.
+        - printed_subtotal_cents: the subtotal printed on the receipt.
+        Copy numbers only. Do not add anything up. Answer with JSON only.
+      prompt: "${inputs.text}"
+      schema:
+        type: object
+        required: [line_items_cents, printed_subtotal_cents]
+        additionalProperties: false
+        properties:
+          line_items_cents:
+            type: array
+            maxItems: 200
+            items: {type: integer, minimum: 0, maximum: 10000000}
+          printed_subtotal_cents: {type: integer, minimum: 0}
+  - id: lines
+    operation: data.count
+    arguments: {value: "${steps.extract.output.line_items_cents}"}
+  - id: total
+    operation: data.sum_integers
+    arguments: {values: "${steps.extract.output.line_items_cents}"}
+  - if: steps.total.output != steps.extract.output.printed_subtotal_cents
+    then:
+      - id: mismatch
+        operation: data.assert
+        arguments:
+          condition: false
+          message: "the line items do not add up to the printed subtotal; check the receipt by hand"
+output_schema:
+  type: object
+  required: [line_items_cents, lines, subtotal_cents]
+  additionalProperties: false
+  properties:
+    line_items_cents: {type: array, items: {type: integer}}
+    lines: {type: integer, minimum: 0}
+    subtotal_cents: {type: integer, minimum: 0}
+return:
+  line_items_cents: "${steps.extract.output.line_items_cents}"
+  lines: "${steps.lines.output}"
+  subtotal_cents: "${steps.total.output}"

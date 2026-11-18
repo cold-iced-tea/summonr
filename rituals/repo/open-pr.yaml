@@ -1,0 +1,52 @@
+ritual: open-pr
+description: Push a clean branch and open a pull request into the trunk, or report the one already open.
+inputs:
+  repo: {type: string}
+  branch: {type: string}
+  title: {type: string, default: ""}
+  body: {type: string, default: ""}
+reagents:
+  git: {select: [info, worktree_for, head, push, remote_head]}
+  gh: {select: [pr_open]}
+  data: {select: [assert]}
+requires:
+  - {reagent: git, action: info}
+  - {reagent: git, action: worktree_for}
+  - {reagent: git, action: head}
+  - {reagent: git, action: push}
+  - {reagent: git, action: remote_head}
+  - {reagent: gh, action: pr_open}
+essence: {requests: 0, tool_calls: 20, time: 5m}
+steps:
+  - id: info
+    operation: git.info
+    arguments: {repo: "${inputs.repo}"}
+  - if: inputs.branch == steps.info.output.trunk
+    then:
+      - id: is_trunk
+        operation: data.assert
+        arguments: {condition: false, message: "open a pull request from a branch, not the trunk (${inputs.branch})"}
+  - id: tree
+    operation: git.worktree_for
+    arguments: {repo: "${inputs.repo}", branch: "${inputs.branch}"}
+  - if: steps.tree.output.path != null and not steps.tree.output.clean
+    then:
+      - id: dirty
+        operation: data.assert
+        arguments: {condition: false, message: "the ${inputs.branch} worktree has uncommitted changes: ${steps.tree.output.changed}"}
+  - id: tip
+    operation: git.head
+    arguments: {repo: "${inputs.repo}", ref: "${inputs.branch}"}
+  - id: push
+    operation: git.push
+    arguments: {repo: "${inputs.repo}", branch: "${inputs.branch}"}
+    verify:
+      observe: git.remote_head
+      arguments: {repo: "${inputs.repo}", branch: "${inputs.branch}"}
+      expect: {commit: "${steps.tip.output.commit}"}
+  - id: pr
+    operation: gh.pr_open
+    arguments: {repo: "${inputs.repo}", branch: "${inputs.branch}", title: "${inputs.title}", body: "${inputs.body}"}
+return:
+  url: "${steps.pr.output.url}"
+  existing: "${steps.pr.output.existing}"

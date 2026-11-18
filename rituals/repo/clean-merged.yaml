@@ -1,0 +1,47 @@
+ritual: clean-merged
+description: Remove worktrees and branches fully merged into the trunk with nothing uncommitted; keep everything else and say why.
+inputs:
+  repo: {type: string}
+reagents:
+  git: {select: [cleanup_plan, remove_worktree, worktree_for, delete_branch, branch_exists]}
+requires:
+  - {reagent: git, action: cleanup_plan}
+  - {reagent: git, action: remove_worktree}
+  - {reagent: git, action: worktree_for}
+  - {reagent: git, action: delete_branch}
+  - {reagent: git, action: branch_exists}
+essence: {requests: 0, tool_calls: 400, items: 200, time: 10m}
+steps:
+  - id: plan
+    operation: git.cleanup_plan
+    arguments: {repo: "${inputs.repo}"}
+  - id: trees
+    each: tree in steps.plan.output.worktrees
+    steps:
+      - if: tree.action == "remove"
+        then:
+          - id: remove
+            operation: git.remove_worktree
+            arguments: {repo: "${inputs.repo}", path: "${tree.path}"}
+            verify:
+              observe: git.worktree_for
+              arguments: {repo: "${inputs.repo}", branch: "${tree.branch}"}
+              expect: {path: null}
+  - id: after
+    operation: git.cleanup_plan
+    arguments: {repo: "${inputs.repo}"}
+  - id: branches
+    each: branch in steps.after.output.branches
+    steps:
+      - if: branch.action == "remove"
+        then:
+          - id: delete
+            operation: git.delete_branch
+            arguments: {repo: "${inputs.repo}", branch: "${branch.name}"}
+            verify:
+              observe: git.branch_exists
+              arguments: {repo: "${inputs.repo}", branch: "${branch.name}"}
+              expect: {exists: false}
+return:
+  worktrees: "${steps.plan.output.worktrees}"
+  branches: "${steps.after.output.branches}"

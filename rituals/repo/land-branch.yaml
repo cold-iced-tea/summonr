@@ -1,0 +1,110 @@
+ritual: land-branch
+description: Fast-forward the trunk to a tested branch and push it. Refuses anything off-script and never touches uncommitted work.
+inputs:
+  repo: {type: string}
+  branch: {type: string}
+reagents:
+  git: {select: [info, worktree_for, status, fetch, ahead_behind, head, remote_head, merge_ff, push]}
+  trial: {select: [run]}
+  data: {select: [assert]}
+requires:
+  - {reagent: git, action: info}
+  - {reagent: git, action: worktree_for}
+  - {reagent: git, action: status}
+  - {reagent: git, action: fetch}
+  - {reagent: git, action: ahead_behind}
+  - {reagent: git, action: head}
+  - {reagent: git, action: remote_head}
+  - {reagent: git, action: merge_ff}
+  - {reagent: git, action: push}
+  - {reagent: trial, action: run}
+essence: {requests: 0, tool_calls: 40, time: 30m}
+steps:
+  - id: info
+    operation: git.info
+    arguments: {repo: "${inputs.repo}"}
+  - if: inputs.branch == steps.info.output.trunk
+    then:
+      - id: is_trunk
+        operation: data.assert
+        arguments: {condition: false, message: "nothing to land: ${inputs.branch} is the trunk"}
+  - id: tree
+    operation: git.worktree_for
+    arguments: {repo: "${inputs.repo}", branch: "${inputs.branch}"}
+  - if: steps.tree.output.path == null
+    then:
+      - id: no_tree
+        operation: data.assert
+        arguments: {condition: false, message: "check out ${inputs.branch} in a worktree so it can be tested"}
+  - id: main
+    operation: git.status
+    arguments: {repo: "${inputs.repo}"}
+  - if: steps.main.output.branch != steps.info.output.trunk
+    then:
+      - id: off_trunk
+        operation: data.assert
+        arguments: {condition: false, message: "the main checkout is not on ${steps.info.output.trunk}"}
+  - if: not steps.main.output.clean
+    then:
+      - id: main_dirty
+        operation: data.assert
+        arguments: {condition: false, message: "the main checkout has uncommitted changes: ${steps.main.output.changed}"}
+  - if: not steps.tree.output.clean
+    then:
+      - id: tree_dirty
+        operation: data.assert
+        arguments: {condition: false, message: "the ${inputs.branch} worktree has uncommitted changes: ${steps.tree.output.changed}"}
+  - id: fetch
+    operation: git.fetch
+    arguments: {repo: "${inputs.repo}"}
+  - id: upstream
+    operation: git.ahead_behind
+    arguments: {repo: "${inputs.repo}", from: "${steps.info.output.trunk}", to: "${steps.info.output.remote}/${steps.info.output.trunk}"}
+  - if: steps.upstream.output.behind > 0
+    then:
+      - id: behind
+        operation: data.assert
+        arguments: {condition: false, message: "${steps.info.output.trunk} is behind ${steps.info.output.remote}/${steps.info.output.trunk}; bring it up to date first"}
+  - id: ff
+    operation: git.ahead_behind
+    arguments: {repo: "${inputs.repo}", from: "${steps.info.output.trunk}", to: "${inputs.branch}"}
+  - if: steps.ff.output.ahead > 0
+    then:
+      - id: not_ff
+        operation: data.assert
+        arguments: {condition: false, message: "${inputs.branch} does not fast-forward ${steps.info.output.trunk} (${steps.info.output.trunk} has ${steps.ff.output.ahead} commit(s) it lacks)"}
+  - if: steps.ff.output.behind == 0
+    then:
+      - id: nothing_new
+        operation: data.assert
+        arguments: {condition: false, message: "nothing to land: ${inputs.branch} has no commits beyond ${steps.info.output.trunk}"}
+  # The exact commit under test; the merge refuses if the branch moves.
+  - id: tip
+    operation: git.head
+    arguments: {repo: "${inputs.repo}", ref: "${inputs.branch}"}
+  - id: tests
+    operation: trial.run
+    arguments: {repo: "${inputs.repo}", worktree: "${steps.tree.output.path}"}
+  - if: not steps.tests.output.passed
+    then:
+      - id: failing
+        operation: data.assert
+        arguments: {condition: false, message: "tests failed: ${steps.tests.output.tail}"}
+  - id: merge
+    operation: git.merge_ff
+    arguments: {repo: "${inputs.repo}", branch: "${inputs.branch}", expect: "${steps.tip.output.commit}"}
+    verify:
+      observe: git.head
+      arguments: {repo: "${inputs.repo}", ref: "${steps.info.output.trunk}"}
+      expect: {commit: "${steps.tip.output.commit}"}
+  - id: push
+    operation: git.push
+    arguments: {repo: "${inputs.repo}", branch: "${steps.info.output.trunk}"}
+    verify:
+      observe: git.remote_head
+      arguments: {repo: "${inputs.repo}", branch: "${steps.info.output.trunk}"}
+      expect: {commit: "${steps.tip.output.commit}"}
+return:
+  landed: "${inputs.branch}"
+  commit: "${steps.tip.output.commit}"
+  tests_tail: "${steps.tests.output.tail}"

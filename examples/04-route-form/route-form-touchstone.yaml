@@ -1,0 +1,26 @@
+# Touchstone for route-form: computes the part of route-form's answer that a
+# rule can decide, with no model and no effects. A drill or assay that names
+# it takes each case's expected result from here instead of a hand label.
+#   summonr inscribe examples/04-route-form/route-form-touchstone.yaml
+language_version: 1
+ritual: route-form-touchstone
+description: The expected `from_form` for any route-form submission.
+inputs:
+  form: {type: string}
+reagents:
+  data: {select: [parse_json]}
+essence: {requests: 0, tool_calls: 1, time: 5s}
+steps:
+  - id: submission
+    operation: data.parse_json
+    arguments:
+      text: "${inputs.form}"
+      schema:
+        type: object
+        required: [category, message]
+        additionalProperties: false
+        properties:
+          category: {type: string, enum: [sales, support, press, other]}
+          message: {type: string, minLength: 1, maxLength: 5000}
+return:
+  from_form: "${steps.submission.output.category}"

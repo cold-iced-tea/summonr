@@ -1,0 +1,396 @@
+[
+  {
+    "name": "pure",
+    "structural": true,
+    "semantic": true,
+    "definition": {
+      "ritual": "sample",
+      "language_version": 1,
+      "reagents": {
+        "data": {
+          "select": [
+            "count"
+          ]
+        }
+      },
+      "essence": {
+        "requests": 0,
+        "tool_calls": 1
+      },
+      "steps": [
+        {
+          "id": "n",
+          "operation": "data.count",
+          "arguments": {
+            "value": [
+              1,
+              2
+            ]
+          }
+        }
+      ],
+      "return": {
+        "count": "${steps.n.output}"
+      }
+    }
+  },
+  {
+    "name": "unknown_field",
+    "structural": false,
+    "semantic": false,
+    "definition": {
+      "ritual": "sample",
+      "language_version": 1,
+      "reagents": {
+        "data": {
+          "select": [
+            "count"
+          ]
+        }
+      },
+      "essence": {
+        "requests": 0,
+        "tool_calls": 1
+      },
+      "steps": [
+        {
+          "id": "n",
+          "operation": "data.count",
+          "arguments": {
+            "value": [
+              1,
+              2
+            ]
+          }
+        }
+      ],
+      "return": {
+        "count": "${steps.n.output}"
+      },
+      "typo": true
+    }
+  },
+  {
+    "name": "multiple_step_kinds",
+    "structural": false,
+    "semantic": false,
+    "definition": {
+      "ritual": "sample",
+      "language_version": 1,
+      "reagents": {
+        "data": {
+          "select": [
+            "count"
+          ]
+        }
+      },
+      "essence": {
+        "requests": 0,
+        "tool_calls": 1
+      },
+      "steps": [
+        {
+          "id": "n",
+          "operation": "data.count",
+          "arguments": {
+            "value": [
+              1,
+              2
+            ]
+          },
+          "model": {
+            "prompt": "x"
+          }
+        }
+      ],
+      "return": {
+        "count": "${steps.n.output}"
+      }
+    }
+  },
+  {
+    "name": "wrong_modifier",
+    "structural": false,
+    "semantic": false,
+    "definition": {
+      "ritual": "sample",
+      "language_version": 1,
+      "reagents": {
+        "data": {
+          "select": [
+            "count"
+          ]
+        }
+      },
+      "essence": {
+        "requests": 0,
+        "tool_calls": 1
+      },
+      "steps": [
+        {
+          "id": "n",
+          "operation": "data.count",
+          "arguments": {
+            "value": [
+              1,
+              2
+            ]
+          },
+          "parallel": 1
+        }
+      ],
+      "return": {
+        "count": "${steps.n.output}"
+      }
+    }
+  },
+  {
+    "name": "unsupported_version",
+    "structural": false,
+    "semantic": false,
+    "definition": {
+      "ritual": "sample",
+      "language_version": 2,
+      "reagents": {
+        "data": {
+          "select": [
+            "count"
+          ]
+        }
+      },
+      "essence": {
+        "requests": 0,
+        "tool_calls": 1
+      },
+      "steps": [
+        {
+          "id": "n",
+          "operation": "data.count",
+          "arguments": {
+            "value": [
+              1,
+              2
+            ]
+          }
+        }
+      ],
+      "return": {
+        "count": "${steps.n.output}"
+      }
+    }
+  },
+  {
+    "name": "negative_budget",
+    "structural": false,
+    "semantic": false,
+    "definition": {
+      "ritual": "sample",
+      "language_version": 1,
+      "reagents": {
+        "data": {
+          "select": [
+            "count"
+          ]
+        }
+      },
+      "essence": {
+        "requests": -1,
+        "tool_calls": 1
+      },
+      "steps": [
+        {
+          "id": "n",
+          "operation": "data.count",
+          "arguments": {
+            "value": [
+              1,
+              2
+            ]
+          }
+        }
+      ],
+      "return": {
+        "count": "${steps.n.output}"
+      }
+    }
+  },
+  {
+    "name": "missing_id",
+    "structural": false,
+    "semantic": false,
+    "definition": {
+      "ritual": "sample",
+      "language_version": 1,
+      "reagents": {
+        "data": {
+          "select": [
+            "count"
+          ]
+        }
+      },
+      "essence": {
+        "requests": 0,
+        "tool_calls": 1
+      },
+      "steps": [
+        {
+          "operation": "data.count",
+          "arguments": {
+            "value": [
+              1,
+              2
+            ]
+          }
+        }
+      ],
+      "return": {
+        "count": "${steps.n.output}"
+      }
+    }
+  },
+  {
+    "name": "unknown_output_schema_keyword",
+    "structural": false,
+    "semantic": false,
+    "definition": {
+      "ritual": "sample",
+      "language_version": 1,
+      "reagents": {
+        "data": {
+          "select": [
+            "count"
+          ]
+        }
+      },
+      "essence": {
+        "requests": 0,
+        "tool_calls": 1
+      },
+      "steps": [
+        {
+          "id": "n",
+          "operation": "data.count",
+          "arguments": {
+            "value": [
+              1,
+              2
+            ]
+          }
+        }
+      ],
+      "return": {
+        "count": "${steps.n.output}"
+      },
+      "output_schema": {
+        "type": "string",
+        "pattern": "x"
+      }
+    }
+  },
+  {
+    "name": "missing_reference",
+    "structural": true,
+    "semantic": false,
+    "definition": {
+      "ritual": "sample",
+      "language_version": 1,
+      "reagents": {
+        "data": {
+          "select": [
+            "count"
+          ]
+        }
+      },
+      "essence": {
+        "requests": 0,
+        "tool_calls": 1
+      },
+      "steps": [
+        {
+          "id": "n",
+          "operation": "data.count",
+          "arguments": {
+            "value": [
+              1,
+              2
+            ]
+          }
+        }
+      ],
+      "return": {
+        "count": "${steps.missing.output}"
+      }
+    }
+  },
+  {
+    "name": "unknown_operation",
+    "structural": true,
+    "semantic": false,
+    "definition": {
+      "ritual": "sample",
+      "language_version": 1,
+      "reagents": {
+        "data": {
+          "select": [
+            "count"
+          ]
+        }
+      },
+      "essence": {
+        "requests": 0,
+        "tool_calls": 1
+      },
+      "steps": [
+        {
+          "id": "n",
+          "operation": "data.not_a_tool",
+          "arguments": {
+            "value": [
+              1,
+              2
+            ]
+          }
+        }
+      ],
+      "return": {
+        "count": "${steps.n.output}"
+      }
+    }
+  },
+  {
+    "name": "bad_time",
+    "structural": true,
+    "semantic": false,
+    "definition": {
+      "ritual": "sample",
+      "language_version": 1,
+      "reagents": {
+        "data": {
+          "select": [
+            "count"
+          ]
+        }
+      },
+      "essence": {
+        "requests": 0,
+        "tool_calls": 1,
+        "time": "forever"
+      },
+      "steps": [
+        {
+          "id": "n",
+          "operation": "data.count",
+          "arguments": {
+            "value": [
+              1,
+              2
+            ]
+          }
+        }
+      ],
+      "return": {
+        "count": "${steps.n.output}"
+      }
+    }
+  }
+]

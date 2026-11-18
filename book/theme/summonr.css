@@ -1,0 +1,70 @@
+/* A working instrument and its service book. All assets remain local. */
+.coal, .navy, .ayu {
+    --bg: #14181b;
+    --fg: #e8decb;
+    --sidebar-bg: #101416;
+    --sidebar-fg: #b5ad9e;
+    --sidebar-active: #e2bf7e;
+    --sidebar-spacer: #353a39;
+    --links: #94cbbb;
+    --inline-code-color: #e2bf7e;
+    --theme-popup-bg: #1c2326;
+    --theme-popup-border: #596052;
+    --theme-hover: #29322f;
+    --quote-bg: #1b2425;
+    --quote-border: #84977d;
+    --table-border-color: #41483f;
+    --table-header-bg: #242b2a;
+    --table-alternate-bg: #192023;
+    --code-bg: #101416;
+    --searchbar-border-color: #6c705c;
+    --searchbar-bg: #1c2326;
+    --searchbar-fg: #e8decb;
+    --searchresults-header-fg: #e8decb;
+    --searchresults-border-color: #6c705c;
+    --searchresults-li-bg: #1c2326;
+}
+.light, .rust {
+    --bg: #f2eddf;
+    --fg: #292d2a;
+    --sidebar-bg: #e7e0cf;
+    --sidebar-fg: #4f554c;
+    --sidebar-active: #7d391f;
+    --links: #286554;
+    --inline-code-color: #793d26;
+    --quote-bg: #e9e6d9;
+    --quote-border: #697957;
+    --code-bg: #e6e1d5;
+    --table-border-color: #b8b19e;
+    --table-header-bg: #ded8c7;
+    --table-alternate-bg: #ece7da;
+}
+:root { --content-max-width: 880px; }
+.content { line-height: 1.75; }
+.content main { padding-bottom: 5rem; }
+.content h1, .content h2, .content h3, .menu-title {
+    font-family: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    font-weight: 400;
+}
+.content h1 { font-size: clamp(2.4rem, 5vw, 4rem); line-height: 1.18; padding-bottom: 2rem; border-bottom: 1px solid #91815b; }
+.content h1::before { content: "☉  /  SUMMONR"; display: block; font-family: monospace; font-size: 1.1rem; letter-spacing: .24em; color: var(--sidebar-active); margin: 1.4rem 0 2rem; }
+.content h2 { margin-top: 3rem; font-size: 2.4rem; }
+.content h3 { font-size: 1.9rem; }
+.content p, .content li { max-width: 76ch; }
+.content a { text-underline-offset: .22em; }
+.content a:hover { text-decoration: underline; }
+.content blockquote { padding: .5rem 1.8rem; border-left-width: 2px; }
+.content pre { border: 1px solid var(--table-border-color); border-radius: 3px; }
+.content pre code { padding: 1.6rem; line-height: 1.65; }
+.content table { margin: 1.8rem 0; width: 100%; }
+.content table td, .content table th { padding: .7rem 1rem; }
+.sidebar { border-right: 1px solid var(--table-border-color); }
+.sidebar .sidebar-scrollbox { padding: 2.2rem 1.5rem; }
+.sidebar .chapter li.part-title { font-family: Georgia, serif; letter-spacing: .06em; font-size: 1.5rem; padding-top: 1.5rem; }
+.sidebar .chapter li a.active { border-left: 2px solid var(--sidebar-active); padding-left: .8rem; }
+.menu-title { letter-spacing: .08em; }
+:focus-visible { outline: 2px solid var(--links); outline-offset: 4px; }
+@media print {
+    .content h1::before { color: #444; }
+    .content { line-height: 1.4; }
+}

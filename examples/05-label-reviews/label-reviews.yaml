@@ -1,0 +1,16 @@
+language_version: 1
+ritual: label-reviews
+description: Label a list of reviews, within a fixed budget of model requests.
+inputs:
+  reviews: {type: list}
+essence: {requests: 10, tokens: 40000, items: 50, time: 5m}
+steps:
+  - id: labels
+    each: review in inputs.reviews
+    on_failure: continue
+    steps:
+      - id: label
+        ritual: label-review
+        arguments: {text: "${review}"}
+return:
+  labels: "${steps.labels.output}"

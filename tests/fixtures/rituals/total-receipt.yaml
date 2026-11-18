@@ -1,0 +1,33 @@
+language_version: 1
+ritual: total-receipt
+description: Validate structured receipt amounts and compute their total without a model.
+inputs:
+  text: {type: string}
+reagents:
+  data: {select: [parse_json, sum_integers]}
+essence: {requests: 0, tool_calls: 2, time: 5s}
+steps:
+  - id: receipt
+    operation: data.parse_json
+    arguments:
+      text: "${inputs.text}"
+      schema:
+        type: object
+        required: [amounts_minor]
+        additionalProperties: false
+        properties:
+          amounts_minor:
+            type: array
+            maxItems: 1000
+            items: {type: integer, minimum: 0}
+  - id: total
+    operation: data.sum_integers
+    arguments: {values: "${steps.receipt.output.amounts_minor}"}
+output_schema:
+  type: object
+  required: [total_minor]
+  additionalProperties: false
+  properties:
+    total_minor: {type: integer, minimum: 0}
+return:
+  total_minor: "${steps.total.output}"

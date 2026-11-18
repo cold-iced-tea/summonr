@@ -1,0 +1,19 @@
+# Drill for route-form whose expected results come from a touchstone.
+# No case carries a hand-written `result`; the touchstone computes it.
+#   summonr inscribe examples/04-route-form/route-form.yaml
+#   summonr inscribe examples/04-route-form/route-form-touchstone.yaml
+#   summonr drill route-form against examples/04-route-form/route-form.touchstone-drill.yaml
+drill: route-form-touchstone-cases
+ritual: route-form
+touchstone: route-form-touchstone
+cases:
+  - id: support-from-form
+    inputs: {form: '{"category":"support","message":"The export button does nothing"}'}
+    expect: {model_calls: 0}
+  - id: sales-from-form
+    inputs: {form: '{"category":"sales","message":"Can I get a demo?"}'}
+    expect: {model_calls: 0}
+  - id: other-keeps-form-category
+    inputs: {form: '{"category":"other","message":"I write for a magazine and would like an interview"}'}
+    model: {judged: [{category: press}]}
+    expect: {model_calls: 1}

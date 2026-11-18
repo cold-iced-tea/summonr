@@ -1,0 +1,25 @@
+# Terms of an order pact between a manufacturer (caller) and a supplier
+# (callee). Fill in the two core keys (`summonr identity` on each side), the
+# supplier's hash of commit-order (`summonr compile commit-order.yaml`), and
+# the buyer's hash of check-quote, with check-quote's source indented below.
+pact: order-parts
+caller: ed25519:MANUFACTURER_CORE_KEY
+callee: ed25519:SUPPLIER_CORE_KEY
+ritual: {name: commit-order, hash: COMMIT_ORDER_HASH}
+fixed: {threshold: 1000}          # a call cannot change this
+inputs: [amount]                  # what each call may give
+ceilings:
+  per_call: {requests: 0, tool_calls: 20, time: 30s}
+  total: {calls: 200}
+  deadline: 48h                   # the buyer's decision on a held order must come within this
+held_by_caller:
+  - {step: commit, when: "${steps.over_threshold.output}"}
+accept: checks                    # or owner (the default): the buyer's owner decides each delivery
+checks:
+  schema: true
+  ritual:
+    name: check-quote
+    hash: CHECK_QUOTE_HASH
+    source: |
+      CHECK_QUOTE_SOURCE
+expires: 2027-11-16

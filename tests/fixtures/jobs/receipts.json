@@ -1,0 +1,10 @@
+{
+  "job": "receipt-totals",
+  "ritual": "total-receipt",
+  "items": [
+    {"id": "receipt-001", "version": "snapshot-1", "args": {"text": "{\"amounts_minor\":[100,25]}"}},
+    {"id": "receipt-002", "version": "snapshot-1", "args": {"text": "{\"amounts_minor\":[300,50]}"}},
+    {"id": "receipt-003", "version": "snapshot-1", "args": {"text": "{\"amounts_minor\":[700,99]}"}},
+    {"id": "receipt-004", "version": "snapshot-1", "args": {"text": "{\"amounts_minor\":[120,80]}"}}
+  ]
+}
