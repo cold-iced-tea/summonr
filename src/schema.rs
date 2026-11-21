@@ -3,6 +3,7 @@
 use serde_json::{Map, Value};
 
 const MAX_REF_DEPTH: usize = 32;
+const MAX_SCHEMA_NODES: usize = 10_000;
 
 pub fn validate(s: &Value) -> Result<(), String> {
     let root_defs = match s.get("$defs") {
@@ -13,7 +14,8 @@ pub fn validate(s: &Value) -> Result<(), String> {
         None => None,
     };
     let mut visiting = Vec::new();
-    validate_with_defs(s, root_defs, true, &mut visiting)
+    let mut nodes = 0usize;
+    validate_with_defs(s, root_defs, true, &mut visiting, &mut nodes)
 }
 
 fn resolve_ref<'a>(r: &'a str, root_defs: Option<&'a Map<String, Value>>) -> Result<(&'a str, &'a Value), String> {
@@ -32,7 +34,12 @@ fn validate_with_defs(
     root_defs: Option<&Map<String, Value>>,
     is_root: bool,
     visiting: &mut Vec<String>,
+    nodes: &mut usize,
 ) -> Result<(), String> {
+    *nodes += 1;
+    if *nodes > MAX_SCHEMA_NODES {
+        return Err(format!("schema expansion exceeds {MAX_SCHEMA_NODES} nodes"));
+    }
     let o = s.as_object().ok_or("schema must be an object")?;
     for (k, v) in o {
         match k.as_str() {
@@ -46,7 +53,7 @@ fn validate_with_defs(
                         return Err(format!("invalid `$defs` entry `{name}`"));
                     }
                     visiting.push(name.clone());
-                    validate_with_defs(def, root_defs, false, visiting)?;
+                    validate_with_defs(def, root_defs, false, visiting, nodes)?;
                     visiting.pop();
                 }
             }
@@ -57,7 +64,7 @@ fn validate_with_defs(
                     return Err(format!("cyclic $ref `{r}`"));
                 }
                 visiting.push(name.to_string());
-                validate_with_defs(target, root_defs, false, visiting)?;
+                validate_with_defs(target, root_defs, false, visiting, nodes)?;
                 visiting.pop();
             }
             "type" => {
@@ -75,10 +82,10 @@ fn validate_with_defs(
                     .ok_or("properties must be an object")?
                     .values()
                 {
-                    validate_with_defs(child, root_defs, false, visiting)?;
+                    validate_with_defs(child, root_defs, false, visiting, nodes)?;
                 }
             }
-            "items" => validate_with_defs(v, root_defs, false, visiting)?,
+            "items" => validate_with_defs(v, root_defs, false, visiting, nodes)?,
             "required" => {
                 let a = v.as_array().ok_or("required must be an array")?;
                 let mut seen = std::collections::HashSet::new();
@@ -116,7 +123,8 @@ fn validate_with_defs(
 pub fn inline_refs(s: &Value) -> Result<Value, String> {
     validate(s)?;
     let root_defs = s.get("$defs").and_then(|v| v.as_object());
-    inline_refs_with_defs(s, root_defs, true, 0)
+    let mut nodes = 0usize;
+    inline_refs_with_defs(s, root_defs, true, 0, &mut nodes)
 }
 
 fn inline_refs_with_defs(
@@ -124,14 +132,21 @@ fn inline_refs_with_defs(
     root_defs: Option<&Map<String, Value>>,
     is_root: bool,
     depth: usize,
+    nodes: &mut usize,
 ) -> Result<Value, String> {
     if depth > MAX_REF_DEPTH {
         return Err(format!("$ref nesting exceeds {MAX_REF_DEPTH} levels"));
     }
+    *nodes += 1;
+    if *nodes > MAX_SCHEMA_NODES {
+        return Err(format!(
+            "schema expansion exceeds {MAX_SCHEMA_NODES} nodes"
+        ));
+    }
     let o = s.as_object().ok_or("schema must be an object")?;
     if let Some(r) = o.get("$ref").and_then(|v| v.as_str()) {
         let (_, target) = resolve_ref(r, root_defs)?;
-        let mut resolved = inline_refs_with_defs(target, root_defs, false, depth + 1)?;
+        let mut resolved = inline_refs_with_defs(target, root_defs, false, depth + 1, nodes)?;
         if let Some(resolved_obj) = resolved.as_object_mut() {
             for (k, v) in o {
                 if k == "$ref" || (is_root && k == "$defs") {
@@ -141,11 +156,11 @@ fn inline_refs_with_defs(
                     "properties" => {
                         let mut out = Map::new();
                         for (pk, pv) in v.as_object().ok_or("properties must be an object")? {
-                            out.insert(pk.clone(), inline_refs_with_defs(pv, root_defs, false, depth + 1)?);
+                            out.insert(pk.clone(), inline_refs_with_defs(pv, root_defs, false, depth + 1, nodes)?);
                         }
                         Value::Object(out)
                     }
-                    "items" => inline_refs_with_defs(v, root_defs, false, depth + 1)?,
+                    "items" => inline_refs_with_defs(v, root_defs, false, depth + 1, nodes)?,
                     _ => v.clone(),
                 };
                 resolved_obj.insert(k.clone(), val);
@@ -162,11 +177,11 @@ fn inline_refs_with_defs(
             "properties" => {
                 let mut props = Map::new();
                 for (pk, pv) in v.as_object().ok_or("properties must be an object")? {
-                    props.insert(pk.clone(), inline_refs_with_defs(pv, root_defs, false, depth + 1)?);
+                    props.insert(pk.clone(), inline_refs_with_defs(pv, root_defs, false, depth + 1, nodes)?);
                 }
                 Value::Object(props)
             }
-            "items" => inline_refs_with_defs(v, root_defs, false, depth + 1)?,
+            "items" => inline_refs_with_defs(v, root_defs, false, depth + 1, nodes)?,
             _ => v.clone(),
         };
         out.insert(k.clone(), val);

@@ -9,6 +9,14 @@
       "const": 1,
       "default": 1
     },
+    "defs": {
+      "type": "object",
+      "additionalProperties": {}
+    },
+    "$defs": {
+      "type": "object",
+      "additionalProperties": {}
+    },
     "ritual": {
       "type": "string",
       "pattern": "^[A-Za-z0-9_-]+$"
@@ -96,7 +104,9 @@
             "integer",
             "decimal",
             "boolean",
-            "list"
+            "list",
+            "array",
+            "object"
           ]
         },
         "default": {},
@@ -133,6 +143,16 @@
         },
         "user_only": {
           "type": "boolean"
+        },
+        "schema": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/valueSchema"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -327,6 +347,15 @@
             "number",
             "null"
           ]
+        },
+        "$defs": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/valueSchema"
+          }
+        },
+        "$ref": {
+          "type": "string"
         },
         "enum": {
           "type": "array",
@@ -604,7 +633,9 @@
         "parallel": {
           "anyOf": [
             {
-              "const": 1
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 32
             },
             {
               "type": "null"
@@ -635,6 +666,61 @@
           ]
         },
         "else": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/step"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "assert": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retry": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fallback": {
           "anyOf": [
             {
               "type": "array",
@@ -719,6 +805,40 @@
             },
             "else": {
               "type": "null"
+            },
+            "fail": {
+              "type": "null"
+            },
+            "assert": {
+              "type": "null"
+            },
+            "message": {
+              "type": "null"
+            },
+            "retry": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "fallback": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/step"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -775,6 +895,40 @@
             },
             "else": {
               "type": "null"
+            },
+            "fail": {
+              "type": "null"
+            },
+            "assert": {
+              "type": "null"
+            },
+            "message": {
+              "type": "null"
+            },
+            "retry": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "fallback": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/step"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -855,6 +1009,21 @@
             },
             "else": {
               "type": "null"
+            },
+            "fail": {
+              "type": "null"
+            },
+            "assert": {
+              "type": "null"
+            },
+            "message": {
+              "type": "null"
+            },
+            "retry": {
+              "type": "null"
+            },
+            "fallback": {
+              "type": "null"
             }
           },
           "required": [
@@ -923,7 +1092,9 @@
             "parallel": {
               "anyOf": [
                 {
-                  "const": 1
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 32
                 },
                 {
                   "type": "null"
@@ -937,6 +1108,21 @@
               "type": "null"
             },
             "else": {
+              "type": "null"
+            },
+            "fail": {
+              "type": "null"
+            },
+            "assert": {
+              "type": "null"
+            },
+            "message": {
+              "type": "null"
+            },
+            "retry": {
+              "type": "null"
+            },
+            "fallback": {
               "type": "null"
             }
           },
@@ -1014,11 +1200,187 @@
                   "type": "null"
                 }
               ]
+            },
+            "fail": {
+              "type": "null"
+            },
+            "assert": {
+              "type": "null"
+            },
+            "message": {
+              "type": "null"
+            },
+            "retry": {
+              "type": "null"
+            },
+            "fallback": {
+              "type": "null"
             }
           },
           "required": [
             "if",
             "then"
+          ]
+        },
+        {
+          "properties": {
+            "id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "operation": {
+              "type": "null"
+            },
+            "arguments": {
+              "type": "null"
+            },
+            "verify": {
+              "type": "null"
+            },
+            "hold": {
+              "type": "null"
+            },
+            "model": {
+              "type": "null"
+            },
+            "ritual": {
+              "type": "null"
+            },
+            "version": {
+              "type": "null"
+            },
+            "hash": {
+              "type": "null"
+            },
+            "each": {
+              "type": "null"
+            },
+            "steps": {
+              "type": "null"
+            },
+            "on_failure": {
+              "type": "null"
+            },
+            "parallel": {
+              "type": "null"
+            },
+            "if": {
+              "type": "null"
+            },
+            "then": {
+              "type": "null"
+            },
+            "else": {
+              "type": "null"
+            },
+            "fail": {
+              "type": "string"
+            },
+            "assert": {
+              "type": "null"
+            },
+            "message": {
+              "type": "null"
+            },
+            "retry": {
+              "type": "null"
+            },
+            "fallback": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "fail"
+          ]
+        },
+        {
+          "properties": {
+            "id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "operation": {
+              "type": "null"
+            },
+            "arguments": {
+              "type": "null"
+            },
+            "verify": {
+              "type": "null"
+            },
+            "hold": {
+              "type": "null"
+            },
+            "model": {
+              "type": "null"
+            },
+            "ritual": {
+              "type": "null"
+            },
+            "version": {
+              "type": "null"
+            },
+            "hash": {
+              "type": "null"
+            },
+            "each": {
+              "type": "null"
+            },
+            "steps": {
+              "type": "null"
+            },
+            "on_failure": {
+              "type": "null"
+            },
+            "parallel": {
+              "type": "null"
+            },
+            "if": {
+              "type": "null"
+            },
+            "then": {
+              "type": "null"
+            },
+            "else": {
+              "type": "null"
+            },
+            "fail": {
+              "type": "null"
+            },
+            "assert": {
+              "type": "string"
+            },
+            "message": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "retry": {
+              "type": "null"
+            },
+            "fallback": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "assert"
           ]
         }
       ]

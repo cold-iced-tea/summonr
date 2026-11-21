@@ -449,6 +449,7 @@ pub const CLAUSES: &[(&str, &str, &str)] = &[
     ("file PATH", "--file PATH", "Input file for bind, soul, or inscribe"),
     ("schema JSON", "--schema JSON", "Output JSON schema for bid"),
     ("session ID", "--session ID", "Live summon session ID for inscribe"),
+    ("to TASK", "--task TASK", "Prompt or task text for an interactive bid"),
 ];
 
 const KEYWORDS: &[&str] = &[
@@ -826,12 +827,42 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
                 }
                 op.wait = true;
             }
-            "json" => op.json = true,
-            "dry-run" => op.dry_run = true,
-            "replacement" => op.replace = true,
-            "simulating" => op.simulate = true,
-            "baseline" => op.baseline = true,
-            "live" => op.live = true,
+            "json" => {
+                if op.json {
+                    return Err(cur.err(pos, "JSON output is given more than once", ""));
+                }
+                op.json = true;
+            }
+            "dry-run" => {
+                if op.dry_run {
+                    return Err(cur.err(pos, "dry-run is given more than once", ""));
+                }
+                op.dry_run = true;
+            }
+            "replacement" => {
+                if op.replace {
+                    return Err(cur.err(pos, "replacement is given more than once", ""));
+                }
+                op.replace = true;
+            }
+            "simulating" => {
+                if op.simulate {
+                    return Err(cur.err(pos, "simulation is given more than once", ""));
+                }
+                op.simulate = true;
+            }
+            "baseline" => {
+                if op.baseline {
+                    return Err(cur.err(pos, "baseline is given more than once", ""));
+                }
+                op.baseline = true;
+            }
+            "live" => {
+                if op.live {
+                    return Err(cur.err(pos, "live mode is given more than once", ""));
+                }
+                op.live = true;
+            }
             "from" => {
                 let v = value(&mut cur, pos, attached, is_flag, "from mail selecting read")?;
                 if op.scopes.iter().any(|s| s.reagent == v) {

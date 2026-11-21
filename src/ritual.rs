@@ -151,13 +151,26 @@ impl<'de> serde::Deserialize<'de> for InputDecl {
                 )?;
                 const RAW_KEYS: &[&str] =
                     &["type", "default", "min", "max", "enum", "user_only", "schema"];
+                const RAW_ONLY_KEYS: &[&str] =
+                    &["default", "min", "max", "enum", "user_only", "schema"];
                 let is_schema_obj = m.contains_key("properties")
                     || m.contains_key("additionalProperties")
                     || m.contains_key("required")
                     || m.contains_key("items");
+                let has_raw_only_key = m.keys().any(|k| RAW_ONLY_KEYS.contains(&k.as_str()));
+                let looks_like_compact_object = !has_raw_only_key
+                    && !m.is_empty()
+                    && m.values().all(|v| match v {
+                        Value::String(s) => matches!(
+                            s.as_str(),
+                            "string" | "integer" | "decimal" | "number" | "boolean" | "object" | "array" | "list" | "null"
+                        ),
+                        Value::Array(_) | Value::Object(_) => true,
+                        _ => false,
+                    });
                 let is_raw = m.contains_key("type")
                     && !is_schema_obj
-                    && m.keys().all(|k| RAW_KEYS.contains(&k.as_str()));
+                    && (m.keys().all(|k| RAW_KEYS.contains(&k.as_str())) || !looks_like_compact_object);
                 if is_raw {
                     let r = Raw::deserialize(Value::Object(m))
                         .map_err(serde::de::Error::custom)?;
@@ -754,8 +767,8 @@ pub fn eval(e: &Expr, env: &dyn Env) -> Result<Value, String> {
             as_bool(eval(a, env)?, "operand of `or`")?
                 || as_bool(eval(b, env)?, "operand of `or`")?,
         ),
-        Expr::Eq(a, b) => Value::Bool(eval(a, env)? == eval(b, env)?),
-        Expr::Ne(a, b) => Value::Bool(eval(a, env)? != eval(b, env)?),
+        Expr::Eq(a, b) => Value::Bool(values_equal(&eval(a, env)?, &eval(b, env)?)),
+        Expr::Ne(a, b) => Value::Bool(!values_equal(&eval(a, env)?, &eval(b, env)?)),
         Expr::Order(a, b, op) => {
             let (a, b) = (eval(a, env)?, eval(b, env)?);
             let order = compare_values(&a, &b)?;
@@ -769,16 +782,36 @@ pub fn eval(e: &Expr, env: &dyn Env) -> Result<Value, String> {
     })
 }
 
+pub fn values_equal(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => {
+            if let (Some(xi), Some(yi)) = (
+                x.as_i64().map(i128::from).or_else(|| x.as_u64().map(i128::from)),
+                y.as_i64().map(i128::from).or_else(|| y.as_u64().map(i128::from)),
+            ) {
+                xi == yi
+            } else {
+                x.as_f64().is_some_and(|xf| y.as_f64() == Some(xf))
+            }
+        }
+        _ => a == b,
+    }
+}
+
 pub fn compare_values(a: &Value, b: &Value) -> Result<std::cmp::Ordering, String> {
     let integer = |v: &Value| {
         v.as_i64()
             .map(i128::from)
             .or_else(|| v.as_u64().map(i128::from))
     };
-    match (a,b) {
-        (Value::String(a),Value::String(b)) => Ok(a.cmp(b)),
+    match (a, b) {
+        (Value::String(a), Value::String(b)) => Ok(a.cmp(b)),
         _ if integer(a).is_some() && integer(b).is_some() => Ok(integer(a).cmp(&integer(b))),
-        (Value::Number(a),Value::Number(b)) if a.is_f64() && b.is_f64() => a.as_f64().unwrap().partial_cmp(&b.as_f64().unwrap()).ok_or("unordered numbers".into()),
+        (Value::Number(a), Value::Number(b)) if a.is_f64() && b.is_f64() => a
+            .as_f64()
+            .unwrap()
+            .partial_cmp(&b.as_f64().unwrap())
+            .ok_or_else(|| "unordered numbers".into()),
         _ => Err("ordering requires two integers, two floating-point numbers, or two strings; no implicit conversion".into()),
     }
 }
@@ -816,52 +849,97 @@ pub fn descend(mut v: Value, path: &[String], full: &[String]) -> Result<Value, 
     Ok(v)
 }
 
+/// Tokenize a template string into literal text and `${ref}` segments.
+/// `$${` escapes a literal `${`.
+enum TemplatePart {
+    Lit(String),
+    Ref(Vec<String>),
+}
+
+fn scan_template(s: &str) -> Result<Vec<TemplatePart>, String> {
+    let mut parts = Vec::new();
+    let mut lit = String::new();
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'$' && bytes.get(i + 1) == Some(&b'$') && bytes.get(i + 2) == Some(&b'{') {
+            lit.push_str("${");
+            i += 3;
+            continue;
+        }
+        if bytes[i] == b'$' && bytes.get(i + 1) == Some(&b'{') {
+            if !lit.is_empty() {
+                parts.push(TemplatePart::Lit(std::mem::take(&mut lit)));
+            }
+            let rest = &s[i + 2..];
+            let end = rest
+                .find('}')
+                .ok_or_else(|| format!("unterminated `${{` in `{s}`"))?;
+            let inner = rest[..end].trim();
+            if inner.is_empty()
+                || !inner
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.'))
+            {
+                return Err(format!(
+                    "`${{{inner}}}` is not a reference such as `${{inputs.count}}`"
+                ));
+            }
+            parts.push(TemplatePart::Ref(
+                inner.split('.').map(String::from).collect(),
+            ));
+            i += 2 + end + 1;
+            continue;
+        }
+        let ch = s[i..].chars().next().unwrap();
+        lit.push(ch);
+        i += ch.len_utf8();
+    }
+    if !lit.is_empty() {
+        parts.push(TemplatePart::Lit(lit));
+    }
+    Ok(parts)
+}
+
+fn single_template_ref(parts: &[TemplatePart]) -> Option<&[String]> {
+    match parts {
+        [TemplatePart::Ref(r)] => Some(r.as_slice()),
+        [TemplatePart::Lit(a), TemplatePart::Ref(r)] if a.trim().is_empty() => Some(r.as_slice()),
+        [TemplatePart::Ref(r), TemplatePart::Lit(b)] if b.trim().is_empty() => Some(r.as_slice()),
+        [TemplatePart::Lit(a), TemplatePart::Ref(r), TemplatePart::Lit(b)]
+            if a.trim().is_empty() && b.trim().is_empty() =>
+        {
+            Some(r.as_slice())
+        }
+        _ => None,
+    }
+}
+
 /// Find the `${...}` references in a template string.
 pub fn template_refs(s: &str) -> Result<Vec<Vec<String>>, String> {
-    let mut out = Vec::new();
-    let mut rest = s;
-    while let Some(start) = rest.find("${") {
-        let after = &rest[start + 2..];
-        let end = after
-            .find('}')
-            .ok_or_else(|| format!("unterminated `${{` in `{s}`"))?;
-        let inner = after[..end].trim();
-        if inner.is_empty()
-            || !inner
-                .chars()
-                .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.'))
-        {
-            return Err(format!(
-                "`${{{inner}}}` is not a reference such as `${{inputs.count}}`"
-            ));
-        }
-        out.push(inner.split('.').map(String::from).collect());
-        rest = &after[end + 1..];
-    }
-    Ok(out)
+    Ok(scan_template(s)?
+        .into_iter()
+        .filter_map(|p| match p {
+            TemplatePart::Ref(r) => Some(r),
+            TemplatePart::Lit(_) => None,
+        })
+        .collect())
 }
 
 /// A string that is exactly one `${ref}` yields the referenced typed value.
 /// Any other string has its references substituted as text.
 pub fn render_template(s: &str, env: &dyn Env) -> Result<Value, String> {
-    let refs = template_refs(s)?;
-    if refs.is_empty() {
-        return Ok(Value::String(s.to_string()));
-    }
-    let t = s.trim();
-    if refs.len() == 1 && t.starts_with("${") && t.ends_with('}') {
-        return env.lookup(&refs[0]);
+    let parts = scan_template(s)?;
+    if let Some(r) = single_template_ref(&parts) {
+        return env.lookup(r);
     }
     let mut out = String::new();
-    let mut rest = s;
-    for r in refs {
-        let start = rest.find("${").unwrap();
-        let end = rest[start..].find('}').unwrap() + start;
-        out.push_str(&rest[..start]);
-        out.push_str(&plain_string(&env.lookup(&r)?));
-        rest = &rest[end + 1..];
+    for p in parts {
+        match p {
+            TemplatePart::Lit(t) => out.push_str(&t),
+            TemplatePart::Ref(r) => out.push_str(&plain_string(&env.lookup(&r)?)),
+        }
     }
-    out.push_str(rest);
     Ok(Value::String(out))
 }
 
@@ -900,7 +978,13 @@ fn coerce(name: &str, decl: &InputDecl, raw: &Value) -> Result<Value, String> {
         ("integer", Value::Number(n)) if n.is_i64() || n.is_u64() => raw.clone(),
         ("integer", Value::String(s)) => json!(s.parse::<i64>().map_err(|_| bad("an integer"))?),
         ("integer", _) => return Err(bad("an integer")),
-        ("decimal", Value::Number(_)) => raw.clone(),
+        ("decimal", Value::Number(n)) => {
+            let f = n.as_f64().ok_or_else(|| bad("a finite decimal"))?;
+            if !f.is_finite() {
+                return Err(bad("a finite decimal"));
+            }
+            json!(f)
+        }
         ("decimal", Value::String(s)) => {
             let n = s.parse::<f64>().map_err(|_| bad("a finite decimal"))?;
             if !n.is_finite() {
@@ -1289,7 +1373,7 @@ fn normalize_template_value(v: &mut Value) {
     }
 }
 
-fn normalize_expr_refs(src: &str) -> String {
+fn normalize_expr_refs(src: &str) -> Result<String, String> {
     let chars: Vec<char> = src.chars().collect();
     let mut out = String::with_capacity(src.len());
     let mut i = 0;
@@ -1320,6 +1404,11 @@ fn normalize_expr_refs(src: &str) -> String {
                 let inner: String = chars[start..end].iter().collect();
                 let trimmed = inner.trim();
                 if !trimmed.is_empty() {
+                    if !is_bare_ref(trimmed) {
+                        return Err(format!(
+                            "`${{{trimmed}}}` in a condition must be a single reference; use parentheses for grouping"
+                        ));
+                    }
                     out.push_str(&normalize_ref(trimmed));
                     i = end + 1;
                     continue;
@@ -1345,7 +1434,7 @@ fn normalize_expr_refs(src: &str) -> String {
             i += 1;
         }
     }
-    out
+    Ok(out)
 }
 
 fn data_assert_step(id: String, msg: String) -> Step {
@@ -1405,6 +1494,7 @@ fn normalize_steps(
     steps: &mut [Step],
     defs: &BTreeMap<String, Value>,
     data_tools: &mut std::collections::BTreeSet<String>,
+    desugared_assert: &mut bool,
     seq: &mut usize,
 ) -> Result<(), String> {
     for (idx, s) in steps.iter_mut().enumerate() {
@@ -1423,10 +1513,17 @@ fn normalize_steps(
                 || s.steps.is_some()
                 || s.then.is_some()
                 || s.otherwise.is_some()
+                || s.retry.is_some()
+                || s.fallback.is_some()
+                || s.parallel.is_some()
+                || s.on_failure.is_some()
+                || s.version.is_some()
+                || s.hash.is_some()
             {
                 return Err("`fail` step cannot be combined with other step kinds or modifiers".into());
             }
             *seq += 1;
+            *desugared_assert = true;
             let id = s.id.take().unwrap_or_else(|| format!("_fail_{seq}"));
             let failed = data_assert_step(id, msg);
             s.id = failed.id;
@@ -1448,12 +1545,13 @@ fn normalize_steps(
                 return Err("`assert` step cannot be combined with other step kinds or modifiers".into());
             }
             *seq += 1;
+            *desugared_assert = true;
             let inner_id = format!("_assert_{seq}");
             let msg = s
                 .message
                 .take()
                 .unwrap_or_else(|| format!("assertion failed: {cond}"));
-            let norm_cond = normalize_expr_refs(&cond);
+            let norm_cond = normalize_expr_refs(&cond)?;
             s.cond = Some(format!("not ({norm_cond})"));
             s.then = Some(vec![data_assert_step(inner_id, msg)]);
         } else if s.message.is_some() {
@@ -1487,7 +1585,7 @@ fn normalize_steps(
             if op == "data.filter" {
                 if let Some(args) = &mut s.arguments {
                     if let Some(Value::String(pred)) = args.get_mut("predicate") {
-                        *pred = normalize_expr_refs(pred);
+                        *pred = normalize_expr_refs(pred)?;
                     }
                 }
             }
@@ -1518,11 +1616,11 @@ fn normalize_steps(
                     .map_err(|e| format!("steps.{step_label}.model.schema: {e}"))?;
             }
             if let Some(ab) = &mut m.abstain_if {
-                *ab = normalize_expr_refs(ab);
+                *ab = normalize_expr_refs(ab)?;
             }
         }
         if let Some(cond) = &mut s.cond {
-            *cond = normalize_expr_refs(cond);
+            *cond = normalize_expr_refs(cond)?;
         }
         if let Some(each) = &mut s.each {
             if let Some((var, rhs)) = each.split_once(" in ") {
@@ -1538,7 +1636,7 @@ fn normalize_steps(
         .into_iter()
         .flatten()
         {
-            normalize_steps(inner, defs, data_tools, seq)?;
+            normalize_steps(inner, defs, data_tools, desugared_assert, seq)?;
         }
     }
     Ok(())
@@ -1578,8 +1676,9 @@ pub fn normalize(def: &mut Ritual) -> Result<(), String> {
         normalize_template_value(v);
     }
     let mut data_tools = std::collections::BTreeSet::new();
+    let mut desugared_assert = false;
     let mut seq = 0;
-    normalize_steps(&mut def.steps, &def.defs, &mut data_tools, &mut seq)?;
+    normalize_steps(&mut def.steps, &def.defs, &mut data_tools, &mut desugared_assert, &mut seq)?;
 
     let mut from_requires: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for req in &def.requires {
@@ -1601,8 +1700,56 @@ pub fn normalize(def: &mut Ritual) -> Result<(), String> {
                 version: None,
             },
         );
+    } else if desugared_assert {
+        let entry = def.reagents.entry("data".into()).or_insert(ReagentDecl {
+            select: Vec::new(),
+            version: None,
+        });
+        if !entry.select.iter().any(|t| t == "assert") {
+            entry.select.push("assert".into());
+        }
     }
     Ok(())
+}
+
+/// Reject duplicate map keys anywhere in a YAML or JSON document before
+/// deserializing into `BTreeMap`/`Map` fields.
+struct NoDupKeys;
+
+impl<'de> serde::de::DeserializeSeed<'de> for NoDupKeys {
+    type Value = ();
+    fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
+        d.deserialize_any(NoDupKeys)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for NoDupKeys {
+    type Value = ();
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("any YAML or JSON value")
+    }
+    fn visit_bool<E>(self, _: bool) -> Result<(), E> { Ok(()) }
+    fn visit_i64<E>(self, _: i64) -> Result<(), E> { Ok(()) }
+    fn visit_u64<E>(self, _: u64) -> Result<(), E> { Ok(()) }
+    fn visit_f64<E>(self, _: f64) -> Result<(), E> { Ok(()) }
+    fn visit_str<E>(self, _: &str) -> Result<(), E> { Ok(()) }
+    fn visit_bytes<E>(self, _: &[u8]) -> Result<(), E> { Ok(()) }
+    fn visit_none<E>(self) -> Result<(), E> { Ok(()) }
+    fn visit_unit<E>(self) -> Result<(), E> { Ok(()) }
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
+        while seq.next_element_seed(NoDupKeys)?.is_some() {}
+        Ok(())
+    }
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+        let mut seen = std::collections::HashSet::<String>::new();
+        while let Some(k) = map.next_key::<String>()? {
+            if !seen.insert(k.clone()) {
+                return Err(serde::de::Error::custom(format!("duplicate key `{k}`")));
+            }
+            map.next_value_seed(NoDupKeys)?;
+        }
+        Ok(())
+    }
 }
 
 /// Format a `serde_yaml::Error` with line and column context when available.
@@ -1614,6 +1761,9 @@ pub fn format_yaml_error(e: &serde_yaml::Error) -> String {
 }
 
 pub fn parse_file(text: &str) -> Result<Ritual, String> {
+    use serde::de::DeserializeSeed;
+    let de = serde_yaml::Deserializer::from_str(text);
+    NoDupKeys.deserialize(de).map_err(|e| format_yaml_error(&e))?;
     let mut def: Ritual = serde_yaml::from_str(text).map_err(|e| format_yaml_error(&e))?;
     normalize(&mut def)?;
     Ok(def)
@@ -1622,14 +1772,26 @@ pub fn parse_file(text: &str) -> Result<Ritual, String> {
 /// JSON is parsed strictly as JSON; builders are never executed here.
 pub fn parse_definition(path: &Path, text: &str) -> Result<Ritual, String> {
     let mut def: Ritual = match path.extension().and_then(|s| s.to_str()) {
-        Some("json") => serde_json::from_str(text).map_err(|e| {
-            format!(
-                "{}: line {}, column {}: invalid JSON definition: {e}",
-                path.display(),
-                e.line(),
-                e.column()
-            )
-        })?,
+        Some("json") => {
+            use serde::de::DeserializeSeed;
+            let mut de = serde_json::Deserializer::from_str(text);
+            NoDupKeys.deserialize(&mut de).map_err(|e| {
+                format!(
+                    "{}: line {}, column {}: invalid JSON definition: {e}",
+                    path.display(),
+                    e.line(),
+                    e.column()
+                )
+            })?;
+            serde_json::from_str(text).map_err(|e| {
+                format!(
+                    "{}: line {}, column {}: invalid JSON definition: {e}",
+                    path.display(),
+                    e.line(),
+                    e.column()
+                )
+            })?
+        }
         Some("py") => {
             return Err("Python builders are not executable ritual inputs. Run a trusted builder explicitly with Python, then compile its emitted .json definition.".into());
         }
@@ -1662,7 +1824,7 @@ fn pin_steps(steps: &mut [Step], resolve: Resolver) -> Result<(), String> {
             s.version = Some(ver);
             s.hash = Some(hash);
         }
-        for inner in [&mut s.steps, &mut s.then, &mut s.otherwise]
+        for inner in [&mut s.steps, &mut s.then, &mut s.otherwise, &mut s.fallback]
             .into_iter()
             .flatten()
         {
@@ -2350,15 +2512,37 @@ impl V<'_> {
                     match step_ty {
                         Some(out_ty) => match path.get(2).map(String::as_str) {
                             Some("output") => self.descend_type(out_ty, &path[3..], path, at),
-                            Some("status" | "kind") => {
+                            Some(prop @ ("status" | "kind")) => {
+                                if let Ty::Obj { fields, .. } = &out_ty {
+                                    if fields.contains_key(prop) {
+                                        self.errors.push(format!(
+                                            "{at}: `{shown}` is ambiguous because step `{n}` outputs a field named `{prop}`; use `steps.{n}.output.{prop}` for the output field"
+                                        ));
+                                    }
+                                }
                                 self.descend_type(Ty::Str, &path[3..], path, at)
                             }
                             Some("counts") => {
+                                if !matches!(out_ty, Ty::List(_) | Ty::Any) {
+                                    self.errors.push(format!(
+                                        "{at}: `{shown}`: step `{n}` is not an `each` step and has no `counts`"
+                                    ));
+                                    return Ty::Any;
+                                }
                                 let counts_ty = closed_obj([
                                     ("returned", Ty::Int),
                                     ("abstained", Ty::Int),
                                     ("failed", Ty::Int),
+                                    ("invalid", Ty::Int),
+                                    ("denied", Ty::Int),
+                                    ("exhausted", Ty::Int),
+                                    ("cancelled", Ty::Int),
+                                    ("unverified", Ty::Int),
+                                    ("interrupted", Ty::Int),
                                     ("remaining", Ty::Int),
+                                    ("held", Ty::Int),
+                                    ("applied", Ty::Int),
+                                    ("simulated", Ty::Int),
                                 ]);
                                 self.descend_type(counts_ty, &path[3..], path, at)
                             }
@@ -2422,15 +2606,15 @@ impl V<'_> {
                     Ty::Num
                 }
             }
-            Value::String(s) => match template_refs(s) {
-                Ok(refs) if refs.is_empty() => Ty::Str,
-                Ok(refs) => {
-                    let t = s.trim();
-                    if refs.len() == 1 && t.starts_with("${") && t.ends_with('}') {
-                        self.resolve_ref(&refs[0], at, None)
+            Value::String(s) => match scan_template(s) {
+                Ok(parts) => {
+                    if let Some(r) = single_template_ref(&parts) {
+                        self.resolve_ref(r, at, None)
                     } else {
-                        for r in &refs {
-                            self.resolve_ref(r, at, None);
+                        for p in &parts {
+                            if let TemplatePart::Ref(r) = p {
+                                self.resolve_ref(r, at, None);
+                            }
                         }
                         Ty::Str
                     }
@@ -2741,7 +2925,9 @@ impl V<'_> {
         if op == "data.filter" {
             if let Some(pred) = args.get("predicate").and_then(Value::as_str) {
                 self.vars.push(("item".into(), elem_ty.clone()));
+                self.vars.push(("index".into(), Ty::Int));
                 self.check_cond(pred, &format!("step {at} predicate"), None);
+                self.vars.pop();
                 self.vars.pop();
             }
         }
@@ -2761,6 +2947,7 @@ impl V<'_> {
                     let inner_op = format!("data.{inner}");
                     let inner_schema = crate::reagent::input_schema(&inner_op);
                     self.vars.push(("item".into(), elem_ty));
+                    self.vars.push(("index".into(), Ty::Int));
                     if op == "data.fold" {
                         let init_ty = arg_types.get("initial").cloned().unwrap_or(Ty::Any);
                         self.vars.push(("acc".into(), init_ty));
@@ -2784,6 +2971,7 @@ impl V<'_> {
                     if op == "data.fold" {
                         self.vars.pop();
                     }
+                    self.vars.pop();
                     self.vars.pop();
                 }
                 notes.push(format!("pure collection body: data.{inner}; each item consumes item and tool-call essence"));
@@ -3144,15 +3332,27 @@ impl V<'_> {
         self.vars.push((var, item_ty));
         self.steps(body, at);
         self.vars.pop();
-        let body_outputs = self.ids.pop().unwrap_or_default();
-        let steps_status = body_outputs
+        let body_all = self.ids.pop().unwrap_or_default();
+        let steps_status = body_all
             .keys()
             .map(|k| (k.clone(), Ty::Str))
+            .collect();
+        // Runtime `BatchItem.outputs` includes only steps whose kind produces a
+        // result (not nested `each` steps).
+        let nested_each_ids: std::collections::HashSet<&str> = body
+            .iter()
+            .filter(|s| s.each.is_some())
+            .filter_map(|s| s.id.as_deref())
+            .collect();
+        let body_outputs = body_all
+            .into_iter()
+            .filter(|(k, _)| !nested_each_ids.contains(k.as_str()))
             .collect();
         Ty::List(Box::new(closed_obj([
             ("item", Ty::Str),
             ("status", Ty::Str),
             ("error", nullable(Ty::Str)),
+            ("interrupted", Ty::Bool),
             (
                 "outputs",
                 Ty::Obj {
@@ -3220,6 +3420,15 @@ fn validate_inner(
         ));
     }
     for (name, d) in &def.inputs {
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            v.errors.push(format!(
+                "inputs.{name}: input name `{name}` must use letters, digits, `-` or `_`"
+            ));
+        }
         if !matches!(
             d.ty.as_str(),
             "integer" | "decimal" | "boolean" | "string" | "list" | "array" | "object"
@@ -3229,6 +3438,19 @@ fn validate_inner(
                 d.ty
             ));
         }
+        if (d.min.is_some() || d.max.is_some()) && !matches!(d.ty.as_str(), "integer" | "decimal") {
+            v.errors.push(format!(
+                "inputs.{name}: `min`/`max` only apply to integer or decimal inputs, not `{}`",
+                d.ty
+            ));
+        }
+        if let (Some(lo), Some(hi)) = (d.min, d.max) {
+            if lo > hi {
+                v.errors.push(format!(
+                    "inputs.{name}: `min` ({lo}) exceeds `max` ({hi})"
+                ));
+            }
+        }
         if d.user_only && d.default.is_none() {
             v.errors.push(format!(
                 "inputs.{name}.user_only: input `{name}`: `user_only` needs a default for agents to run with"
@@ -3237,6 +3459,11 @@ fn validate_inner(
         if let Some(schema) = &d.schema {
             if let Err(e) = crate::schema::validate(schema) {
                 v.errors.push(format!("inputs.{name}.schema: {e}"));
+            }
+        }
+        if let Some(def_val) = &d.default {
+            if let Err(e) = coerce(name, d, def_val) {
+                v.errors.push(format!("inputs.{name}.default: {e}"));
             }
         }
     }
@@ -3400,7 +3627,7 @@ pub fn model_sites(def: &Ritual, resolve: Resolver, invocation: Option<&str>) ->
                     }
                 }
             }
-            for body in [&s.steps, &s.then, &s.otherwise].into_iter().flatten() {
+            for body in [&s.steps, &s.then, &s.otherwise, &s.fallback].into_iter().flatten() {
                 walk(body, def, resolve, invocation, depth, out);
             }
         }
@@ -4338,5 +4565,79 @@ return:
             errs.iter().any(|e| e.contains("inputs.flag.user_only:")),
             "{errs:?}"
         );
+    }
+
+    #[test]
+    fn batch_d_language_fixes_hold() {
+        // D1: `${...}` with compound expression in condition is rejected; exact
+        // single-ref does not drop trailing text; `$${` escapes literal `${`.
+        assert!(parse_file(
+            "ritual: r\ninputs: {a: boolean, b: boolean}\nsteps:\n  - if: \"not ${inputs.a or inputs.b}\"\n    then: [{id: x, operation: data.trim, arguments: {text: ok}}]\n"
+        ).is_err());
+        struct MapEnv(Value);
+        impl Env for MapEnv {
+            fn lookup(&self, path: &[String]) -> Result<Value, String> {
+                descend(self.0.clone(), path, path)
+            }
+        }
+        let env = MapEnv(json!({"inputs": {"n": 7}}));
+        assert_eq!(render_template("${inputs.n} items}", &env).unwrap(), json!("7 items}"));
+        assert_eq!(render_template("literal $${HOME}", &env).unwrap(), json!("literal ${HOME}"));
+
+        // D2: duplicate keys rejected in both YAML and JSON.
+        assert!(parse_file("ritual: r\ninputs: {a: string, a: integer}\nsteps: [{id: x, model: {prompt: hi}}]\n").is_err());
+        let dup_json = r#"{"ritual":"r","inputs":{"a":{"type":"string"},"a":{"type":"integer"}},"steps":[{"id":"x","model":{"prompt":"hi"}}]}"#;
+        assert!(parse_definition(Path::new("dup.json"), dup_json).is_err());
+
+        // D3: unknown field `description` on a scalar input errors instead of morphing to object.
+        assert!(parse_file("ritual: r\ninputs:\n  name: {type: string, default: Bob, description: Who}\nsteps: [{id: x, model: {prompt: hi}}]\n").is_err());
+
+        // D4: decimal input coerces integer default/arg to f64 consistently.
+        let dec = parse_file("ritual: r\ninputs: {price: {type: decimal, default: 3}}\nsteps: [{id: x, model: {prompt: hi}}]\n").unwrap();
+        let resolved = resolve_inputs(&dec, &Map::new()).unwrap();
+        assert_eq!(resolved["price"], json!(3.0));
+        assert!(eval_condition("inputs.price == 3", &MapEnv(json!({"inputs": resolved}))).unwrap());
+
+        // D5: collection `index` is typed as Int and accepted; `counts` rejected on non-each.
+        let idx_def = parse_file(
+            "ritual: r\nreagents: {data: {select: [filter]}}\nsteps:\n  - id: f\n    operation: data.filter\n    arguments: {values: [1, 2, 3], predicate: \"index > 0\"}\nreturn: {v: \"${steps.f.output}\"}\n"
+        ).unwrap();
+        let none = |_: &str, _: Option<u32>| None;
+        assert!(validate(&idx_def, &none, &crate::reagent::tool, 3).is_ok());
+        let bad_counts = parse_file(
+            "ritual: r\nreagents: {data: {select: [trim]}}\nsteps:\n  - id: t\n    operation: data.trim\n    arguments: {text: hi}\nreturn: {c: \"${steps.t.counts.returned}\"}\n"
+        ).unwrap();
+        assert!(validate(&bad_counts, &none, &crate::reagent::tool, 3).is_err());
+
+        // D7: ambiguous `steps.<id>.status` when output also has field `status` is rejected.
+        let ambig = parse_file(
+            "ritual: r\nsteps:\n  - id: ticket\n    model:\n      prompt: hi\n      schema: {status: [open, closed]}\n  - if: steps.ticket.status == 'open'\n    then: [{id: a, operation: data.trim, arguments: {text: ok}}]\n"
+        ).unwrap();
+        assert!(validate(&ambig, &none, &crate::reagent::tool, 3).is_err());
+
+        // D8: exponential `$ref` expansion hits node budget quickly.
+        let mut defs = Map::new();
+        for i in 0..6 {
+            let mut props = Map::new();
+            for j in 0..10 {
+                props.insert(format!("p{j}"), json!({"$ref": format!("#/$defs/d{}", i + 1)}));
+            }
+            defs.insert(format!("d{i}"), json!({"type": "object", "properties": props}));
+        }
+        defs.insert("d6".into(), json!({"type": "string"}));
+        let bomb = json!({"$defs": defs, "$ref": "#/$defs/d0"});
+        assert!(crate::schema::inline_refs(&bomb).unwrap_err().contains("exceeds"));
+
+        // D10: `fail:` rejects `retry`/`fallback`; `assert:` works with explicit `reagents.data`;
+        // bad input defaults fail validation.
+        assert!(parse_file("ritual: r\nsteps:\n  - fail: stop\n    retry: 2\n").is_err());
+        let asrt = parse_file(
+            "ritual: r\nreagents: {data: {select: [trim]}}\nsteps:\n  - id: t\n    operation: data.trim\n    arguments: {text: hi}\n  - assert: \"steps.t.output == 'hi'\"\nreturn: {v: \"${steps.t.output}\"}\n"
+        ).unwrap();
+        assert!(validate(&asrt, &none, &crate::reagent::tool, 3).is_ok());
+        let bad_def = parse_file(
+            "ritual: r\ninputs: {n: {type: integer, default: abc}}\nsteps: [{id: x, model: {prompt: hi}}]\n"
+        ).unwrap();
+        assert!(validate(&bad_def, &none, &crate::reagent::tool, 3).is_err());
     }
 }

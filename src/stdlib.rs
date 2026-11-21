@@ -154,8 +154,8 @@ pub fn call(name: &str, a: &Value) -> Result<Value, String> {
         "compare" => {
             let (l, r) = (&a["left"], &a["right"]);
             json!(match s("operator") {
-                "eq" => l == r,
-                "ne" => l != r,
+                "eq" => ritual::values_equal(l, r),
+                "ne" => !ritual::values_equal(l, r),
                 op => {
                     let c = ritual::compare_values(l, r)?;
                     match op {
