@@ -219,17 +219,81 @@ pub fn target_digest(args: &Value) -> Result<Option<String>, Fail> {
     }
 }
 
-fn verify_expected_digest(args: &Value, path: &str, expected: Option<&str>) -> Result<(), Fail> {
+fn fstat_fd(f: &File, leaf: &str) -> Result<libc::stat, Fail> {
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(f.as_raw_fd(), &mut st) } < 0 {
+        return Err(Fail::Failed(format!(
+            "cannot stat `{leaf}`: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    Ok(st)
+}
+
+fn check_regular_single_link(f: &File, leaf: &str) -> Result<(), Fail> {
+    let st = fstat_fd(f, leaf)?;
+    if (st.st_mode & libc::S_IFMT) != libc::S_IFREG {
+        return Err(Fail::Denied(format!(
+            "cannot write to `{leaf}`: target is not a regular file"
+        )));
+    }
+    if st.st_nlink > 1 {
+        return Err(Fail::Denied(format!(
+            "cannot write to `{leaf}`: hard links are forbidden"
+        )));
+    }
+    Ok(())
+}
+
+fn digest_of_open_parent(parent: &File, leaf: &str) -> Result<String, Fail> {
+    match stat_leaf(parent, leaf)? {
+        None => Ok("missing".into()),
+        Some((kind, _)) if kind != "file" => Err(Fail::Denied(format!(
+            "target `{leaf}` is a {kind}, not a regular file"
+        ))),
+        Some(_) => {
+            use sha2::{Digest, Sha256};
+            let mut f = open_at(parent, leaf, false)?;
+            check_regular_single_link(&f, leaf)?;
+            let mut hasher = Sha256::new();
+            let mut chunk = [0; 65536];
+            loop {
+                let n = f.read(&mut chunk).map_err(|e| Fail::Failed(e.to_string()))?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&chunk[..n]);
+            }
+            Ok(format!("sha256:{}", crate::util::hex(hasher.finalize().as_slice())))
+        }
+    }
+}
+
+fn verify_expected_digest_in(
+    parent: &File,
+    leaf: &str,
+    path: &str,
+    expected: Option<&str>,
+) -> Result<(), Fail> {
     if let Some(exp) = expected {
-        let current = target_digest(args)?.unwrap_or_default();
+        let current = digest_of_open_parent(parent, leaf)?;
         if current != exp {
             return Err(Fail::Failed(format!(
                 "file `{path}` changed since held (expected {exp}, found {current})"
             )));
         }
+    } else if let Some((kind, _)) = stat_leaf(parent, leaf)? {
+        if kind != "file" {
+            return Err(Fail::Denied(format!(
+                "cannot write to `{leaf}`: target is a {kind}"
+            )));
+        }
+        let f = open_at(parent, leaf, false)?;
+        check_regular_single_link(&f, leaf)?;
     }
     Ok(())
 }
+
 fn open_write_leaf(parent: &File, leaf: &str, append: bool) -> Result<File, Fail> {
     if let Some((kind, _)) = stat_leaf(parent, leaf)? {
         if kind != "file" {
@@ -243,6 +307,7 @@ fn open_write_leaf(parent: &File, leaf: &str, append: bool) -> Result<File, Fail
         | libc::O_CREAT
         | libc::O_CLOEXEC
         | libc::O_NOFOLLOW
+        | libc::O_NONBLOCK
         | if append { libc::O_APPEND } else { libc::O_TRUNC };
     let fd = unsafe { libc::openat(parent.as_raw_fd(), cname.as_ptr(), flags, 0o600) };
     if fd < 0 {
@@ -251,7 +316,44 @@ fn open_write_leaf(parent: &File, leaf: &str, append: bool) -> Result<File, Fail
             std::io::Error::last_os_error()
         )));
     }
-    Ok(unsafe { File::from_raw_fd(fd) })
+    let f = unsafe { File::from_raw_fd(fd) };
+    check_regular_single_link(&f, leaf)?;
+    Ok(f)
+}
+
+fn write_text_atomic(parent: &File, leaf: &str, text: &[u8]) -> Result<(), Fail> {
+    let tmp_name = format!(".summonr-tmp-{}", crate::util::new_id("w"));
+    let ctmp = CString::new(tmp_name.as_str()).map_err(|_| Fail::Invalid("NUL in path".into()))?;
+    let cleaf = CString::new(leaf).map_err(|_| Fail::Invalid("NUL in path".into()))?;
+    let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW;
+    let fd = unsafe { libc::openat(parent.as_raw_fd(), ctmp.as_ptr(), flags, 0o600) };
+    if fd < 0 {
+        return Err(Fail::Failed(format!(
+            "cannot create temporary file for `{leaf}`: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    let mut tmp = unsafe { File::from_raw_fd(fd) };
+    if let Err(e) = tmp.write_all(text).and_then(|_| tmp.sync_all()) {
+        drop(tmp);
+        unsafe { libc::unlinkat(parent.as_raw_fd(), ctmp.as_ptr(), 0) };
+        return Err(Fail::Failed(format!("failed writing `{leaf}`: {e}")));
+    }
+    drop(tmp);
+    let rc = unsafe {
+        libc::renameat(
+            parent.as_raw_fd(),
+            ctmp.as_ptr(),
+            parent.as_raw_fd(),
+            cleaf.as_ptr(),
+        )
+    };
+    if rc < 0 {
+        let err = std::io::Error::last_os_error();
+        unsafe { libc::unlinkat(parent.as_raw_fd(), ctmp.as_ptr(), 0) };
+        return Err(Fail::Failed(format!("failed replacing `{leaf}`: {err}")));
+    }
+    Ok(())
 }
 fn root_and_path(args: &Value) -> Result<(&str, &str), Fail> {
     let text = |key: &str| {
@@ -380,7 +482,6 @@ impl Reagent for Files {
                 }
             }
             "write_text" => {
-                verify_expected_digest(args, path, auth.expected_digest)?;
                 let text = args["text"]
                     .as_str()
                     .ok_or_else(|| Fail::Invalid("write_text needs a string `text`".into()))?;
@@ -388,10 +489,8 @@ impl Reagent for Files {
                     return Err(Fail::Invalid("write_text exceeds 1 MiB".into()));
                 }
                 let (parent, leaf) = open_parent_and_leaf(root, path)?;
-                let mut f = open_write_leaf(&parent, leaf, false)?;
-                f.write_all(text.as_bytes())
-                    .and_then(|_| f.sync_all())
-                    .map_err(|e| Fail::Failed(format!("failed writing `{path}`: {e}")))?;
+                verify_expected_digest_in(&parent, leaf, path, auth.expected_digest)?;
+                write_text_atomic(&parent, leaf, text.as_bytes())?;
                 let hash = crate::util::sha256_hex(text.as_bytes());
                 Ok(json!({
                     "root": root,
@@ -403,13 +502,13 @@ impl Reagent for Files {
                 }))
             }
             "append_jsonl" => {
-                verify_expected_digest(args, path, auth.expected_digest)?;
                 let line = format!("{}\n", crate::util::canonical_json(&args["record"]));
                 if line.len() > 1048576 {
                     return Err(Fail::Invalid("append_jsonl record exceeds 1 MiB".into()));
                 }
                 let rec_hash = crate::util::sha256_hex(line.trim_end_matches('\n').as_bytes());
                 let (parent, leaf) = open_parent_and_leaf(root, path)?;
+                verify_expected_digest_in(&parent, leaf, path, auth.expected_digest)?;
                 let mut f = open_write_leaf(&parent, leaf, true)?;
                 f.write_all(line.as_bytes())
                     .and_then(|_| f.sync_all())
@@ -429,8 +528,8 @@ impl Reagent for Files {
                 }))
             }
             "delete" => {
-                verify_expected_digest(args, path, auth.expected_digest)?;
                 let (parent, leaf) = open_parent_and_leaf(root, path)?;
+                verify_expected_digest_in(&parent, leaf, path, auth.expected_digest)?;
                 match stat_leaf(&parent, leaf)? {
                     None => {
                         return Err(Fail::Failed(format!(
@@ -592,6 +691,19 @@ mod tests {
         assert!(call_all("write_text", json!({"root":path,"path":"link","text":"nope"})).is_err());
         assert!(call_all("write_text", json!({"root":path,"path":"dir-link/x.txt","text":"nope"})).is_err());
         assert!(call_all("stat", json!({"root":path,"path":"link"})).is_err());
+        // Writing to a hard-linked file is refused
+        let outside = std::env::temp_dir().join(format!("summonr-hl-{}", std::process::id()));
+        std::fs::write(&outside, "secret").unwrap();
+        std::fs::hard_link(&outside, root.join("sub/hardlink.txt")).unwrap();
+        assert!(matches!(
+            call_all("write_text", json!({"root":path,"path":"sub/hardlink.txt","text":"nope"})),
+            Err(Fail::Denied(_))
+        ));
+        assert!(matches!(
+            call_all("append_jsonl", json!({"root":path,"path":"sub/hardlink.txt","record":{"x":1}})),
+            Err(Fail::Denied(_))
+        ));
+        let _ = std::fs::remove_file(&outside);
         // Append JSONL lines deterministically
         call_all("append_jsonl", json!({"root":path,"path":"sub/log.jsonl","record":{"b":2,"a":1}})).unwrap();
         call_all("append_jsonl", json!({"root":path,"path":"sub/log.jsonl","record":{"b":4,"a":3}})).unwrap();

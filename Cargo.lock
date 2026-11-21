@@ -1078,6 +1078,7 @@ dependencies = [
  "libc",
  "rand_core",
  "ratatui",
+ "ring",
  "rusqlite",
  "rustls",
  "rustls-pki-types",

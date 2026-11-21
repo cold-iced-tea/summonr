@@ -16,6 +16,12 @@ struct ChildGuard(Child);
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
+        let pgid = self.0.id() as i32;
+        if pgid > 0 {
+            unsafe {
+                libc::kill(-pgid, libc::SIGKILL);
+            }
+        }
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
@@ -95,12 +101,14 @@ pub fn call_tool(
         .command
         .split_first()
         .ok_or_else(|| "mcp reagent `command` must not be empty".to_string())?;
+    use std::os::unix::process::CommandExt;
     let mut cmd = Command::new(prog);
     crate::git_reagent::strip_sensitive_env(&mut cmd, root_cfg);
     cmd.args(rest)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::null())
+        .process_group(0);
     if let Some(cwd) = &cfg.cwd {
         cmd.current_dir(cwd);
     }
@@ -353,5 +361,28 @@ return:
         };
         let err = call_tool(&srv, "hang", &json!({}), Some(Duration::from_millis(120)), None).unwrap_err();
         assert!(err.contains("timed out") || err.contains("closed stdout"), "{err}");
+    }
+
+    #[test]
+    fn hung_mcp_server_kills_whole_process_group() {
+        let mut tools = BTreeMap::new();
+        tools.insert(
+            "hang".into(),
+            McpToolConfig {
+                effect: "read".into(),
+                description: None,
+            },
+        );
+        let srv = McpReagentConfig {
+            command: vec!["sh".into(), "-c".into(), "sleep 33.9 & wait".into()],
+            cwd: None,
+            env: BTreeMap::new(),
+            tools,
+        };
+        let err = call_tool(&srv, "hang", &json!({}), Some(Duration::from_millis(200)), None).unwrap_err();
+        assert!(err.contains("timed out") || err.contains("closed stdout"), "{err}");
+        std::thread::sleep(Duration::from_millis(150));
+        let left = Command::new("pgrep").args(["-f", "sleep 33.9"]).output().unwrap();
+        assert!(left.stdout.is_empty(), "grandchild sleep should be killed with the MCP server's process group");
     }
 }

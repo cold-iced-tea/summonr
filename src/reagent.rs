@@ -1193,8 +1193,39 @@ fn mail_call(
                 .map_err(|e| Fail::Failed(format!("cannot open folder `{dest}`: {e}")))?;
             refuse_overwrite(&root, dest, &path)?;
             let target = dir.join(path.file_name().unwrap());
-            std::fs::rename(&path, &target)
-                .map_err(|e| Fail::Failed(format!("cannot move `{id}`: {e}")))?;
+            #[cfg(target_os = "linux")]
+            {
+                use std::ffi::CString;
+                use std::os::unix::ffi::OsStrExt;
+                let src_c = CString::new(path.as_os_str().as_bytes())
+                    .map_err(|_| Fail::Failed("NUL in source path".into()))?;
+                let dst_c = CString::new(target.as_os_str().as_bytes())
+                    .map_err(|_| Fail::Failed("NUL in target path".into()))?;
+                let rc = unsafe {
+                    libc::renameat2(
+                        libc::AT_FDCWD,
+                        src_c.as_ptr(),
+                        libc::AT_FDCWD,
+                        dst_c.as_ptr(),
+                        libc::RENAME_NOREPLACE,
+                    )
+                };
+                if rc != 0 {
+                    let err = std::io::Error::last_os_error();
+                    if err.raw_os_error() == Some(libc::EEXIST) {
+                        return Err(Fail::Failed(format!(
+                            "destination `{dest}` already holds `{}`",
+                            path.file_name().unwrap().to_string_lossy()
+                        )));
+                    }
+                    return Err(Fail::Failed(format!("cannot move `{id}`: {err}")));
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                std::fs::rename(&path, &target)
+                    .map_err(|e| Fail::Failed(format!("cannot move `{id}`: {e}")))?;
+            }
             Ok(json!({"id": id, "from": src, "to": dest, "moved": true}))
         }
         other => Err(Fail::Failed(format!(

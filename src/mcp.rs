@@ -854,28 +854,9 @@ fn respond(stream: &mut impl Write, status: &str, body: &[u8], extra: &str) -> s
 }
 
 fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    let mut k_block = [0u8; 64];
-    if key.len() > 64 {
-        let digest = Sha256::digest(key);
-        k_block[..32].copy_from_slice(&digest);
-    } else {
-        k_block[..key.len()].copy_from_slice(key);
-    }
-    let mut ipad = [0x36u8; 64];
-    let mut opad = [0x5cu8; 64];
-    for i in 0..64 {
-        ipad[i] ^= k_block[i];
-        opad[i] ^= k_block[i];
-    }
-    let mut inner = Sha256::new();
-    inner.update(ipad);
-    inner.update(msg);
-    let inner_hash = inner.finalize();
-    let mut outer = Sha256::new();
-    outer.update(opad);
-    outer.update(inner_hash);
-    outer.finalize().into()
+    let k = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key);
+    let tag = ring::hmac::sign(&k, msg);
+    tag.as_ref().try_into().expect("HMAC-SHA256 is 32 bytes")
 }
 
 fn ct_eq(a: &[u8], b: &[u8]) -> bool {

@@ -175,9 +175,12 @@ impl Core {
                 pinned
             }
             (Some(pinned), None) => pinned,
-            (None, Some(supplied)) => PublicKey::parse(&supplied).map_err(RpcErr::invalid)?,
-            (None, None) => {
-                return Err(RpcErr::invalid("root_key is required (no root.pub configured)"));
+            (None, _) => {
+                return Err(RpcErr::new(
+                    "not_authenticated",
+                    4,
+                    "no pinned config/root.pub; pin the offline root public key before registering root-signed grants",
+                ));
             }
         };
         let familiar_pub = grant

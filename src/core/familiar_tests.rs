@@ -141,6 +141,19 @@ fn register_grant_valid_registers_remote_with_allowed_rituals() {
         now - 1_000,
         Some(now + 60_000),
     );
+    // Without a pinned config/root.pub, a caller-supplied root_key is refused.
+    let unpinned = h
+        .core
+        .familiar_register_grant(json!({
+            "grant": grant,
+            "root_key": root.public().text(),
+        }))
+        .unwrap_err();
+    assert_eq!(unpinned.exit, 4);
+    assert!(unpinned.message.contains("root.pub"), "{}", unpinned.message);
+
+    // Pin config/root.pub, then registration succeeds.
+    std::fs::write(h.core.paths.config.join("root.pub"), format!("{}\n", root.public().text())).unwrap();
     let out = h
         .core
         .familiar_register_grant(json!({
@@ -168,6 +181,23 @@ fn register_grant_rejects_tampered_and_expired_grants() {
     let root = crate::keys::generate();
     let fam = crate::keys::generate();
     let now = crate::util::now_ms();
+    std::fs::write(h.core.paths.config.join("root.pub"), format!("{}\n", root.public().text())).unwrap();
+
+    let future = crate::keys::FamiliarGrant::sign(
+        &root,
+        "future-bot".into(),
+        &fam.public(),
+        vec!["total-receipt".into()],
+        vec![],
+        now + 300_000,
+        Some(now + 600_000),
+    );
+    let err = h
+        .core
+        .familiar_register_grant(json!({"grant": future}))
+        .unwrap_err();
+    assert_eq!(err.exit, 4);
+    assert!(err.message.contains("future"), "{}", err.message);
 
     let mut tampered = crate::keys::FamiliarGrant::sign(
         &root,

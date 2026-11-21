@@ -166,6 +166,9 @@ impl FamiliarGrant {
         if self.root_key_id != root_pub.id() {
             return Err("familiar grant root_key_id does not match root key".into());
         }
+        if self.issued_at_ms > now_ms.saturating_add(120_000) {
+            return Err("familiar grant issued_at_ms is in the future".into());
+        }
         if let Some(exp) = self.expires_at_ms {
             if exp < self.issued_at_ms {
                 return Err("familiar grant expires_at_ms precedes issued_at_ms".into());
@@ -187,26 +190,16 @@ impl FamiliarGrant {
 }
 
 const ENC_PREFIX: &str = "summonr-enc-v1:";
+const ENC_PREFIX_V2: &str = "summonr-enc-v2:";
+const PBKDF2_ITERS: u32 = 600_000;
 
-fn hmac_sha256(key: &[u8; 32], data: &[u8]) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    let mut ipad = [0x36u8; 64];
-    let mut opad = [0x5cu8; 64];
-    for i in 0..32 {
-        ipad[i] ^= key[i];
-        opad[i] ^= key[i];
-    }
-    let mut inner = Sha256::new();
-    inner.update(ipad);
-    inner.update(data);
-    let inner_hash = inner.finalize();
-    let mut outer = Sha256::new();
-    outer.update(opad);
-    outer.update(inner_hash);
-    outer.finalize().into()
+fn hmac_sha256_ring(key: &[u8], data: &[u8]) -> [u8; 32] {
+    let k = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key);
+    let tag = ring::hmac::sign(&k, data);
+    tag.as_ref().try_into().expect("HMAC-SHA256 is 32 bytes")
 }
 
-fn derive_enc_mac(passphrase: &[u8], salt: &[u8; 16]) -> ([u8; 32], [u8; 32]) {
+fn derive_v1_enc_mac(passphrase: &[u8], salt: &[u8; 16]) -> ([u8; 32], [u8; 32]) {
     use sha2::{Digest, Sha256};
     let mut state: [u8; 32] = {
         let mut h = Sha256::new();
@@ -222,12 +215,12 @@ fn derive_enc_mac(passphrase: &[u8], salt: &[u8; 16]) -> ([u8; 32], [u8; 32]) {
         h.update(passphrase);
         state = h.finalize().into();
     }
-    let enc = hmac_sha256(&state, b"enc");
-    let mac = hmac_sha256(&state, b"mac");
+    let enc = hmac_sha256_ring(&state, b"enc");
+    let mac = hmac_sha256_ring(&state, b"mac");
     (enc, mac)
 }
 
-fn xor_keystream(enc_key: &[u8; 32], salt: &[u8; 16], data: &[u8]) -> Vec<u8> {
+fn xor_keystream_v1(enc_key: &[u8; 32], salt: &[u8; 16], data: &[u8]) -> Vec<u8> {
     use sha2::{Digest, Sha256};
     let mut out = Vec::with_capacity(data.len());
     for (block_idx, chunk) in data.chunks(32).enumerate() {
@@ -243,29 +236,70 @@ fn xor_keystream(enc_key: &[u8; 32], salt: &[u8; 16], data: &[u8]) -> Vec<u8> {
     out
 }
 
+fn derive_v2_key(passphrase: &[u8], salt: &[u8; 16]) -> [u8; 32] {
+    let mut key = [0u8; 32];
+    ring::pbkdf2::derive(
+        ring::pbkdf2::PBKDF2_HMAC_SHA256,
+        std::num::NonZeroU32::new(PBKDF2_ITERS).unwrap(),
+        salt,
+        passphrase,
+        &mut key,
+    );
+    key
+}
+
 pub fn encrypt_pem(pem: &[u8], passphrase: &str) -> String {
     use rand_core::RngCore;
+    use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
     let mut salt = [0u8; 16];
+    let mut nonce_bytes = [0u8; 12];
     rand_core::OsRng.fill_bytes(&mut salt);
-    let (enc_key, mac_key) = derive_enc_mac(passphrase.as_bytes(), &salt);
-    let ct = xor_keystream(&enc_key, &salt, pem);
-    let mut mac_input = Vec::with_capacity(16 + ct.len());
-    mac_input.extend_from_slice(&salt);
-    mac_input.extend_from_slice(&ct);
-    let mac = hmac_sha256(&mac_key, &mac_input);
-    let mut blob = Vec::with_capacity(16 + 32 + ct.len());
+    rand_core::OsRng.fill_bytes(&mut nonce_bytes);
+    let key_bytes = derive_v2_key(passphrase.as_bytes(), &salt);
+    let key = LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &key_bytes).expect("32-byte key"));
+    let mut in_out = pem.to_vec();
+    key.seal_in_place_append_tag(
+        Nonce::assume_unique_for_key(nonce_bytes),
+        Aad::from(&salt),
+        &mut in_out,
+    )
+    .expect("AES-256-GCM seal");
+    let mut blob = Vec::with_capacity(16 + 12 + in_out.len());
     blob.extend_from_slice(&salt);
-    blob.extend_from_slice(&mac);
-    blob.extend_from_slice(&ct);
+    blob.extend_from_slice(&nonce_bytes);
+    blob.extend_from_slice(&in_out);
     format!(
-        "{ENC_PREFIX}{}",
+        "{ENC_PREFIX_V2}{}",
         base64::engine::general_purpose::STANDARD.encode(blob)
     )
 }
 
 pub fn decrypt_pem(text: &str, passphrase: &str) -> Result<String, String> {
-    let b64 = text
-        .trim()
+    let trimmed = text.trim();
+    if let Some(b64) = trimmed.strip_prefix(ENC_PREFIX_V2) {
+        use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
+        let blob = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .map_err(|_| "corrupted encrypted key encoding".to_string())?;
+        if blob.len() < 16 + 12 + 16 {
+            return Err("corrupted encrypted key payload".into());
+        }
+        let salt: [u8; 16] = blob[..16].try_into().unwrap();
+        let nonce_bytes: [u8; 12] = blob[16..28].try_into().unwrap();
+        let key_bytes = derive_v2_key(passphrase.as_bytes(), &salt);
+        let key =
+            LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &key_bytes).expect("32-byte key"));
+        let mut buf = blob[28..].to_vec();
+        let pt = key
+            .open_in_place(
+                Nonce::assume_unique_for_key(nonce_bytes),
+                Aad::from(&salt),
+                &mut buf,
+            )
+            .map_err(|_| "wrong passphrase or corrupted encrypted key file".to_string())?;
+        return String::from_utf8(pt.to_vec()).map_err(|_| "decrypted key is not UTF-8".into());
+    }
+    let b64 = trimmed
         .strip_prefix(ENC_PREFIX)
         .ok_or_else(|| "not an encrypted key file".to_string())?;
     let blob = base64::engine::general_purpose::STANDARD
@@ -277,19 +311,15 @@ pub fn decrypt_pem(text: &str, passphrase: &str) -> Result<String, String> {
     let salt: [u8; 16] = blob[..16].try_into().unwrap();
     let mac: [u8; 32] = blob[16..48].try_into().unwrap();
     let ct = &blob[48..];
-    let (enc_key, mac_key) = derive_enc_mac(passphrase.as_bytes(), &salt);
+    let (enc_key, mac_key) = derive_v1_enc_mac(passphrase.as_bytes(), &salt);
     let mut mac_input = Vec::with_capacity(16 + ct.len());
     mac_input.extend_from_slice(&salt);
     mac_input.extend_from_slice(ct);
-    let expected = hmac_sha256(&mac_key, &mac_input);
-    let diff = mac
-        .iter()
-        .zip(expected.iter())
-        .fold(0u8, |acc, (a, b)| acc | (a ^ b));
-    if diff != 0 {
+    let k = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &mac_key);
+    if ring::hmac::verify(&k, &mac_input, &mac).is_err() {
         return Err("wrong passphrase or corrupted encrypted key file".into());
     }
-    let pt = xor_keystream(&enc_key, &salt, ct);
+    let pt = xor_keystream_v1(&enc_key, &salt, ct);
     String::from_utf8(pt).map_err(|_| "decrypted key is not UTF-8".into())
 }
 
@@ -347,7 +377,7 @@ pub fn load_with_passphrase(path: &Path, passphrase: Option<&str>) -> Result<Key
         ));
     }
     let raw = std::fs::read_to_string(path).map_err(|e| format!("cannot read key file {}: {e}", path.display()))?;
-    let pem = if raw.trim_start().starts_with(ENC_PREFIX) {
+    let pem = if raw.trim_start().starts_with(ENC_PREFIX_V2) || raw.trim_start().starts_with(ENC_PREFIX) {
         let p = passphrase.ok_or_else(|| {
             format!(
                 "key file {} is encrypted; set SUMMONR_KEY_PASSPHRASE",
@@ -464,7 +494,7 @@ mod tests {
         let k = generate();
         save_new_with_passphrase(&p, &k, Some("correct horse battery staple")).unwrap();
         let raw = std::fs::read_to_string(&p).unwrap();
-        assert!(raw.starts_with(ENC_PREFIX));
+        assert!(raw.starts_with(ENC_PREFIX_V2));
         assert!(load_with_passphrase(&p, None).is_err());
         assert!(load_with_passphrase(&p, Some("wrong")).is_err());
         let loaded = load_with_passphrase(&p, Some("correct horse battery staple")).unwrap();
