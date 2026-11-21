@@ -409,6 +409,7 @@ impl Core {
                 settings: &s.settings,
                 timeout,
                 max_output_tokens: remaining_tokens,
+                images: &[],
             },
         )
         .map_err(|e| RpcErr::new("backend_failed", 11, e))?;

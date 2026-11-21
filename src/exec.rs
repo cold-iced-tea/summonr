@@ -998,6 +998,7 @@ impl Run {
             settings: &settings,
             timeout,
             max_output_tokens,
+            images: &[],
         };
         let current_cost = if self.meters[0].cost_known.load(Ordering::SeqCst) {
             Some(self.meters[0].cost_microusd.load(Ordering::SeqCst))

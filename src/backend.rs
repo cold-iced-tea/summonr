@@ -10,10 +10,34 @@
 //!   is labeled as a mock everywhere it appears.
 
 use crate::util::ProviderConfig;
+use base64::Engine;
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{OnceLock, RwLock};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
+
+/// One image carried to a vision-capable model.
+#[derive(Clone, Debug)]
+pub struct ImagePart {
+    pub sha256: String,
+    pub mime: String,
+    pub bytes: Vec<u8>,
+}
+
+/// `Inline` sends the bytes; `Placeholder` is the record form (digest only).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ImageMode {
+    Inline,
+    Placeholder,
+}
+
+fn b64(bytes: &[u8]) -> String {
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+fn placeholder(img: &ImagePart) -> Value {
+    json!({"sight": {"sha256": img.sha256, "mime": img.mime, "bytes": img.bytes.len()}})
+}
 
 pub struct ChatReq<'a> {
     pub model: &'a str,
@@ -27,6 +51,8 @@ pub struct ChatReq<'a> {
     /// Prompt tokens are reported afterward, so this is not an exact cap on
     /// combined prompt + generation usage.
     pub max_output_tokens: Option<u64>,
+    /// Images attached to the user turn, sent before the text.
+    pub images: &'a [ImagePart],
 }
 
 pub struct ChatResp {
@@ -195,22 +221,70 @@ pub fn payload(model_id: &str, req: &ChatReq) -> Result<Value, String> {
     let (backend, model) = split_model(model_id)?;
     let (kind, _) = resolve_protocol(backend)?;
     match kind {
-        "ollama" => ollama_payload(model, req),
-        "openai" => openai_payload(model, req),
-        "anthropic" => anthropic_payload(model, req),
-        "mock" => Ok(json!({
-            "backend": "mock",
-            "model": model_id,
-            "system": req.system,
-            "user": req.user
-        })),
+        "ollama" => ollama_payload(model, req, ImageMode::Placeholder),
+        "openai" => openai_payload(model, req, ImageMode::Placeholder),
+        "anthropic" => anthropic_payload(model, req, ImageMode::Placeholder),
+        "mock" => {
+            let mut p = json!({
+                "backend": "mock",
+                "model": model_id,
+                "system": req.system,
+                "user": req.user
+            });
+            if !req.images.is_empty() {
+                p["images"] = json!(req.images.iter().map(|i| &i.sha256).collect::<Vec<_>>());
+            }
+            Ok(p)
+        }
         _ => unreachable!(),
+    }
+}
+
+/// Whether `model_id`'s backend can take images.
+#[allow(dead_code)] // first caller arrives with model-step images Ollama is asked once per
+/// `(url, model)` and must list the `vision` capability.
+pub fn supports_images(base_url: &str, model_id: &str) -> Result<(), String> {
+    let (backend, model) = split_model(model_id)?;
+    let (kind, _) = resolve_protocol(backend)?;
+    if kind != "ollama" {
+        return Ok(());
+    }
+    static CACHE: OnceLock<Mutex<HashMap<(String, String), bool>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = (base_url.to_string(), model.to_string());
+    let known = cache.lock().ok().and_then(|c| c.get(&key).copied());
+    let vision = match known {
+        Some(v) => v,
+        None => {
+            let r = http(
+                "POST",
+                &format!("{base_url}/api/show"),
+                Some(&json!({"model": model})),
+            )?;
+            let v = r["capabilities"]
+                .as_array()
+                .is_some_and(|c| c.iter().any(|x| x.as_str() == Some("vision")));
+            if let Ok(mut c) = cache.lock() {
+                c.insert(key, v);
+            }
+            v
+        }
+    };
+    if vision {
+        Ok(())
+    } else {
+        Err(format!("model `{model_id}` does not support images"))
     }
 }
 
 fn ollama_chat(base: &str, model: &str, req: ChatReq) -> Result<ChatResp, String> {
     let timeout = req.timeout;
-    let body = ollama_payload(model, &req)?;
+    let body = ollama_payload(model, &req, ImageMode::Inline)?;
+    let recorded = if req.images.is_empty() {
+        body.clone()
+    } else {
+        ollama_payload(model, &req, ImageMode::Placeholder)?
+    };
     let started = Instant::now();
     let r = http_with_timeout("POST", &format!("{base}/api/chat"), Some(&body), timeout)?;
     let ns = |k: &str| r.get(k).and_then(Value::as_u64).unwrap_or(0) / 1_000_000;
@@ -231,7 +305,7 @@ fn ollama_chat(base: &str, model: &str, req: ChatReq) -> Result<ChatResp, String
         prompt_ms: ns("prompt_eval_duration"),
         eval_ms: ns("eval_duration"),
         total_ms: started.elapsed().as_millis() as u64,
-        payload: body,
+        payload: recorded,
         constrained: req.schema.is_some(),
         token_confidence: if reported { "exact" } else { "unknown" },
         provider_cost_microusd: None,
@@ -258,7 +332,12 @@ fn openai_chat(
     req: ChatReq,
 ) -> Result<ChatResp, String> {
     let timeout = req.timeout;
-    let body = openai_payload(model, &req)?;
+    let body = openai_payload(model, &req, ImageMode::Inline)?;
+    let recorded = if req.images.is_empty() {
+        body.clone()
+    } else {
+        openai_payload(model, &req, ImageMode::Placeholder)?
+    };
     let started = Instant::now();
     let auth_val = api_key.map(|k| format!("Bearer {k}"));
     let mut headers = Vec::new();
@@ -289,7 +368,7 @@ fn openai_chat(
         prompt_ms: 0,
         eval_ms: 0,
         total_ms: started.elapsed().as_millis() as u64,
-        payload: body,
+        payload: recorded,
         constrained: req.schema.is_some(),
         token_confidence: if reported { "exact" } else { "unknown" },
         provider_cost_microusd,
@@ -303,7 +382,12 @@ fn anthropic_chat(
     req: ChatReq,
 ) -> Result<ChatResp, String> {
     let timeout = req.timeout;
-    let body = anthropic_payload(model, &req)?;
+    let body = anthropic_payload(model, &req, ImageMode::Inline)?;
+    let recorded = if req.images.is_empty() {
+        body.clone()
+    } else {
+        anthropic_payload(model, &req, ImageMode::Placeholder)?
+    };
     let started = Instant::now();
     let mut headers = vec![("anthropic-version", "2023-06-01")];
     if let Some(k) = api_key {
@@ -339,7 +423,7 @@ fn anthropic_chat(
         prompt_ms: 0,
         eval_ms: 0,
         total_ms: started.elapsed().as_millis() as u64,
-        payload: body,
+        payload: recorded,
         // Anthropic Messages API without forced tool-use checks schema afterward.
         constrained: false,
         token_confidence: if reported { "exact" } else { "unknown" },
@@ -385,7 +469,7 @@ fn resolve_generation_cap(
     }
 }
 
-pub(crate) fn ollama_payload(model: &str, req: &ChatReq) -> Result<Value, String> {
+pub(crate) fn ollama_payload(model: &str, req: &ChatReq, mode: ImageMode) -> Result<Value, String> {
     validate_settings(req.settings)?;
     let mut options = serde_json::Map::new();
     let mut think = Value::Bool(false);
@@ -412,7 +496,19 @@ pub(crate) fn ollama_payload(model: &str, req: &ChatReq) -> Result<Value, String
     if !req.system.is_empty() {
         messages.push(json!({"role": "system", "content": req.system}));
     }
-    messages.push(json!({"role": "user", "content": req.user}));
+    let mut user = json!({"role": "user", "content": req.user});
+    if !req.images.is_empty() {
+        user["images"] = Value::Array(
+            req.images
+                .iter()
+                .map(|i| match mode {
+                    ImageMode::Inline => json!(b64(&i.bytes)),
+                    ImageMode::Placeholder => placeholder(i),
+                })
+                .collect(),
+        );
+    }
+    messages.push(user);
     let mut body = json!({
         "model": model,
         "messages": messages,
@@ -427,13 +523,28 @@ pub(crate) fn ollama_payload(model: &str, req: &ChatReq) -> Result<Value, String
     Ok(body)
 }
 
-pub(crate) fn openai_payload(model: &str, req: &ChatReq) -> Result<Value, String> {
+pub(crate) fn openai_payload(model: &str, req: &ChatReq, mode: ImageMode) -> Result<Value, String> {
     validate_settings(req.settings)?;
     let mut messages = Vec::new();
     if !req.system.is_empty() {
         messages.push(json!({"role": "system", "content": req.system}));
     }
-    messages.push(json!({"role": "user", "content": req.user}));
+    let content = if req.images.is_empty() {
+        json!(req.user)
+    } else {
+        let mut parts: Vec<Value> = req
+            .images
+            .iter()
+            .map(|i| match mode {
+                ImageMode::Inline => json!({"type": "image_url", "image_url": {
+                    "url": format!("data:{};base64,{}", i.mime, b64(&i.bytes))}}),
+                ImageMode::Placeholder => placeholder(i),
+            })
+            .collect();
+        parts.push(json!({"type": "text", "text": req.user}));
+        Value::Array(parts)
+    };
+    messages.push(json!({"role": "user", "content": content}));
     let mut body = json!({
         "model": model,
         "messages": messages,
@@ -468,13 +579,32 @@ pub(crate) fn openai_payload(model: &str, req: &ChatReq) -> Result<Value, String
     Ok(body)
 }
 
-pub(crate) fn anthropic_payload(model: &str, req: &ChatReq) -> Result<Value, String> {
+pub(crate) fn anthropic_payload(
+    model: &str,
+    req: &ChatReq,
+    mode: ImageMode,
+) -> Result<Value, String> {
     validate_settings(req.settings)?;
     let capped = resolve_generation_cap(req.settings, req.max_output_tokens)?.unwrap_or(4096);
+    let content = if req.images.is_empty() {
+        json!(req.user)
+    } else {
+        let mut parts: Vec<Value> = req
+            .images
+            .iter()
+            .map(|i| match mode {
+                ImageMode::Inline => json!({"type": "image", "source": {
+                    "type": "base64", "media_type": i.mime, "data": b64(&i.bytes)}}),
+                ImageMode::Placeholder => placeholder(i),
+            })
+            .collect();
+        parts.push(json!({"type": "text", "text": req.user}));
+        Value::Array(parts)
+    };
     let mut body = json!({
         "model": model,
         "max_tokens": capped,
-        "messages": [{"role": "user", "content": req.user}],
+        "messages": [{"role": "user", "content": content}],
         "stream": false,
     });
     if !req.system.is_empty() {
@@ -698,16 +828,20 @@ fn mock_chat(req: ChatReq) -> ChatResp {
         None => "mock".to_string(),
     };
     let estimate = |s: &str| (s.len() as u64) / 4 + 1;
+    let mut payload = json!({"backend": "mock", "model": req.model, "system": req.system, "user": req.user, "format": req.schema, "options": req.settings});
+    if !req.images.is_empty() {
+        payload["images"] = json!(req.images.iter().map(|i| &i.sha256).collect::<Vec<_>>());
+    }
     ChatResp {
         done_reason: Some("stop".into()),
-        prompt_tokens: estimate(req.system) + estimate(req.user),
+        prompt_tokens: estimate(req.system) + estimate(req.user) + 256 * req.images.len() as u64,
         output_tokens: estimate(&content),
         content,
         load_ms: 0,
         prompt_ms: 0,
         eval_ms: 0,
         total_ms: 0,
-        payload: json!({"backend": "mock", "model": req.model, "system": req.system, "user": req.user, "format": req.schema, "options": req.settings}),
+        payload,
         constrained: false,
         token_confidence: "estimated",
         provider_cost_microusd: None,
@@ -732,12 +866,13 @@ mod tests {
                 settings: &settings,
                 timeout: Some(Duration::from_millis(10)),
                 max_output_tokens: Some(7),
+                images: &[],
             };
-            let body = ollama_payload("test", &req).unwrap();
+            let body = ollama_payload("test", &req, ImageMode::Inline).unwrap();
             assert_eq!(body["options"]["num_predict"], expected);
-            let oai = openai_payload("test", &req).unwrap();
+            let oai = openai_payload("test", &req, ImageMode::Inline).unwrap();
             assert_eq!(oai["max_tokens"], expected);
-            let ant = anthropic_payload("test", &req).unwrap();
+            let ant = anthropic_payload("test", &req, ImageMode::Inline).unwrap();
             assert_eq!(ant["max_tokens"], expected);
         }
     }
@@ -753,14 +888,15 @@ mod tests {
             settings: &settings,
             timeout: None,
             max_output_tokens: Some(0),
+            images: &[],
         };
-        assert!(ollama_payload("test", &req)
+        assert!(ollama_payload("test", &req, ImageMode::Inline)
             .unwrap_err()
             .contains("no token essence"));
-        assert!(openai_payload("test", &req)
+        assert!(openai_payload("test", &req, ImageMode::Inline)
             .unwrap_err()
             .contains("no token essence"));
-        assert!(anthropic_payload("test", &req)
+        assert!(anthropic_payload("test", &req, ImageMode::Inline)
             .unwrap_err()
             .contains("no token essence"));
     }
@@ -814,6 +950,7 @@ mod tests {
             settings: &settings,
             timeout: Some(Duration::from_secs(5)),
             max_output_tokens: Some(50),
+            images: &[],
         };
         let oai = chat(&url, "openai/gpt-4o-mini", req).unwrap();
         assert_eq!(oai.content, r#"{"intent":"receipt"}"#);
@@ -831,6 +968,7 @@ mod tests {
             settings: &settings,
             timeout: Some(Duration::from_secs(5)),
             max_output_tokens: Some(64),
+            images: &[],
         };
         let ant = chat(&url, "anthropic/claude-sonnet-4", req_ant).unwrap();
         assert_eq!(ant.content, r#"{"intent":"receipt"}"#);
@@ -863,6 +1001,7 @@ mod tests {
             settings: &settings,
             timeout: None,
             max_output_tokens: Some(32),
+            images: &[],
         };
         let p = payload("vllm/qwen3-8b", &req).unwrap();
         assert_eq!(p["model"], "qwen3-8b");
@@ -919,5 +1058,231 @@ mod tests {
             fingerprint(&url, "ollama/a"),
             "same shape as a single fingerprint"
         );
+    }
+
+    fn img(bytes: &[u8]) -> ImagePart {
+        use sha2::{Digest, Sha256};
+        ImagePart {
+            sha256: Sha256::digest(bytes)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
+            mime: "image/png".into(),
+            bytes: bytes.to_vec(),
+        }
+    }
+
+    fn with_req<T>(images: &[ImagePart], f: impl FnOnce(&ChatReq) -> T) -> T {
+        let settings = BTreeMap::from([("temperature".into(), json!(0.2))]);
+        let schema = json!({"type": "object"});
+        let req = ChatReq {
+            model: "m",
+            system: "sys",
+            user: "usr",
+            schema: Some(&schema),
+            settings: &settings,
+            timeout: None,
+            max_output_tokens: Some(50),
+            images,
+        };
+        f(&req)
+    }
+
+    #[test]
+    fn no_image_payloads_and_hashes_unchanged() {
+        with_req(&[], |req| {
+            assert_eq!(
+                ollama_payload("m", req, ImageMode::Inline)
+                    .unwrap()
+                    .to_string(),
+                r#"{"format":{"type":"object"},"keep_alive":"10m","messages":[{"content":"sys","role":"system"},{"content":"usr","role":"user"}],"model":"m","options":{"num_predict":50,"temperature":0.2},"stream":false,"think":false}"#
+            );
+            assert_eq!(
+                openai_payload("m", req, ImageMode::Inline)
+                    .unwrap()
+                    .to_string(),
+                r#"{"max_tokens":50,"messages":[{"content":"sys","role":"system"},{"content":"usr","role":"user"}],"model":"m","response_format":{"json_schema":{"name":"summonr_output","schema":{"type":"object"},"strict":true},"type":"json_schema"},"stream":false,"temperature":0.2}"#
+            );
+            assert_eq!(
+                anthropic_payload("m", req, ImageMode::Inline)
+                    .unwrap()
+                    .to_string(),
+                r#"{"max_tokens":50,"messages":[{"content":"usr","role":"user"}],"model":"m","stream":false,"system":"sys","temperature":0.2}"#
+            );
+            assert_eq!(
+                payload("mock/m", req).unwrap().to_string(),
+                r#"{"backend":"mock","model":"mock/m","system":"sys","user":"usr"}"#
+            );
+            assert_eq!(
+                crate::cassette::model_hash("m", req),
+                "03af21556803bbb07ae39b451877d963961a36cb9cc183c81a46a7b8fa03f262"
+            );
+        });
+    }
+
+    #[test]
+    fn ollama_inline_and_placeholder_shapes() {
+        let images = [img(b"\x89PNG-bytes")];
+        let enc = b64(&images[0].bytes);
+        with_req(&images, |req| {
+            let inline = ollama_payload("m", req, ImageMode::Inline).unwrap();
+            assert_eq!(inline["messages"][1]["images"], json!([enc]));
+            assert_eq!(inline["messages"][1]["content"], "usr");
+            let ph = ollama_payload("m", req, ImageMode::Placeholder).unwrap();
+            assert_eq!(
+                ph["messages"][1]["images"],
+                json!([{"sight": {"sha256": images[0].sha256, "mime": "image/png", "bytes": 10}}])
+            );
+            assert!(!ph.to_string().contains(&enc));
+            assert_eq!(payload("ollama/m", req).unwrap(), ph);
+        });
+    }
+
+    #[test]
+    fn openai_inline_and_placeholder_shapes() {
+        let images = [img(b"\x89PNG-bytes"), img(b"second")];
+        let enc = b64(&images[0].bytes);
+        with_req(&images, |req| {
+            let inline = openai_payload("m", req, ImageMode::Inline).unwrap();
+            let c = &inline["messages"][1]["content"];
+            assert_eq!(c[0]["type"], "image_url");
+            assert_eq!(
+                c[0]["image_url"]["url"],
+                format!("data:image/png;base64,{enc}")
+            );
+            assert_eq!(c[2], json!({"type": "text", "text": "usr"}));
+            let ph = openai_payload("m", req, ImageMode::Placeholder).unwrap();
+            let c = &ph["messages"][1]["content"];
+            assert_eq!(c[0]["sight"]["sha256"], images[0].sha256);
+            assert_eq!(c[1]["sight"]["bytes"], 6);
+            assert_eq!(c[2], json!({"type": "text", "text": "usr"}));
+            assert!(!ph.to_string().contains(&enc));
+            assert_eq!(payload("openai/m", req).unwrap(), ph);
+        });
+    }
+
+    #[test]
+    fn anthropic_inline_and_placeholder_shapes() {
+        let images = [img(b"\x89PNG-bytes")];
+        let enc = b64(&images[0].bytes);
+        with_req(&images, |req| {
+            let inline = anthropic_payload("m", req, ImageMode::Inline).unwrap();
+            let c = &inline["messages"][0]["content"];
+            assert_eq!(
+                c[0],
+                json!({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": enc}})
+            );
+            assert_eq!(c[1], json!({"type": "text", "text": "usr"}));
+            let ph = anthropic_payload("m", req, ImageMode::Placeholder).unwrap();
+            assert_eq!(
+                ph["messages"][0]["content"][0]["sight"]["sha256"],
+                images[0].sha256
+            );
+            assert!(!ph.to_string().contains(&enc));
+            assert_eq!(payload("anthropic/m", req).unwrap(), ph);
+        });
+    }
+
+    #[test]
+    fn model_hash_covers_image_digests_not_bytes() {
+        let a = img(b"one");
+        let mut a_same_digest = a.clone();
+        a_same_digest.bytes = b"different bytes, same claimed digest".to_vec();
+        let b = img(b"two");
+        let none = with_req(&[], |r| crate::cassette::model_hash("m", r));
+        let ha = with_req(std::slice::from_ref(&a), |r| {
+            crate::cassette::model_hash("m", r)
+        });
+        let ha2 = with_req(&[a_same_digest], |r| crate::cassette::model_hash("m", r));
+        let hb = with_req(&[b], |r| crate::cassette::model_hash("m", r));
+        assert_ne!(none, ha);
+        assert_eq!(ha, ha2);
+        assert_ne!(ha, hb);
+    }
+
+    #[test]
+    fn mock_carries_image_digests_and_estimates_256_tokens_each() {
+        let images = [img(b"one"), img(b"two")];
+        let settings = BTreeMap::new();
+        let mk = |images: &[ImagePart]| {
+            mock_chat(ChatReq {
+                model: "keyword",
+                system: "",
+                user: "hi",
+                schema: None,
+                settings: &settings,
+                timeout: None,
+                max_output_tokens: None,
+                images,
+            })
+        };
+        let plain = mk(&[]);
+        let r = mk(&images);
+        assert!(plain.payload.get("images").is_none());
+        assert_eq!(
+            r.payload["images"],
+            json!([images[0].sha256, images[1].sha256])
+        );
+        assert_eq!(r.prompt_tokens, plain.prompt_tokens + 512);
+        assert_eq!(r.token_confidence, "estimated");
+    }
+
+    /// Serves `/api/show` with the given capabilities; counts requests.
+    fn show_server(caps: &'static str) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", server.local_addr().unwrap());
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = hits.clone();
+        std::thread::spawn(move || {
+            for mut s in server.incoming().flatten() {
+                let mut line = String::new();
+                let mut r = BufReader::new(s.try_clone().unwrap());
+                r.read_line(&mut line).unwrap();
+                let mut len = 0usize;
+                loop {
+                    let mut h = String::new();
+                    if r.read_line(&mut h).unwrap() <= 2 {
+                        break;
+                    }
+                    if let Some((k, v)) = h.split_once(':') {
+                        if k.trim().eq_ignore_ascii_case("content-length") {
+                            len = v.trim().parse().unwrap_or(0);
+                        }
+                    }
+                }
+                let mut body = vec![0u8; len];
+                let _ = r.read_exact(&mut body);
+                if line.starts_with("POST /api/show") {
+                    counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                let out = format!(r#"{{"capabilities":{caps}}}"#);
+                let _ = write!(
+                    s,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{out}",
+                    out.len()
+                );
+            }
+        });
+        (url, hits)
+    }
+
+    #[test]
+    fn ollama_without_vision_is_refused() {
+        let (url, hits) = show_server(r#"["completion"]"#);
+        let err = supports_images(&url, "ollama/text-only").unwrap_err();
+        assert!(err.contains("does not support images"), "{err}");
+        assert!(supports_images(&url, "ollama/text-only").is_err());
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1, "cached");
+    }
+
+    #[test]
+    fn ollama_with_vision_is_allowed() {
+        let (url, hits) = show_server(r#"["completion","vision"]"#);
+        supports_images(&url, "ollama/seer").unwrap();
+        supports_images(&url, "ollama/seer").unwrap();
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1, "cached");
+        supports_images("http://127.0.0.1:1", "openai/x").unwrap();
+        supports_images("http://127.0.0.1:1", "mock/keyword").unwrap();
     }
 }

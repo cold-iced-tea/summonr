@@ -467,6 +467,7 @@ mod tests {
             settings: &settings,
             timeout: None,
             max_output_tokens: None,
+            images: &[],
         };
         let resp = Live
             .chat("http://unused", "mock/keyword", "s", req)
@@ -501,6 +502,7 @@ mod tests {
             settings,
             timeout: None,
             max_output_tokens: None,
+            images: &[],
         }
     }
 
@@ -696,6 +698,7 @@ mod tests {
             settings: &settings,
             timeout: None,
             max_output_tokens: None,
+            images: &[],
         };
         let hash = cassette::model_hash("mock/keyword", &mk("original"));
         let c = Cassette {
@@ -923,6 +926,7 @@ mod tests {
             settings,
             timeout: None,
             max_output_tokens: None,
+            images: &[],
         }
     }
 

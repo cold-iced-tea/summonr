@@ -110,13 +110,17 @@ impl RecordedError {
 
 /// Hash of what a model sees: timeout and token cap are excluded.
 pub fn model_hash(model: &str, req: &ChatReq) -> String {
-    canonical_sha256(&json!({
+    let mut v = json!({
         "model": model,
         "system": req.system,
         "user": req.user,
         "schema": req.schema,
         "settings": req.settings,
-    }))
+    });
+    if !req.images.is_empty() {
+        v["images"] = json!(req.images.iter().map(|i| &i.sha256).collect::<Vec<_>>());
+    }
+    canonical_sha256(&v)
 }
 
 pub fn tool_hash(operation: &str, args: &Value) -> String {
@@ -188,6 +192,7 @@ mod tests {
             settings,
             timeout,
             max_output_tokens: None,
+            images: &[],
         }
     }
 
