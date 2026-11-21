@@ -64,6 +64,10 @@ pub fn fixture_at(sub: &str) -> Fixture {
     sh(&root, &["init", "-q", "--bare", "-b", "master", "origin.git"]);
     sh(&root, &["clone", "-q", "origin.git", "main"]);
     let main = root.join("main");
+    // The reagents commit with the repository's own identity; CI runners
+    // have no global one, so give the fixture (and its worktrees) one.
+    sh(&main, &["config", "user.name", "t"]);
+    sh(&main, &["config", "user.email", "t@example.com"]);
     sh(&main, &["checkout", "-q", "-B", "master"]);
     commit(&main, "a.txt", "one");
     sh(&main, &["push", "-q", "-u", "origin", "master"]);
