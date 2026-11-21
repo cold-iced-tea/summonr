@@ -139,7 +139,13 @@ pub(crate) fn load_verified(handle: &Value, max_bytes: u64) -> Result<Vec<u8>, F
     };
     let (root, path, sha) = (field("root")?, field("path")?, field("sha256")?);
     let data = match read_image_bytes(root, path, max_bytes, None) {
-        Err(Fail::Exhausted(m)) => return Err(Fail::Exhausted(m)),
+        // The handle was issued within the limit; a file now over it is not
+        // the file that was read.
+        Err(Fail::Exhausted(_)) => {
+            return Err(Fail::Failed(format!(
+                "stale image `{path}`: now larger than the {max_bytes}-byte limit"
+            )))
+        }
         Err(e) => return Err(Fail::Failed(format!("stale image `{path}`: cannot reread ({e:?})"))),
         Ok(d) => d,
     };
@@ -453,6 +459,22 @@ pub(crate) mod tests {
         }
         std::fs::remove_file(dir.join("a.png")).unwrap();
         assert!(matches!(load_verified(&h, DEFAULT_MAX_BYTES), Err(Fail::Failed(m)) if m.contains("stale image")));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn load_verified_grown_file_is_stale() {
+        let dir = tmp();
+        let root = dir.to_str().unwrap();
+        let g = grants(root);
+        let sel = Mutex::new(HashSet::new());
+        std::fs::write(dir.join("a.png"), PNG_1X1).unwrap();
+        let h = reagent::call(None, "sight", "read_image", &json!({"root":root,"path":"a.png"}), &auth(&g, &sel)).unwrap();
+        std::fs::write(dir.join("a.png"), vec![0u8; 200]).unwrap();
+        match load_verified(&h, 100) {
+            Err(Fail::Failed(m)) => assert!(m.contains("stale image"), "{m}"),
+            other => panic!("{other:?}"),
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

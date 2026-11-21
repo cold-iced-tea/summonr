@@ -971,6 +971,16 @@ impl Run {
             // `issue_key` succeeded, so these are strings.
             let root = h["root"].as_str().unwrap_or_default();
             let path = h["path"].as_str().unwrap_or_default();
+            // A handle recorded over the limit is refused without reading it:
+            // the limit is a property of the step, not of a changed file.
+            let recorded = h.get("bytes").and_then(Value::as_u64).ok_or_else(|| {
+                Fail::Invalid(format!("step {sid}: images entry is not an image handle"))
+            })?;
+            if recorded > max_bytes {
+                return Err(Fail::Invalid(format!(
+                    "step {sid}: image `{path}` is {recorded} bytes, over the {max_bytes}-byte limit for model steps"
+                )));
+            }
             reagent::authorize(
                 self.core.cfg.mail_root.as_deref(),
                 "sight.read_image",
@@ -987,8 +997,8 @@ impl Run {
                 ))
             })?;
             let in_step = |m: String| format!("step {sid}: {m}");
+            // Never `Exhausted`: a changed or grown file is a stale image.
             let bytes = load_verified(h, max_bytes).map_err(|e| match e {
-                Fail::Exhausted(m) => Fail::Exhausted(in_step(m)),
                 Fail::Invalid(m) => Fail::Invalid(in_step(m)),
                 Fail::Denied(m) => Fail::Denied(in_step(m)),
                 other => Fail::Failed(in_step(other.message())),
@@ -2479,8 +2489,87 @@ mod tests {
         });
         let mut run = granted(&f, sight_ritual(&root, "mock/keyword", None, json!(["${steps.page.output}"])));
         let fin = run.execute();
-        assert_eq!(fin.outcome, Outcome::Exhausted, "{:?}", fin.error);
+        // The handle already records more bytes than the lowered limit.
+        assert_eq!(fin.outcome, Outcome::Invalid, "{:?}", fin.error);
+        assert!(fin.error.unwrap_or_default().contains("10-byte limit"));
         assert_eq!(requests(&run), 0);
+    }
+
+    #[test]
+    fn oversize_handle_is_invalid_without_reading() {
+        let mut f = Fixture::new();
+        let (_, root) = image_dir(&f);
+        Arc::get_mut(&mut f.core).unwrap().cfg.sight = Some(crate::util::SightConfig {
+            max_bytes: Some(10),
+            max_per_step: None,
+        });
+        let def = sight_ritual(&root, "mock/keyword", Some(json!([])), json!(["${inputs.h}"]));
+        let mut run = granted(&f, def);
+        // No such file: reading it would report a stale image instead.
+        let h = handle(&root, "missing.png", PNG_1X1);
+        run.selected.lock().unwrap().insert(issue_key(&h).unwrap());
+        run.inputs = json!({ "h": h });
+        let fin = run.execute();
+        assert_eq!(fin.outcome, Outcome::Invalid, "{:?}", fin.error);
+        let err = fin.error.unwrap_or_default();
+        assert!(err.contains("10-byte limit") && !err.contains("stale"), "{err}");
+        assert_eq!(requests(&run), 0);
+    }
+
+    #[test]
+    fn grown_image_is_stale_not_exhausted() {
+        let mut f = Fixture::new();
+        let (_, root) = image_dir(&f);
+        Arc::get_mut(&mut f.core).unwrap().cfg.sight = Some(crate::util::SightConfig {
+            max_bytes: Some(100),
+            max_per_step: None,
+        });
+        let before = json!([
+            {"id":"page","operation":"sight.read_image","arguments":{"root":&root,"path":"a.png"}},
+            {"id":"swap","operation":"file.write_text","arguments":{"root":&root,"path":"a.png","text":"x".repeat(200)}}
+        ]);
+        let def = sight_ritual(&root, "mock/keyword", Some(before), json!(["${steps.page.output}"]));
+        let mut run = granted(&f, def);
+        let fin = run.execute();
+        assert_eq!(fin.outcome, Outcome::Failed, "{:?}", fin.error);
+        assert!(fin.error.unwrap_or_default().contains("stale image"));
+        assert_eq!(requests(&run), 0);
+    }
+
+    #[test]
+    fn keep_going_batch_continues_past_a_stale_image() {
+        let mut f = Fixture::new();
+        let (_, root) = image_dir(&f);
+        Arc::get_mut(&mut f.core).unwrap().cfg.sight = Some(crate::util::SightConfig {
+            max_bytes: Some(1000),
+            max_per_step: None,
+        });
+        // Each item reads its file, then a.png grows past the limit: the
+        // a.png item goes stale (not exhausted), the b.jpg item is still sent.
+        let def = definition(json!({
+            "ritual":"sight-batch","model":"mock/keyword",
+            "inputs":{"files":{"type":"list"}},
+            "requires":[
+                {"reagent":"sight","action":"read_image","on":{"root":&root}},
+                {"reagent":"file","action":"write_text","on":{"root":&root}}
+            ],
+            "steps":[{"id":"batch","each":"f in inputs.files","on_failure":"continue","steps":[
+                {"id":"page","operation":"sight.read_image","arguments":{"root":&root,"path":"${f}"}},
+                {"id":"swap","operation":"file.write_text","arguments":{"root":&root,"path":"a.png","text":"x".repeat(2000)}},
+                {"id":"look","model":{"prompt":"what is this","images":["${steps.page.output}"]}}
+            ]}],
+            "return":{"batch":"${steps.batch.output}"},
+        }));
+        let mut run = granted(&f, def);
+        run.inputs = json!({"files":["a.png","b.jpg"]});
+        let fin = run.execute();
+        assert_eq!(requests(&run), 1, "{:?} {}", fin.error, fin.result);
+        assert_eq!(f.model_events().len(), 1);
+        let items = &fin.result["batch"];
+        assert_eq!(items[0]["status"], "failed", "{}", fin.result);
+        assert!(items[0]["error"].as_str().unwrap_or_default().contains("stale image"), "{}", fin.result);
+        assert_eq!(items[1]["status"], "returned", "{}", fin.result);
+        assert_eq!(f.model_events()[0]["payload"]["images"], json!([crate::util::sha256_hex(JPEG_1X1)]));
     }
 
     #[test]
