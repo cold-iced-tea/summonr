@@ -239,6 +239,37 @@ for line in sys.stdin:
     }
 
     #[test]
+    fn mcp_grants_cannot_be_scoped() {
+        // Nothing maps a scope key to an MCP tool's arguments, so a scoped
+        // grant would read as a limit it never enforces.
+        let on: BTreeMap<String, String> = [("account".to_string(), "sandbox".to_string())].into();
+        let err = reagent::validate_grant_scope("calc", &on, &BTreeMap::new()).unwrap_err();
+        assert!(err.contains("cannot be scoped"), "{err}");
+        assert!(reagent::validate_grant_scope("calc", &BTreeMap::new(), &on).is_err());
+        assert!(reagent::validate_grant_scope("calc", &BTreeMap::new(), &BTreeMap::new()).is_ok());
+
+        // A scoped grant already stored (or narrowed from `requires`) covers nothing.
+        let cfg = mock_mcp_config();
+        let selected = Mutex::new(HashSet::new());
+        let scoped = vec![crate::ritual::Grant {
+            reagent: "calc".into(),
+            action: "add".into(),
+            on,
+            into: BTreeMap::new(),
+        }];
+        let auth = Authority {
+            deadline: None,
+            on_item: None,
+            grants: &scoped,
+            selected: &selected,
+            expected_digest: None,
+            config: Some(&cfg),
+        };
+        let r = reagent::authorize(None, "calc.add", &json!({"a": 2, "b": 3, "account": "production"}), &auth);
+        assert!(matches!(&r, Err(Fail::Denied(m)) if m.contains("scoped")), "{r:?}");
+    }
+
+    #[test]
     fn mcp_reagent_enforces_grants_and_calls_stdio_server() {
         let cfg = mock_mcp_config();
         let selected = Mutex::new(HashSet::new());

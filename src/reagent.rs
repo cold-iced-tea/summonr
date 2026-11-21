@@ -872,13 +872,23 @@ fn authorize_mcp(
         .tools
         .get(tool)
         .ok_or_else(|| Fail::Failed(format!("reagent `{reagent}` has no tool `{tool}`")))?;
-    if !auth
+    let mut matching = auth
         .grants
         .iter()
-        .any(|g| g.reagent == reagent && g.action == tool)
-    {
+        .filter(|g| g.reagent == reagent && g.action == tool)
+        .peekable();
+    if matching.peek().is_none() {
         return Err(Fail::Denied(format!(
             "{reagent}.{tool} is not authorized by any grant"
+        )));
+    }
+    // A scope on an MCP tool is never checked against its arguments, so a
+    // scoped grant (stored before scopes were refused, or narrowed from a
+    // ritual's `requires`) authorizes nothing rather than everything.
+    if !matching.any(|g| g.on.is_empty() && g.into.is_empty()) {
+        return Err(Fail::Denied(format!(
+            "{reagent}.{tool} is only granted with a scope, and MCP grants cannot be scoped; \
+             grant it without on/into"
         )));
     }
     Ok(if t.effect == "read" { "read" } else { "write" })
@@ -1213,6 +1223,16 @@ pub fn validate_grant_scope(
     let key = match reagent {
         "file" => "root",
         "http" => "origin",
+        _ if self::reagent(reagent).is_none() => {
+            // An MCP reagent: nothing maps a scope key to its arguments.
+            if on.is_empty() && into.is_empty() {
+                return Ok(());
+            }
+            return Err(format!(
+                "{reagent} is an MCP reagent and its grants cannot be scoped; \
+                 grant the tool without on/into, or not at all"
+            ));
+        }
         _ => return Ok(()),
     };
     if !into.is_empty() || on.len() != 1 || !on.contains_key(key) {
