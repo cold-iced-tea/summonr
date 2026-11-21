@@ -1081,7 +1081,6 @@ dependencies = [
  "ring",
  "rusqlite",
  "rustls",
- "rustls-pki-types",
  "serde",
  "serde_json",
  "serde_yaml",

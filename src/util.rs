@@ -3,28 +3,31 @@
 use serde::Deserialize;
 use std::io::Read;
 use std::path::PathBuf;
+#[cfg(test)]
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(test)]
 static CLOCK_OFFSET_MS: AtomicI64 = AtomicI64::new(0);
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub fn set_clock_offset_ms(offset_ms: i64) {
     CLOCK_OFFSET_MS.store(offset_ms, Ordering::SeqCst);
 }
 
+#[cfg(test)]
 fn dynamic_clock_offset_ms() -> i64 {
     let base = CLOCK_OFFSET_MS.load(Ordering::SeqCst);
     let env_off = std::env::var("SUMMONR_CLOCK_OFFSET_MS")
         .ok()
         .and_then(|s| s.trim().parse::<i64>().ok())
         .unwrap_or(0);
-    let file_off = std::env::var("SUMMONR_HOME")
-        .ok()
-        .and_then(|h| std::fs::read_to_string(PathBuf::from(h).join("run/clock_offset_ms")).ok())
-        .and_then(|s| s.trim().parse::<i64>().ok())
-        .unwrap_or(0);
-    base.saturating_add(env_off).saturating_add(file_off)
+    base.saturating_add(env_off)
+}
+
+#[cfg(not(test))]
+fn dynamic_clock_offset_ms() -> i64 {
+    0
 }
 
 pub fn now_ms() -> i64 {

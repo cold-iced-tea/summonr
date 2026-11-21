@@ -327,11 +327,12 @@ The integration check uses temporary homes and mock calls. No runtime-specific t
 
 | File | Role |
 | --- | --- |
+| `src/main.rs`, `src/cli/` | CLI entrypoint, command dispatch, and subcommand modules |
 | `src/grammar.rs` | Both spellings, one parser, paired tests |
-| `src/ritual.rs` | Definition format, references, conditions, validation, effect plan |
+| `src/ritual/` | Definition format, expressions, templates, inputs, parsing, types, and validation |
 | `src/exec.rs` | Step executor, essence meters, child summons |
 | `src/core.rs` | The core: storage, resolution, grants, assays, fences, socket server |
-| `src/pact.rs`, `src/core/pacts.rs` | Pact terms, signed thread entries, agreement, calls, holds, acceptance, and thread checks |
+| `src/pact.rs`, `src/core/pacts/` | Pact terms, signed thread entries, agreement, calls, holds, acceptance, and thread checks |
 | `src/reagent.rs` | The `mail` reagent, its enforcement, and read-back verification |
 | `src/mcp.rs` | MCP server over stdio and Streamable HTTP |
 | `src/backend.rs` | Ollama, OpenAI-compatible, Anthropic, custom providers, and mock backend |
