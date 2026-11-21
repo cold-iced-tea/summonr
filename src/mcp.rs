@@ -1009,10 +1009,31 @@ fn serve_connection(
     path: String,
     auth: Option<std::sync::Arc<crate::util::McpAuthConfig>>,
 ) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+    serve_connection_with_deadline(
+        stream,
+        local,
+        link,
+        path,
+        auth,
+        crate::listen::REQUEST_DEADLINE,
+    );
+}
+
+fn serve_connection_with_deadline(
+    stream: crate::tls::NetStream,
+    local: Option<std::net::SocketAddr>,
+    link: LinkFactory,
+    path: String,
+    auth: Option<std::sync::Arc<crate::util::McpAuthConfig>>,
+    request_deadline: Duration,
+) {
     let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
-    let mut reader = BufReader::new(stream);
+    let mut reader = BufReader::new(crate::listen::Deadline {
+        stream,
+        until: std::time::Instant::now() + request_deadline,
+    });
     loop {
+        reader.get_mut().until = std::time::Instant::now() + request_deadline;
         let mut request_line = String::new();
         if reader
             .by_ref()
@@ -1047,7 +1068,10 @@ fn serve_connection(
                 break;
             }
             if let Some((k, v)) = h.split_once(':') {
-                match k.to_ascii_lowercase().as_str() {
+                if k.chars().any(char::is_whitespace) {
+                    invalid = true;
+                }
+                match k.trim().to_ascii_lowercase().as_str() {
                     "content-length" => {
                         if length_seen {
                             invalid = true;
@@ -1082,34 +1106,30 @@ fn serve_connection(
         }
         if invalid || !host_ok {
             let _ = respond(
-                reader.get_mut(),
+                &mut reader.get_mut().stream,
                 "400 Bad Request",
                 b"{}",
                 "Connection: close\r\n",
             );
             return;
         }
-        if length > 8 * 1024 * 1024 {
-            let _ = respond(reader.get_mut(), "413 Payload Too Large", b"{}", "");
-            return;
-        }
-        let mut body = vec![0u8; length];
-        if reader.read_exact(&mut body).is_err() {
-            return;
-        }
         let req_path = target.split('?').next().unwrap_or("");
         let is_metadata = auth.is_some() && req_path == "/.well-known/oauth-protected-resource";
-        let is_mcp_path = req_path == path.as_str() || (auth.is_some() && req_path == "/mcp");
-        let out_stream = reader.get_mut();
-        let sent = if browser {
-            respond(
-                out_stream,
+        let is_mcp_path =
+            ct_eq(req_path.as_bytes(), path.as_bytes()) || (auth.is_some() && req_path == "/mcp");
+        // Check browser origin, route, and auth BEFORE allocating or reading any body.
+        if browser {
+            let _ = respond(
+                &mut reader.get_mut().stream,
                 "403 Forbidden",
                 b"{\"error\":\"browser requests are refused\"}",
-                "",
-            )
-        } else if is_metadata {
-            match method.as_str() {
+                "Connection: close\r\n",
+            );
+            return;
+        }
+        if is_metadata {
+            let out_stream = &mut reader.get_mut().stream;
+            let sent = match method.as_str() {
                 "GET" => {
                     let cfg = auth.as_ref().unwrap();
                     let meta = json!({
@@ -1121,74 +1141,103 @@ fn serve_connection(
                     respond(out_stream, "200 OK", meta.to_string().as_bytes(), "")
                 }
                 _ => respond(out_stream, "405 Method Not Allowed", b"", "Allow: GET\r\n"),
+            };
+            if sent.is_err() {
+                return;
             }
-        } else if !is_mcp_path {
-            respond(
-                out_stream,
+            continue;
+        }
+        if !is_mcp_path {
+            let _ = respond(
+                &mut reader.get_mut().stream,
                 "404 Not Found",
                 b"{\"error\":\"not found\"}",
-                "",
-            )
-        } else {
-            let auth_err = auth.as_ref().and_then(|cfg| {
-                let now_secs = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                verify_bearer_jwt(authorization.as_deref(), cfg, now_secs).err()
-            });
-            if let Some((status, code, desc)) = auth_err {
-                let hdr = format!(
-                    "WWW-Authenticate: Bearer resource_metadata=\"/.well-known/oauth-protected-resource\", error=\"{code}\", error_description=\"{desc}\"\r\n"
-                );
-                let body = json!({"error": code, "error_description": desc}).to_string();
-                respond(out_stream, status, body.as_bytes(), &hdr)
-            } else {
-                match method.as_str() {
-                    "POST" => match serde_json::from_slice::<Value>(&body) {
-                        Ok(Value::Array(batch)) => {
-                            let replies: Vec<Value> =
-                                batch.iter().filter_map(|r| handle(&link, r)).collect();
-                            if replies.is_empty() {
-                                respond(out_stream, "202 Accepted", b"", "")
-                            } else {
-                                respond(
-                                    out_stream,
-                                    "200 OK",
-                                    Value::Array(replies).to_string().as_bytes(),
-                                    "",
-                                )
-                            }
-                        }
-                        Ok(req) => match handle(&link, &req) {
-                            Some(r) => respond(out_stream, "200 OK", r.to_string().as_bytes(), ""),
-                            None => respond(out_stream, "202 Accepted", b"", ""),
-                        },
-                        Err(e) => {
-                            let err = json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": e.to_string()}});
-                            respond(
-                                out_stream,
-                                "400 Bad Request",
-                                err.to_string().as_bytes(),
-                                "",
-                            )
-                        }
-                    },
-                    // No server-initiated stream is offered.
-                    "GET" => respond(
+                "Connection: close\r\n",
+            );
+            return;
+        }
+        let auth_err = auth.as_ref().and_then(|cfg| {
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            verify_bearer_jwt(authorization.as_deref(), cfg, now_secs).err()
+        });
+        if let Some((status, code, desc)) = auth_err {
+            let hdr = format!(
+                "Connection: close\r\nWWW-Authenticate: Bearer resource_metadata=\"/.well-known/oauth-protected-resource\", error=\"{code}\", error_description=\"{desc}\"\r\n"
+            );
+            let body = json!({"error": code, "error_description": desc}).to_string();
+            let _ = respond(&mut reader.get_mut().stream, status, body.as_bytes(), &hdr);
+            return;
+        }
+        if method != "POST" {
+            let out_stream = &mut reader.get_mut().stream;
+            let sent = match method.as_str() {
+                // No server-initiated stream is offered.
+                "GET" => respond(
+                    out_stream,
+                    "405 Method Not Allowed",
+                    b"",
+                    "Allow: POST, DELETE\r\n",
+                ),
+                "DELETE" => respond(out_stream, "200 OK", b"{}", ""),
+                _ => respond(
+                    out_stream,
+                    "405 Method Not Allowed",
+                    b"",
+                    "Allow: POST, DELETE\r\n",
+                ),
+            };
+            if sent.is_err() {
+                return;
+            }
+            continue;
+        }
+        if length > 8 * 1024 * 1024 {
+            let _ = respond(
+                &mut reader.get_mut().stream,
+                "413 Payload Too Large",
+                b"{}",
+                "Connection: close\r\n",
+            );
+            return;
+        }
+        let mut body = vec![0u8; length];
+        let mut filled = 0;
+        while filled < length {
+            match reader.read(&mut body[filled..]) {
+                Ok(0) | Err(_) => return,
+                Ok(n) => filled += n,
+            }
+        }
+        let out_stream = &mut reader.get_mut().stream;
+        let sent = match serde_json::from_slice::<Value>(&body) {
+            Ok(Value::Array(batch)) => {
+                let replies: Vec<Value> = batch.iter().filter_map(|r| handle(&link, r)).collect();
+                if replies.is_empty() {
+                    respond(out_stream, "202 Accepted", b"", "")
+                } else {
+                    respond(
                         out_stream,
-                        "405 Method Not Allowed",
-                        b"",
-                        "Allow: POST, DELETE\r\n",
-                    ),
-                    "DELETE" => respond(out_stream, "200 OK", b"{}", ""),
-                    _ => respond(
-                        out_stream,
-                        "405 Method Not Allowed",
-                        b"",
-                        "Allow: POST, DELETE\r\n",
-                    ),
+                        "200 OK",
+                        Value::Array(replies).to_string().as_bytes(),
+                        "",
+                    )
                 }
+            }
+            Ok(req) => match handle(&link, &req) {
+                Some(r) => respond(out_stream, "200 OK", r.to_string().as_bytes(), ""),
+                None => respond(out_stream, "202 Accepted", b"", ""),
+            },
+            Err(e) => {
+                let err = json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": e.to_string()}});
+                respond(
+                    out_stream,
+                    "400 Bad Request",
+                    err.to_string().as_bytes(),
+                    "",
+                )
             }
         };
         if sent.is_err() {
@@ -1244,15 +1293,17 @@ pub fn http(paths: &Paths, addr: &str) -> i32 {
     }
     println!("  Every caller here is the same anonymous agent. To give agents their own identities, use `summonr listen` with familiars (see the Identity page of the book).");
     println!("  Callers can discover, preview, run, check and stop. They cannot grant authority or approve held actions.");
-    let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let limiter = crate::listen::ConnectionLimiter::new(
+        crate::listen::MAX_CONNECTIONS,
+        crate::listen::MAX_CONNECTIONS_PER_IP,
+    );
     for stream in listener.incoming().flatten() {
-        use std::sync::atomic::Ordering;
-        if connections.fetch_add(1, Ordering::SeqCst) >= 32 {
-            connections.fetch_sub(1, Ordering::SeqCst);
-            drop(stream);
+        let Ok(peer) = stream.peer_addr() else {
             continue;
-        }
-        let count = connections.clone();
+        };
+        let Some(permit) = limiter.try_acquire(peer.ip()) else {
+            continue;
+        };
         let (link, path, auth, tls) = (
             crate::link::factory(paths, None, None).expect("an unsigned link always builds"),
             path.clone(),
@@ -1260,11 +1311,13 @@ pub fn http(paths: &Paths, addr: &str) -> i32 {
             tls.clone(),
         );
         std::thread::spawn(move || {
+            let _permit = permit;
+            let _ = stream.set_read_timeout(Some(crate::listen::REQUEST_DEADLINE));
+            let _ = stream.set_write_timeout(Some(crate::listen::REQUEST_DEADLINE));
             let local = stream.local_addr().ok();
             if let Ok(net) = crate::tls::NetStream::wrap(stream, tls.as_ref()) {
                 serve_connection(net, local, link, path, auth);
             }
-            count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
         });
     }
     0
@@ -1899,6 +1952,61 @@ mod tests {
         ));
         assert!(unauth.starts_with("HTTP/1.1 401 Unauthorized"), "{unauth}");
         assert!(unauth.contains("WWW-Authenticate: Bearer"), "{unauth}");
+
+        // 2b. Unauthenticated request with a huge Content-Length is refused
+        // before any body bytes are read.
+        let listener2 = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr2 = listener2.local_addr().unwrap();
+        let auth2 = auth.clone();
+        let link2 = link.clone();
+        std::thread::spawn(move || {
+            for stream in listener2.incoming().flatten().take(2) {
+                let local = stream.local_addr().ok();
+                serve_connection_with_deadline(
+                    crate::tls::NetStream::Plain(stream),
+                    local,
+                    link2.clone(),
+                    "/mcp/secret".into(),
+                    Some(auth2.clone()),
+                    Duration::from_millis(300),
+                );
+            }
+        });
+        {
+            let mut s = TcpStream::connect(addr2).unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            // Send headers only, never send the 1 MiB body.
+            write!(
+                s,
+                "POST /mcp HTTP/1.1\r\nHost: {addr2}\r\nContent-Length: 1048576\r\n\r\n"
+            )
+            .unwrap();
+            let mut out = String::new();
+            let _ = s.read_to_string(&mut out);
+            assert!(out.starts_with("HTTP/1.1 401 Unauthorized"), "{out}");
+        }
+        {
+            // Slowloris headers are cut off at the whole-request deadline.
+            let mut s = TcpStream::connect(addr2).unwrap();
+            s.write_all(b"POST /mcp HTTP/1.1\r\n").unwrap();
+            let start = std::time::Instant::now();
+            let mut closed = false;
+            for b in b"X-Slow: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+                std::thread::sleep(Duration::from_millis(50));
+                if s.write_all(&[*b]).is_err() {
+                    closed = true;
+                    break;
+                }
+                let mut buf = [0u8; 64];
+                s.set_read_timeout(Some(Duration::from_millis(1))).unwrap();
+                if let Ok(0) = s.read(&mut buf) {
+                    closed = true;
+                    break;
+                }
+            }
+            assert!(closed, "slowloris headers must be cut off at the deadline");
+            assert!(start.elapsed() < Duration::from_secs(2));
+        }
 
         // 3. Authenticated POST /mcp -> 200 OK
         let now = std::time::SystemTime::now()

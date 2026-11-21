@@ -6,16 +6,69 @@ use crate::rpc::Client;
 use crate::tls::{load_server_config, NetStream};
 use crate::util::{Config, Paths};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpListener;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::net::{IpAddr, TcpListener};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub const PATH: &str = "/summonr/v1/signed";
 /// Bodies over this are refused before any signature work.
 pub const MAX_BODY: usize = 1_048_576;
-const MAX_CONNECTIONS: usize = 32;
+pub(crate) const MAX_CONNECTIONS: usize = 64;
+pub(crate) const MAX_CONNECTIONS_PER_IP: usize = 16;
+
+/// Bounded global and per-IP connection counter so one client cannot starve
+/// the listener for everyone else.
+pub(crate) struct ConnectionLimiter {
+    max_total: usize,
+    max_per_ip: usize,
+    state: Mutex<(usize, HashMap<IpAddr, usize>)>,
+}
+
+pub(crate) struct ConnectionPermit {
+    limiter: Arc<ConnectionLimiter>,
+    ip: IpAddr,
+}
+
+impl ConnectionLimiter {
+    pub(crate) fn new(max_total: usize, max_per_ip: usize) -> Arc<Self> {
+        Arc::new(Self {
+            max_total,
+            max_per_ip,
+            state: Mutex::new((0, HashMap::new())),
+        })
+    }
+
+    pub(crate) fn try_acquire(self: &Arc<Self>, ip: IpAddr) -> Option<ConnectionPermit> {
+        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let (total, by_ip) = &mut *guard;
+        let ip_count = by_ip.get(&ip).copied().unwrap_or(0);
+        if *total >= self.max_total || ip_count >= self.max_per_ip {
+            return None;
+        }
+        *total += 1;
+        *by_ip.entry(ip).or_insert(0) += 1;
+        Some(ConnectionPermit {
+            limiter: self.clone(),
+            ip,
+        })
+    }
+}
+
+impl Drop for ConnectionPermit {
+    fn drop(&mut self) {
+        let mut guard = self.limiter.state.lock().unwrap_or_else(|e| e.into_inner());
+        let (total, by_ip) = &mut *guard;
+        *total = total.saturating_sub(1);
+        if let Some(count) = by_ip.get_mut(&self.ip) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                by_ip.remove(&self.ip);
+            }
+        }
+    }
+}
 
 pub fn listen(paths: &Paths, addr: &str) -> i32 {
     let cfg = match Config::load(paths) {
@@ -84,18 +137,22 @@ pub fn serve_with_tls(
     deadline: Duration,
     tls: Option<Arc<rustls::ServerConfig>>,
 ) {
-    let open = Arc::new(AtomicUsize::new(0));
+    let limiter = ConnectionLimiter::new(MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP);
     for stream in listener.incoming().flatten() {
-        if open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
-            open.fetch_sub(1, Ordering::SeqCst);
+        let Ok(peer) = stream.peer_addr() else {
             continue;
-        }
-        let (open, paths, tls) = (open.clone(), paths.clone(), tls.clone());
+        };
+        let Some(permit) = limiter.try_acquire(peer.ip()) else {
+            continue;
+        };
+        let (paths, tls) = (paths.clone(), tls.clone());
         std::thread::spawn(move || {
+            let _permit = permit;
+            let _ = stream.set_read_timeout(Some(deadline));
+            let _ = stream.set_write_timeout(Some(deadline));
             if let Ok(net) = NetStream::wrap(stream, tls.as_ref()) {
                 serve_one(net, &paths, deadline);
             }
-            open.fetch_sub(1, Ordering::SeqCst);
         });
     }
 }
@@ -115,9 +172,9 @@ fn respond(stream: &mut NetStream, status: &str, body: &str) {
 
 /// Reads that give each call only what is left of the request's deadline,
 /// so a client cannot hold a connection by trickling bytes.
-struct Deadline {
-    stream: NetStream,
-    until: std::time::Instant,
+pub(crate) struct Deadline {
+    pub(crate) stream: NetStream,
+    pub(crate) until: std::time::Instant,
 }
 
 impl Read for Deadline {
@@ -343,6 +400,23 @@ mod tests {
         }
         assert!(closed, "a request that trickles in must be cut off at the deadline");
         assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn connection_limiter_caps_per_ip_without_starving_others() {
+        let limiter = ConnectionLimiter::new(4, 2);
+        let a: IpAddr = "127.0.0.1".parse().unwrap();
+        let b: IpAddr = "127.0.0.2".parse().unwrap();
+        let p1 = limiter.try_acquire(a).unwrap();
+        let p2 = limiter.try_acquire(a).unwrap();
+        assert!(limiter.try_acquire(a).is_none(), "per-IP cap enforced");
+        // Another IP still gets slots up to the global limit.
+        let q1 = limiter.try_acquire(b).unwrap();
+        let q2 = limiter.try_acquire(b).unwrap();
+        assert!(limiter.try_acquire("127.0.0.3".parse().unwrap()).is_none(), "global cap enforced");
+        drop(p1);
+        let p3 = limiter.try_acquire(a).unwrap();
+        drop((p2, p3, q1, q2));
     }
 
 }
