@@ -390,8 +390,12 @@ pub fn target_digest(cfg: Option<&crate::util::Config>, args: &Value) -> Result<
             }
         }
     }
+    // Any answer is a version of the target (a POST endpoint that answers
+    // GET with 405 still answers the same way until it changes); only a
+    // failure to get an answer leaves the target unknown.
     match req.call() {
-        Ok(resp) => {
+        Err(ureq::Error::Status(404, _)) => Ok(Some("missing".into())),
+        Ok(resp) | Err(ureq::Error::Status(_, resp)) => {
             let status = resp.status();
             let etag = resp.header("ETag").unwrap_or("").to_string();
             let body = resp.into_reader();
@@ -401,7 +405,6 @@ pub fn target_digest(cfg: Option<&crate::util::Config>, args: &Value) -> Result<
             buf.extend_from_slice(&data);
             Ok(Some(crate::util::sha256_hex(&buf)))
         }
-        Err(ureq::Error::Status(404, _)) => Ok(Some("missing".into())),
         Err(e) => Err(Fail::Failed(format!("HTTP digest probe failed: {e}"))),
     }
 }

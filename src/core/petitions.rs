@@ -1,6 +1,9 @@
 //! petitions service.
 use super::*;
 
+/// How long an approved write (and its digest re-check) may take.
+const APPROVED_WRITE_TIME: std::time::Duration = std::time::Duration::from_secs(600);
+
 impl Core {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn propose(
@@ -187,12 +190,16 @@ impl Core {
         for pet in chosen {
             let id = pet.id.as_str().to_string();
             let mut warning = None;
+            // An approved write is bounded like any run: a hung program
+            // fails it instead of holding this call (and the petition) forever.
+            let deadline = std::time::Instant::now() + APPROVED_WRITE_TIME;
             let now = || {
                 reagent::target_digest_with_config(
                     self.cfg.mail_root.as_deref(),
                     Some(&self.cfg),
                     &pet.operation,
                     &pet.arguments,
+                    Some(deadline),
                 )
                 .ok()
                 .flatten()
@@ -232,7 +239,7 @@ impl Core {
                 let selected = pet.selection;
                 let selected = Mutex::new(selected);
                 let auth = reagent::Authority {
-                    deadline: None,
+                    deadline: Some(deadline),
                     on_item: None,
                     grants: &grants,
                     selected: &selected,

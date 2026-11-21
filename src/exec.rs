@@ -614,7 +614,41 @@ impl Run {
         let would_hold = hold && self.io.simulates(op, Some(&self.core.cfg));
         if hold && !would_hold {
             // Buffer before acting: record what would be done and why, and
-            // leave the decision to a person.
+            // leave the decision to a person. A write no grant covers is
+            // refused here, before its target is probed or a petition filed.
+            let deadline = self.meters.iter().filter_map(|m| m.deadline).min();
+            reagent::authorize(
+                self.core.cfg.mail_root.as_deref(),
+                op,
+                &args,
+                &Authority {
+                    grants: &self.grants,
+                    deadline,
+                    on_item: None,
+                    selected: &self.selected,
+                    expected_digest: None,
+                    config: Some(&self.core.cfg),
+                },
+            )?;
+            self.check_live()?;
+            // A petition is bound to the version of its target that was
+            // reviewed. If that version cannot be read, nothing is held: an
+            // unbound approval would act on whatever is there by then.
+            let digest = reagent::target_digest_with_config(
+                self.core.cfg.mail_root.as_deref(),
+                Some(&self.core.cfg),
+                op,
+                &args,
+                deadline,
+            )
+            .map_err(|e| match e {
+                Fail::Exhausted(_) | Fail::Cancelled => e,
+                other => Fail::Failed(format!(
+                    "{op} was not held: cannot record the current state of its target ({})",
+                    other.message()
+                )),
+            })?;
+            self.check_live()?;
             let frame = scope.frames.last().unwrap();
             let because: Map<String, Value> = frame
                 .steps
@@ -623,13 +657,6 @@ impl Run {
                 .map(|(k, v)| (k.clone(), v.output.clone()))
                 .collect();
             let selection: Vec<String> = self.selected.lock().unwrap().iter().cloned().collect();
-            let digest = reagent::target_digest_with_config(
-                self.core.cfg.mail_root.as_deref(),
-                Some(&self.core.cfg),
-                op,
-                &args,
-            )
-            .unwrap_or(None);
             let pid = self.core.propose(
                 &self.id,
                 &self.root_ritual,

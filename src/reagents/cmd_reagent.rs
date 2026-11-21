@@ -4,7 +4,10 @@
 //! Never invokes a shell.
 
 use crate::file_reagent::validate_root;
-use crate::git_reagent::run_bounded;
+use crate::git_reagent::run_bounded_kept;
+
+/// The most output a command keeps (its end); the rest is read and dropped.
+const KEEP_BYTES: usize = 1 << 20;
 use crate::reagent::{self, Authority, Fail, Reagent, ToolSpec};
 use crate::util::{sha256_hex, CommandConfig, Config};
 use serde_json::{json, Value};
@@ -258,7 +261,7 @@ pub fn target_digest(
     let dargs = json!({"command": dname, "params": Value::Object(dparams)});
     let (_, dcfg, rendered) = prepare_command(cfg, "read", &dargs)?;
     let arg_refs: Vec<&str> = rendered.iter().map(String::as_str).collect();
-    let (code, out, err) = run_bounded(&dcfg.program, &arg_refs, Path::new(&dcfg.cwd), deadline)?;
+    let (code, out, err) = run_bounded_kept(&dcfg.program, &arg_refs, Path::new(&dcfg.cwd), deadline, KEEP_BYTES)?;
     if code != 0 && !dcfg.allow_nonzero {
         let last = err
             .lines()
@@ -366,11 +369,12 @@ impl Reagent for Cmd {
                     }
                 }
                 let arg_refs: Vec<&str> = rendered.iter().map(String::as_str).collect();
-                match run_bounded(
+                match run_bounded_kept(
                     &cmd_cfg.program,
                     &arg_refs,
                     Path::new(&cmd_cfg.cwd),
                     auth.deadline,
+                    KEEP_BYTES,
                 ) {
                     Ok((code, out, err)) => {
                         if code != 0 && !cmd_cfg.allow_nonzero {

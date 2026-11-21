@@ -89,10 +89,6 @@ pub(crate) fn command(prog: &str, git: bool) -> Command {
     c
 }
 
-pub(crate) fn run_bounded(prog: &str, args: &[&str], cwd: &Path, deadline: Option<Instant>) -> Result<(i32, String, String), Fail> {
-    run_bounded_as(prog, args, cwd, deadline, false)
-}
-
 /// Run a program in its own process group with separate arguments (never a
 /// shell) and no input. At the deadline the whole group is stopped; when the
 /// program exits, anything it left running in its group is stopped too. A

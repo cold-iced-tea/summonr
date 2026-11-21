@@ -380,18 +380,21 @@ fn a_marks_count_comes_from_signed_positions() {
 #[test]
 fn post_run_petition_decisions_are_sealed_in_the_epitaph_chain() {
     let h = Home::new("");
+    let dir = h.root.join("files");
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = dir.to_str().unwrap();
     h.inscribe_def(json!({
         "ritual": "held-move",
-        "reagents": {"mail": {"select": ["move"]}},
-        "requires": [{"reagent": "mail", "action": "move", "on": {"folder": "Inbox"}, "into": {"folder": ["Receipts"]}}],
+        "reagents": {"file": {"select": ["write_text"]}},
+        "requires": [{"reagent": "file", "action": "write_text", "on": {"root": root}}],
         "steps": [{
             "id": "m",
-            "operation": "mail.move",
-            "arguments": {"message": "001", "folder": "Receipts"},
+            "operation": "file.write_text",
+            "arguments": {"root": root, "path": "note.txt", "text": "hi"},
             "hold": true
         }]
     }), false);
-    h.call("grant", json!({"ritual": "held-move", "scopes": [{"reagent": "mail", "all": true}]})).unwrap();
+    h.call("grant", json!({"ritual": "held-move", "scopes": [{"reagent": "file", "select": ["write_text"]}], "on": {"root": root}})).unwrap();
     let run = h.run(json!({"target": "held-move", "args": {}}));
     assert_eq!(run["outcome"], "returned");
     let before = epitaphs(&h.core);

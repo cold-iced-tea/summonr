@@ -35,7 +35,7 @@ pub fn now_ms() -> i64 {
     wall.saturating_add(dynamic_clock_offset_ms())
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 

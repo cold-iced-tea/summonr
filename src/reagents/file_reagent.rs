@@ -199,9 +199,22 @@ pub fn target_digest(args: &Value) -> Result<Option<String>, Fail> {
             "target `{path}` is a {kind}, not a regular file"
         ))),
         Some(_) => {
+            // Hashed as it is read, so a file of any size binds its petition.
+            use sha2::{Digest, Sha256};
             let mut f = open_at(&parent, leaf, false)?;
-            let bytes = read_bounded_bytes(&mut f, 1048576, None)?;
-            Ok(Some(format!("sha256:{}", crate::util::sha256_hex(&bytes))))
+            if !f.metadata().map_err(|e| Fail::Failed(e.to_string()))?.is_file() {
+                return Err(Fail::Denied("operation accepts only regular files".into()));
+            }
+            let mut hasher = Sha256::new();
+            let mut chunk = [0; 65536];
+            loop {
+                let n = f.read(&mut chunk).map_err(|e| Fail::Failed(e.to_string()))?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&chunk[..n]);
+            }
+            Ok(Some(format!("sha256:{}", crate::util::hex(hasher.finalize().as_slice()))))
         }
     }
 }

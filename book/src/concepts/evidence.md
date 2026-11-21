@@ -60,6 +60,8 @@ summonr petition deny p-bd5c4a92      # discard it
 
 Permitting first recomputes the digest. If the message changed, moved, or disappeared since the petition was filed, nothing is done and the petition becomes `stale` (exit 5): approval applies to what you reviewed, not to whatever is there now. Petitions filed before digests existed are still permitted, with a warning that they are unbound.
 
+A held write is checked against the ritual's grants before anything else: a write no grant covers is refused at once, and its target is never probed. Its digest is then read within the run's time limit (files of any size, mail, `cmd.write` with a `digest_command`, and HTTP targets, where any answer counts as the target's state). If the digest cannot be read, the write is not held and the step fails: an unbound petition would let approval act on whatever is there by then. A permitted write has ten minutes to finish.
+
 Otherwise permitting runs the operation under the ritual's **current** grants and runs its verification. Each petition is atomically claimed as `executing` before action, then becomes `applied`, `unverified`, `failed`, `stale`, or `denied`. An interrupted claim becomes `unknown` on recovery and is never automatically retried. When you name several ids, all of them must be pending before any is acted on.
 
 Agents can list petitions (`list_held_actions`) but cannot decide them. When a run over MCP leaves held actions, its result tells the agent to send you to `summonr petition`.

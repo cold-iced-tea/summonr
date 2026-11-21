@@ -723,7 +723,7 @@ pub fn target_digest(
     operation: &str,
     args: &Value,
 ) -> Result<Option<String>, Fail> {
-    target_digest_with_config(mail_root, None, operation, args)
+    target_digest_with_config(mail_root, None, operation, args, None)
 }
 
 pub fn target_digest_with_config(
@@ -731,6 +731,7 @@ pub fn target_digest_with_config(
     cfg: Option<&crate::util::Config>,
     operation: &str,
     args: &Value,
+    deadline: Option<std::time::Instant>,
 ) -> Result<Option<String>, Fail> {
     match operation {
         "mail.move" => {
@@ -740,7 +741,7 @@ pub fn target_digest_with_config(
                 .ok_or_else(|| Fail::Failed(format!("message `{id}` no longer exists")))?;
             message_digest(id, &folder, &path).map(Some)
         }
-        "cmd.write" => crate::cmd_reagent::target_digest(cfg, args, None),
+        "cmd.write" => crate::cmd_reagent::target_digest(cfg, args, deadline),
         "file.write_text" | "file.append_jsonl" | "file.delete" => {
             crate::file_reagent::target_digest(args)
         }

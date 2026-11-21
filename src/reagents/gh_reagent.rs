@@ -1,7 +1,7 @@
 //! The `gh` reagent: find or open a pull request with the user's own `gh`
 //! login. Summonr stores no GitHub token.
 
-use crate::git_reagent::{config, repo, run_bounded, valid_ref_name};
+use crate::git_reagent::{config, repo, run_bounded_kept, valid_ref_name};
 use crate::reagent::{self, Authority, Fail, Reagent, ToolSpec};
 use serde_json::{json, Value};
 use std::path::Path;
@@ -16,7 +16,7 @@ const TOOLS: &[ToolSpec] = &[
 
 fn gh(auth: &Authority, cwd: &Path, args: &[&str]) -> Result<String, Fail> {
     let prog = config(auth)?.gh.clone().unwrap_or_else(|| "gh".into());
-    let (code, out, err) = run_bounded(&prog, args, cwd, auth.deadline)?;
+    let (code, out, err) = run_bounded_kept(&prog, args, cwd, auth.deadline, 1 << 20)?;
     if code != 0 {
         let last = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();
         return Err(Fail::Failed(format!("gh {}: {last}", args.first().unwrap_or(&""))));
