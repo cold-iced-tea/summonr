@@ -1093,6 +1093,11 @@ fn validate_inner(
             v.errors.push(format!("essence time: {e}"));
         }
     }
+    if let Some(c) = &def.essence.cost {
+        if let Err(e) = crate::util::parse_cost_microusd(c) {
+            v.errors.push(format!("essence cost: {e}"));
+        }
+    }
     if let Some(p) = &def.drift.on_mismatch {
         if !matches!(p.as_str(), "note" | "warn" | "refuse") {
             v.errors.push(format!(

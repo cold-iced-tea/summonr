@@ -34,6 +34,7 @@ struct SessionRow {
     turns: Vec<Value>,
     used_requests: u64,
     used_tokens: u64,
+    used_cost_microusd: u64,
     status: String,
     created: i64,
     ended: Option<i64>,
@@ -44,7 +45,7 @@ impl Core {
         let db = self.db.lock().unwrap();
         let row = db
             .query_row(
-                "SELECT id, name, model, system_prompt, settings, essence, bindings, turns, used_requests, used_tokens, status, created, ended FROM sessions WHERE id=?1",
+                "SELECT id, name, model, system_prompt, settings, essence, bindings, turns, used_requests, used_tokens, status, created, ended, used_cost_microusd FROM sessions WHERE id=?1",
                 params![id],
                 |r| {
                     Ok((
@@ -61,6 +62,7 @@ impl Core {
                         r.get::<_, String>(10)?,
                         r.get::<_, i64>(11)?,
                         r.get::<_, Option<i64>>(12)?,
+                        r.get::<_, i64>(13)?,
                     ))
                 },
             )
@@ -78,6 +80,7 @@ impl Core {
             turns: serde_json::from_str(&row.7).map_err(|e| RpcErr::new("storage_failed", 11, e.to_string()))?,
             used_requests: row.8.max(0) as u64,
             used_tokens: row.9.max(0) as u64,
+            used_cost_microusd: row.13.max(0) as u64,
             status: row.10,
             created: row.11,
             ended: row.12,
@@ -107,6 +110,7 @@ impl Core {
             "turns": s.turns,
             "used_requests": s.used_requests,
             "used_tokens": s.used_tokens,
+            "used_cost_microusd": s.used_cost_microusd,
             "status": s.status,
             "created": s.created,
             "ended": s.ended,
@@ -312,6 +316,34 @@ impl Core {
                 ));
             }
         }
+        let max_cost_microusd = s
+            .essence
+            .cost
+            .as_deref()
+            .map(crate::util::parse_cost_microusd)
+            .transpose()
+            .map_err(RpcErr::invalid)?;
+        let pricing = self.cfg.price_for(&model);
+        if let Some(max_cost) = max_cost_microusd {
+            if pricing.is_none() {
+                return Err(RpcErr::new(
+                    "failed",
+                    11,
+                    format!("model `{model}` has no entry in config.yaml `pricing:` and this session has a cost limit"),
+                ));
+            }
+            if s.used_cost_microusd >= max_cost {
+                return Err(RpcErr::new(
+                    "exhausted",
+                    10,
+                    format!(
+                        "session cost essence exhausted ({}/{})",
+                        crate::util::fmt_cost_microusd(s.used_cost_microusd),
+                        crate::util::fmt_cost_microusd(max_cost)
+                    ),
+                ));
+            }
+        }
         let timeout = if let Some(ref t) = s.essence.time {
             let ms = crate::util::parse_duration(t).map_err(RpcErr::invalid)?;
             let elapsed = (now_ms() - s.created).max(0) as u64;
@@ -381,16 +413,23 @@ impl Core {
         )
         .map_err(|e| RpcErr::new("backend_failed", 11, e))?;
 
-        // Charge tokens before validating the output so a schema failure
+        // Charge tokens & cost before validating the output so a schema failure
         // never becomes a free retry, and reject post-response overruns.
         let turn_tokens = resp.prompt_tokens.saturating_add(resp.output_tokens);
+        let turn_cost = match &pricing {
+            Some(rate) => rate
+                .cost_microusd(resp.prompt_tokens, resp.output_tokens)
+                .map_err(|e| RpcErr::new("failed", 11, e))?,
+            None => resp.provider_cost_microusd.unwrap_or(0),
+        };
         s.used_tokens = s.used_tokens.saturating_add(turn_tokens);
+        s.used_cost_microusd = s.used_cost_microusd.saturating_add(turn_cost);
         self.db
             .lock()
             .unwrap()
             .execute(
-                "UPDATE sessions SET used_tokens=?2 WHERE id=?1",
-                params![s.id, s.used_tokens as i64],
+                "UPDATE sessions SET used_tokens=?2, used_cost_microusd=?3 WHERE id=?1",
+                params![s.id, s.used_tokens as i64, s.used_cost_microusd as i64],
             )
             .map_err(storage_error)?;
         if let Some(max_tok) = s.essence.tokens {
@@ -401,6 +440,26 @@ impl Core {
                     format!(
                         "session token essence exhausted ({}/{})",
                         s.used_tokens, max_tok
+                    ),
+                ));
+            }
+        }
+        if let Some(max_cost) = max_cost_microusd {
+            if resp.token_confidence == "unknown" {
+                return Err(RpcErr::new(
+                    "failed",
+                    11,
+                    "backend did not report token usage; cannot check session cost essence",
+                ));
+            }
+            if s.used_cost_microusd > max_cost {
+                return Err(RpcErr::new(
+                    "exhausted",
+                    10,
+                    format!(
+                        "session cost essence exceeded ({}/{})",
+                        crate::util::fmt_cost_microusd(s.used_cost_microusd),
+                        crate::util::fmt_cost_microusd(max_cost)
                     ),
                 ));
             }
@@ -449,6 +508,7 @@ impl Core {
             },
             "used_requests": s.used_requests,
             "used_tokens": s.used_tokens,
+            "used_cost_microusd": s.used_cost_microusd,
         }))
     }
 

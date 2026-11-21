@@ -513,6 +513,7 @@ impl crate::io::Io for CannedChat {
             payload: json!({"canned": true}),
             constrained: false,
             token_confidence: "exact",
+            provider_cost_microusd: None,
         })
     }
     fn call(
@@ -1500,6 +1501,139 @@ fn session_bid_charges_tokens_even_when_schema_check_fails() {
         "tokens must be charged even when schema validation fails: {state}"
     );
     assert_eq!(state["used_requests"], 1);
+
+    drop(c);
+    std::fs::remove_dir_all(p.state.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn cost_budget_fails_closed_on_unpriced_model_before_dispatch() {
+    let p = paths();
+    let c = Core::open(p.clone()).unwrap();
+    let dir = p.state.parent().unwrap();
+    let f = dir.join("unpriced.yaml");
+    std::fs::write(
+        &f,
+        r#"
+ritual: unpriced-check
+model: openai/gpt-4.1-mini
+essence: {requests: 1, cost: "$0.01", time: 1m}
+steps:
+  - id: ask
+    model:
+      instructions: "reply"
+      prompt: "hi"
+return:
+  ans: "${steps.ask.output}"
+"#,
+    )
+    .unwrap();
+    let reh = c
+        .dispatch("rehearse", json!({"target": f.to_str().unwrap()}))
+        .unwrap();
+    assert_eq!(reh["pricing"]["openai/gpt-4.1-mini"], "unpriced");
+    assert!(
+        reh["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w.as_str().unwrap_or("").contains("pricing:")),
+        "rehearse should warn on unpriced model with essence.cost: {reh}"
+    );
+    let started = c
+        .dispatch("invoke", json!({"target": f.to_str().unwrap()}))
+        .unwrap();
+    let ended = c
+        .dispatch("wait", json!({"summon": started["summon"], "timeout_ms": 10_000}))
+        .unwrap();
+    assert_eq!(ended["outcome"], "failed", "{ended}");
+    assert_eq!(ended["requests"], 0, "must fail closed before dispatch: {ended}");
+    assert!(
+        ended["error"].as_str().unwrap_or("").contains("pricing:"),
+        "{ended}"
+    );
+
+    drop(c);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn cost_budget_charges_rate_card_and_exhausts_on_overrun() {
+    let p = paths();
+    std::fs::create_dir_all(&p.config).unwrap();
+    std::fs::write(
+        p.config.join("config.yaml"),
+        "pricing:\n  \"mock/keyword\":\n    input_per_mtok_usd: 10000.0\n    output_per_mtok_usd: 10000.0\n",
+    )
+    .unwrap();
+    let c = Core::open(p.clone()).unwrap();
+    let dir = p.state.parent().unwrap();
+    let f = dir.join("priced.yaml");
+    std::fs::write(
+        &f,
+        r#"
+ritual: priced-check
+model: mock/keyword
+essence: {requests: 2, cost: "$0.0001", time: 1m}
+steps:
+  - id: ask
+    model:
+      instructions: "pick"
+      prompt: "hello world this has several tokens"
+      schema:
+        type: object
+        properties: {choice: {type: string, enum: [hello, other]}}
+        required: [choice]
+return:
+  choice: "${steps.ask.output.choice}"
+"#,
+    )
+    .unwrap();
+    let started = c
+        .dispatch("invoke", json!({"target": f.to_str().unwrap()}))
+        .unwrap();
+    let ended = c
+        .dispatch("wait", json!({"summon": started["summon"], "timeout_ms": 10_000}))
+        .unwrap();
+    assert_eq!(ended["outcome"], "exhausted", "{ended}");
+    assert!(
+        ended["cost_microusd"].as_u64().unwrap_or(0) > 100,
+        "expected cost_microusd > 100: {ended}"
+    );
+
+    drop(c);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn session_cost_budget_enforces_pricing_and_cap() {
+    let p = paths();
+    std::fs::create_dir_all(&p.config).unwrap();
+    std::fs::write(
+        p.config.join("config.yaml"),
+        "pricing:\n  \"mock/keyword\":\n    input_per_mtok_usd: 10000.0\n    output_per_mtok_usd: 10000.0\n",
+    )
+    .unwrap();
+    let c = Core::open(p.clone()).unwrap();
+    let opened = c
+        .dispatch(
+            "session_open",
+            json!({"model": "mock/keyword", "essence": {"requests": 5, "cost": "$0.0001"}}),
+        )
+        .unwrap();
+    let sid = opened["session"].as_str().unwrap().to_string();
+    let err = c
+        .dispatch(
+            "session_bid",
+            json!({"session": sid, "prompt": "hello world this exceeds budget"}),
+        )
+        .unwrap_err();
+    assert_eq!(err.code, "exhausted", "{err:?}");
+    let state = c.dispatch("session_get", json!({"session": sid})).unwrap();
+    assert!(
+        state["used_cost_microusd"].as_u64().unwrap_or(0) > 100,
+        "expected used_cost_microusd > 100: {state}"
+    );
 
     drop(c);
     std::fs::remove_dir_all(p.state.parent().unwrap()).unwrap();

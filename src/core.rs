@@ -385,6 +385,8 @@ impl Core {
         add_column(&db, "baselines", "mode", "TEXT NOT NULL DEFAULT 'live'")?;
         // The touchstone {name, version, hash} a baseline's expectations came from.
         add_column(&db, "baselines", "touchstone", "TEXT")?;
+        add_column(&db, "summons", "cost_microusd", "INTEGER")?;
+        add_column(&db, "sessions", "used_cost_microusd", "INTEGER NOT NULL DEFAULT 0")?;
         // Work that was running when a previous core died cannot be shown as
         // done; its completion is unknown.
         let lost: Vec<String> = {
@@ -531,10 +533,10 @@ impl Core {
         ));
     }
 
-    pub fn usage(&self, id: &str, requests: u64, tokens: u64) {
+    pub fn usage(&self, id: &str, requests: u64, tokens: u64, cost_microusd: Option<u64>) {
         self.persisted(self.db.lock().unwrap().execute(
-            "UPDATE summons SET requests=?2, tokens=?3 WHERE id=?1",
-            params![id, requests as i64, tokens as i64],
+            "UPDATE summons SET requests=?2, tokens=?3, cost_microusd=?4 WHERE id=?1",
+            params![id, requests as i64, tokens as i64, cost_microusd.map(|c| c as i64)],
         ));
     }
 
@@ -788,6 +790,9 @@ impl Core {
                 "ritual contract changed; describe it again before running",
             ));
         }
+        if let Some(c) = &spec.limits.cost {
+            crate::util::parse_cost_microusd(c).map_err(RpcErr::invalid)?;
+        }
         if let Some(t) = &spec.limits.time {
             crate::util::parse_duration(t).map_err(RpcErr::invalid)?;
         }
@@ -802,6 +807,19 @@ impl Core {
         def.essence.tokens = lower(def.essence.tokens, spec.limits.tokens);
         def.essence.tool_calls = lower(def.essence.tool_calls, spec.limits.tool_calls);
         def.essence.items = lower(def.essence.items, spec.limits.items);
+        if let Some(c) = &spec.limits.cost {
+            let incoming = crate::util::parse_cost_microusd(c).map_err(RpcErr::invalid)?;
+            let existing = def
+                .essence
+                .cost
+                .as_deref()
+                .map(crate::util::parse_cost_microusd)
+                .transpose()
+                .map_err(RpcErr::invalid)?;
+            def.essence.cost = Some(crate::util::fmt_cost_microusd(
+                lower(existing, Some(incoming)).unwrap(),
+            ));
+        }
         if let Some(t) = &spec.limits.time {
             let incoming = crate::util::parse_duration(t).map_err(RpcErr::invalid)?;
             let existing = def
@@ -1843,12 +1861,37 @@ impl Core {
             .iter()
             .map(|(n, b)| json!({"name": n, "source": b.document, "hash": b.hash, "chars": b.content.as_deref().map(|c| c.chars().count())}))
             .collect();
+        let mut warnings = r.warnings;
+        let mut pricing_info = serde_json::Map::new();
+        for m in r
+            .effects
+            .iter()
+            .filter(|e| e.kind == "model")
+            .map(|e| e.what.as_str())
+        {
+            if !pricing_info.contains_key(m) {
+                match self.cfg.price_for(m) {
+                    Some(rate) => {
+                        pricing_info.insert(m.to_string(), json!(rate));
+                    }
+                    None => {
+                        pricing_info.insert(m.to_string(), json!("unpriced"));
+                        if r.def.essence.cost.is_some() {
+                            warnings.push(format!(
+                                "model `{m}` has no `pricing:` entry in config.yaml and this ritual sets `essence.cost`; execution will refuse before dispatch"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
         Ok(json!({
             "ritual": r.def.ritual, "version": r.version, "hash": r.hash,
             "inputs": r.inputs, "model": r.model, "settings": r.settings,
             "bindings": bindings, "essence": r.def.essence, "effects": r.effects,
+            "pricing": pricing_info,
             "authority": {"granted": r.grants, "missing": r.missing},
-            "warnings": r.warnings, "refused": r.refuse,
+            "warnings": warnings, "refused": r.refuse,
             "note": "No inference, tool call, or external action was performed. Model decisions and live tool results stay unresolved.",
         }))
     }

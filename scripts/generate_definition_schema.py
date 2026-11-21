@@ -41,7 +41,7 @@ def build():
     definitions['binding'] = obj({k: nullable(string) for k in ['document', 'content', 'hash']})
     definitions['reagent'] = obj({'select': arr(string), 'version': nullable(u32)})
     definitions['requirement'] = obj({'reagent': string, 'action': string, 'on': mapping(string), 'into': mapping({})}, ['reagent', 'action'])
-    definitions['essence'] = obj({**{k: nullable(u64) for k in ['requests', 'tokens', 'tool_calls', 'items']}, 'time': nullable(string)})
+    definitions['essence'] = obj({**{k: nullable(u64) for k in ['requests', 'tokens', 'tool_calls', 'items']}, 'time': nullable(string), 'cost': nullable(string)})
     definitions['drift'] = obj({'on_mismatch': nullable({'enum': ['note', 'warn', 'refuse']})})
     definitions['valueSchema'] = obj({'type': {'enum': ['object', 'array', 'string', 'boolean', 'integer', 'number', 'null']},
         '$defs': mapping(ref('valueSchema')), '$ref': string,

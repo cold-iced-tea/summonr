@@ -44,6 +44,8 @@ pub struct ChatResp {
     pub constrained: bool,
     /// `exact` when the backend reported token counts, `estimated` otherwise.
     pub token_confidence: &'static str,
+    /// Optional provider-reported USD cost converted to microdollars (e.g., OpenRouter `usage.cost`).
+    pub provider_cost_microusd: Option<u64>,
 }
 
 fn provider_registry() -> &'static RwLock<BTreeMap<String, ProviderConfig>> {
@@ -232,7 +234,21 @@ fn ollama_chat(base: &str, model: &str, req: ChatReq) -> Result<ChatResp, String
         payload: body,
         constrained: req.schema.is_some(),
         token_confidence: if reported { "exact" } else { "unknown" },
+        provider_cost_microusd: None,
     })
+}
+
+fn parse_provider_cost_microusd(v: &Value) -> Option<u64> {
+    let usd = v.as_f64()?;
+    if !usd.is_finite() || usd < 0.0 {
+        return None;
+    }
+    let micro = (usd * 1_000_000.0).ceil();
+    if micro > u64::MAX as f64 {
+        None
+    } else {
+        Some(micro as u64)
+    }
 }
 
 fn openai_chat(
@@ -263,6 +279,7 @@ fn openai_chat(
     let prompt_tokens = r["usage"]["prompt_tokens"].as_u64();
     let output_tokens = r["usage"]["completion_tokens"].as_u64();
     let reported = prompt_tokens.is_some() && output_tokens.is_some();
+    let provider_cost_microusd = parse_provider_cost_microusd(&r["usage"]["cost"]);
     Ok(ChatResp {
         content,
         done_reason,
@@ -275,6 +292,7 @@ fn openai_chat(
         payload: body,
         constrained: req.schema.is_some(),
         token_confidence: if reported { "exact" } else { "unknown" },
+        provider_cost_microusd,
     })
 }
 
@@ -325,6 +343,7 @@ fn anthropic_chat(
         // Anthropic Messages API without forced tool-use checks schema afterward.
         constrained: false,
         token_confidence: if reported { "exact" } else { "unknown" },
+        provider_cost_microusd: None,
     })
 }
 
@@ -691,6 +710,7 @@ fn mock_chat(req: ChatReq) -> ChatResp {
         payload: json!({"backend": "mock", "model": req.model, "system": req.system, "user": req.user, "format": req.schema, "options": req.settings}),
         constrained: false,
         token_confidence: "estimated",
+        provider_cost_microusd: None,
     }
 }
 

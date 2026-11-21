@@ -167,6 +167,11 @@ pub(crate) fn outcome_exit(outcome: &str) -> i32 {
 pub(crate) fn elegy_summary(d: &Value) {
     let outcome = d["outcome"].as_str().unwrap_or("?");
     let (word, ink) = theme::state_word(s(d, "status"), d["outcome"].as_str());
+    let cost_str = d["cost_microusd"]
+        .as_u64()
+        .filter(|&c| c > 0)
+        .map(|c| format!(" · {}", util::fmt_cost_microusd(c)))
+        .unwrap_or_default();
     println!(
         "{} {} {}",
         bold(Ink::Rubric, &format!("{} ELEGY", theme::ornament())),
@@ -174,7 +179,7 @@ pub(crate) fn elegy_summary(d: &Value) {
         paint(
             Ink::Dim,
             &format!(
-                "· {} · {} requests · {} tokens",
+                "· {} · {} requests · {} tokens{cost_str}",
                 fmt_dur(d["ended"].as_i64().unwrap_or(0) - d["started"].as_i64().unwrap_or(0)),
                 d["requests"],
                 thousands(d["tokens"].as_u64().unwrap_or(0))

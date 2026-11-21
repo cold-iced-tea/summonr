@@ -42,6 +42,7 @@ style: keyword
 | `openai_url` | `https://api.openai.com` | OpenAI-compatible endpoint for `openai/<model>` (or `SUMMONR_OPENAI_URL`) |
 | `anthropic_url` | `https://api.anthropic.com` | Anthropic Messages endpoint for `anthropic/<model>` (or `SUMMONR_ANTHROPIC_URL`) |
 | `providers` | none | Named model providers (`NAME: {kind, url, api_key_env}`) for `<provider>/<model>` |
+| `pricing` | none | Per-model USD/Mtok rate card (`<provider>/<model>` or `<provider>/*`: `{input_per_mtok_usd, output_per_mtok_usd}`) used by `essence.cost` |
 | `mail_root` | none | Mailbox root for the `mail` reagent. Required to use it. |
 | `max_active_runs` | `16` | Maximum admitted active top-level invocations; excess requests receive `busy` |
 | `repos` | none | Repositories the `git`, `gh` and `trial` reagents may act on: `NAME: {path, trunk, remote, test, disposable}`. See [Repositories](../guides/repositories.md). |

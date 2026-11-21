@@ -84,14 +84,14 @@ impl Store {
     ) -> Result<Vec<Value>, RpcErr> {
         let db = self.lock().unwrap();
         // The filter is an internal constant, never socket input.
-        let sql=format!("SELECT id,parent,series,ritual,version,hash,model,status,outcome,started,ended,done,total,requests,tokens,inputs,essence,result,error,cleanup,familiar FROM summons WHERE {filter} LIMIT ?2");
+        let sql=format!("SELECT id,parent,series,ritual,version,hash,model,status,outcome,started,ended,done,total,requests,tokens,inputs,essence,result,error,cleanup,familiar,cost_microusd FROM summons WHERE {filter} LIMIT ?2");
         let mut q = db.prepare(&sql).map_err(error)?;
         let rows=q.query_map(params![arg,limit],|r|{
             let outcome:Option<String>=r.get(8)?;
             if let Some(ref outcome)=outcome {
                 outcome.parse::<crate::outcome::Outcome>().map_err(|e|rusqlite::Error::FromSqlConversionFailure(8,rusqlite::types::Type::Text,Box::new(std::io::Error::other(e))))?;
             }
-            let mut v=json!({"id":r.get::<_,String>(0)?,"parent":r.get::<_,Option<String>>(1)?,"series":r.get::<_,Option<String>>(2)?,"ritual":r.get::<_,String>(3)?,"version":r.get::<_,u32>(4)?,"hash":r.get::<_,String>(5)?,"model":r.get::<_,Option<String>>(6)?,"status":r.get::<_,String>(7)?,"outcome":outcome,"started":r.get::<_,i64>(9)?,"ended":r.get::<_,Option<i64>>(10)?,"done":r.get::<_,i64>(11)?,"total":r.get::<_,i64>(12)?,"requests":r.get::<_,u64>(13)?,"tokens":r.get::<_,u64>(14)?,"essence":json_value(r.get(16)?)?,"error":r.get::<_,Option<String>>(18)?,"familiar":r.get::<_,Option<String>>(20)?});
+            let mut v=json!({"id":r.get::<_,String>(0)?,"parent":r.get::<_,Option<String>>(1)?,"series":r.get::<_,Option<String>>(2)?,"ritual":r.get::<_,String>(3)?,"version":r.get::<_,u32>(4)?,"hash":r.get::<_,String>(5)?,"model":r.get::<_,Option<String>>(6)?,"status":r.get::<_,String>(7)?,"outcome":outcome,"started":r.get::<_,i64>(9)?,"ended":r.get::<_,Option<i64>>(10)?,"done":r.get::<_,i64>(11)?,"total":r.get::<_,i64>(12)?,"requests":r.get::<_,u64>(13)?,"tokens":r.get::<_,u64>(14)?,"cost_microusd":r.get::<_,Option<u64>>(21)?,"essence":json_value(r.get(16)?)?,"error":r.get::<_,Option<String>>(18)?,"familiar":r.get::<_,Option<String>>(20)?});
             if full{v["inputs"]=json_value(r.get(15)?)?;v["result"]=json_value(r.get(17)?)?;v["cleanup"]=json_value(r.get(19)?)?;}
             Ok(v)
         }).map_err(error)?;

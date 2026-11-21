@@ -212,6 +212,7 @@ impl Io for Scripted {
             payload: serde_json::json!({"backend": "scripted", "step": step}),
             constrained: false,
             token_confidence: "exact",
+            provider_cost_microusd: None,
         })
     }
 
@@ -405,6 +406,7 @@ impl Io for Replay {
                 payload,
                 constrained: false,
                 token_confidence: "exact",
+                provider_cost_microusd: None,
             }),
             _ => Err(format!(
                 "no recording for model step `{step}` (request {}); re-record the cassette",

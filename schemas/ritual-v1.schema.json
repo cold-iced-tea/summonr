@@ -308,6 +308,16 @@
               "type": "null"
             }
           ]
+        },
+        "cost": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [],

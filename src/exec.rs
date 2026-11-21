@@ -28,14 +28,21 @@ pub struct Meter {
     pub tool_calls: AtomicU64,
     pub items: AtomicU64,
     pub max_tokens: Option<u64>,
+    pub max_cost_microusd: Option<u64>,
     pub deadline: Option<Instant>,
     pub requests: AtomicU64,
     pub tokens: AtomicU64,
+    pub cost_microusd: AtomicU64,
+    pub cost_known: AtomicBool,
 }
 
 impl Meter {
     pub fn new(e: &ritual::Essence) -> Meter {
         let time = e.time.as_deref().and_then(|t| parse_duration(t).ok());
+        let max_cost_microusd = e
+            .cost
+            .as_deref()
+            .and_then(|c| crate::util::parse_cost_microusd(c).ok());
         Meter {
             max_requests: e.requests,
             max_tool_calls: e.tool_calls,
@@ -43,6 +50,7 @@ impl Meter {
             tool_calls: AtomicU64::new(0),
             items: AtomicU64::new(0),
             max_tokens: e.tokens,
+            max_cost_microusd,
             deadline: time.map(|ms| {
                 Instant::now()
                     .checked_add(Duration::from_millis(ms))
@@ -50,6 +58,8 @@ impl Meter {
             }),
             requests: AtomicU64::new(0),
             tokens: AtomicU64::new(0),
+            cost_microusd: AtomicU64::new(0),
+            cost_known: AtomicBool::new(true),
         }
     }
 
@@ -70,6 +80,15 @@ impl Meter {
             return Err(Fail::Exhausted(format!(
                 "token limit of {} reached",
                 self.max_tokens.unwrap()
+            )));
+        }
+        if self
+            .max_cost_microusd
+            .is_some_and(|m| self.cost_microusd.load(Ordering::SeqCst) >= m)
+        {
+            return Err(Fail::Exhausted(format!(
+                "cost limit of {} reached",
+                crate::util::fmt_cost_microusd(self.max_cost_microusd.unwrap())
             )));
         }
         if self.deadline.is_some_and(|d| Instant::now() >= d) {
@@ -95,6 +114,15 @@ impl Meter {
             return Err(Fail::Exhausted(format!(
                 "reported token usage exceeded limit of {}",
                 self.max_tokens.unwrap()
+            )));
+        }
+        if self
+            .max_cost_microusd
+            .is_some_and(|m| self.cost_microusd.load(Ordering::SeqCst) > m)
+        {
+            return Err(Fail::Exhausted(format!(
+                "reported cost exceeded limit of {}",
+                crate::util::fmt_cost_microusd(self.max_cost_microusd.unwrap())
             )));
         }
         self.check_time()
@@ -947,6 +975,19 @@ impl Run {
             }
         }
         let (_, model_name) = backend::split_model(&model).map_err(Fail::Failed)?;
+        let cost_capped = self.meters.iter().any(|m| m.max_cost_microusd.is_some());
+        let pricing = self.core.cfg.price_for(&model);
+        if cost_capped && pricing.is_none() {
+            let msg = format!(
+                "step {sid}: model `{model}` has no entry in config.yaml `pricing:` and this run has a cost limit"
+            );
+            self.emit(
+                "model.refused",
+                msg.clone(),
+                json!({"step": sid, "model": model, "reason": "unpriced_model"}),
+            );
+            return Err(Fail::Failed(msg));
+        }
         self.admit_request()?;
         self.models_used.lock().unwrap().insert(model.clone());
         let req = ChatReq {
@@ -958,10 +999,16 @@ impl Run {
             timeout,
             max_output_tokens,
         };
+        let current_cost = if self.meters[0].cost_known.load(Ordering::SeqCst) {
+            Some(self.meters[0].cost_microusd.load(Ordering::SeqCst))
+        } else {
+            None
+        };
         self.core.usage(
             &self.id,
             self.meters[0].requests.load(Ordering::SeqCst),
             self.meters[0].tokens.load(Ordering::SeqCst),
+            current_cost,
         );
         let payload = backend::payload(&model, &req).map_err(Fail::Failed)?;
         self.emit(
@@ -985,13 +1032,39 @@ impl Run {
                     .unwrap_or_else(|| Fail::Failed(format!("step {sid}: {e}")))
             })?;
         let tokens = resp.prompt_tokens + resp.output_tokens;
+        let (turn_cost, cost_source) = match &pricing {
+            Some(rate) => {
+                let c = rate
+                    .cost_microusd(resp.prompt_tokens, resp.output_tokens)
+                    .map_err(Fail::Failed)?;
+                (Some(c), "rate_card")
+            }
+            None => match resp.provider_cost_microusd {
+                Some(c) => (Some(c), "provider"),
+                None => (None, "unpriced"),
+            },
+        };
         for meter in &self.meters {
             meter.tokens.fetch_add(tokens, Ordering::SeqCst);
+            match turn_cost {
+                Some(c) => {
+                    meter.cost_microusd.fetch_add(c, Ordering::SeqCst);
+                }
+                None => {
+                    meter.cost_known.store(false, Ordering::SeqCst);
+                }
+            }
         }
+        let persisted_cost = if self.meters[0].cost_known.load(Ordering::SeqCst) {
+            Some(self.meters[0].cost_microusd.load(Ordering::SeqCst))
+        } else {
+            None
+        };
         self.core.usage(
             &self.id,
             self.meters[0].requests.load(Ordering::SeqCst),
             self.meters[0].tokens.load(Ordering::SeqCst),
+            persisted_cost,
         );
         self.emit(
             "model",
@@ -1000,7 +1073,14 @@ impl Run {
                 "step": sid, "model": model, "context": "fresh", "manifest": manifest,
                 "payload": resp.payload, "response": resp.content,
                 "done_reason": resp.done_reason,
-                "usage": {"prompt_tokens": resp.prompt_tokens, "output_tokens": resp.output_tokens, "confidence": resp.token_confidence},
+                "usage": {
+                    "prompt_tokens": resp.prompt_tokens,
+                    "output_tokens": resp.output_tokens,
+                    "confidence": resp.token_confidence,
+                    "cost_microusd": turn_cost,
+                    "cost_source": cost_source,
+                    "provider_cost_microusd": resp.provider_cost_microusd,
+                },
                 "timing_ms": {"load": resp.load_ms, "prompt": resp.prompt_ms, "eval": resp.eval_ms, "total": resp.total_ms},
                 "structure": if m.schema.is_none() { "none declared" } else if resp.constrained { "enforced by decoder, then checked" } else { "checked afterward only" },
                 "essence_enforcement": {
@@ -1015,8 +1095,8 @@ impl Run {
                 "backend truncated generation; dependent work refused".into(),
             ));
         }
-        if max_output_tokens.is_some() && resp.token_confidence == "unknown" {
-            return Err(Fail::Failed("backend did not report token usage; cannot check token essence or continue dependent work".into()));
+        if (max_output_tokens.is_some() || cost_capped) && resp.token_confidence == "unknown" {
+            return Err(Fail::Failed("backend did not report token usage; cannot check token/cost essence or continue dependent work".into()));
         }
         self.check_live()?;
 
@@ -1139,10 +1219,16 @@ impl Run {
         let fin = run.execute();
         self.core
             .finish_summon(&child_id, &fin, json!("held by the calling summon"));
+        let persisted_cost = if self.meters[0].cost_known.load(Ordering::SeqCst) {
+            Some(self.meters[0].cost_microusd.load(Ordering::SeqCst))
+        } else {
+            None
+        };
         self.core.usage(
             &self.id,
             self.meters[0].requests.load(Ordering::SeqCst),
             self.meters[0].tokens.load(Ordering::SeqCst),
+            persisted_cost,
         );
         match fin.outcome {
             Outcome::Returned => Ok((fin.result, false)),

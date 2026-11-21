@@ -45,12 +45,19 @@ pub(in crate::core) fn stricter(a: &crate::ritual::Essence, b: &crate::ritual::E
         (Some(_), None) => a.time.clone(),
         _ => b.time.clone(),
     };
+    let micro = |c: &Option<String>| c.as_deref().and_then(|c| crate::util::parse_cost_microusd(c).ok());
+    let cost = match (micro(&a.cost), micro(&b.cost)) {
+        (Some(x), Some(y)) => if x <= y { a.cost.clone() } else { b.cost.clone() },
+        (Some(_), None) => a.cost.clone(),
+        _ => b.cost.clone(),
+    };
     crate::ritual::Essence {
         tool_calls: lower_u(a.tool_calls, b.tool_calls),
         items: lower_u(a.items, b.items),
         requests: lower_u(a.requests, b.requests),
         tokens: lower_u(a.tokens, b.tokens),
         time,
+        cost,
     }
 }
 

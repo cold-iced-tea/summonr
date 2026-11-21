@@ -369,6 +369,8 @@ pub struct Essence {
     pub tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub time: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]

@@ -98,6 +98,76 @@ pub fn canonical_json(value: &serde_json::Value) -> String {
     out
 }
 
+/// Parse a monetary amount such as `"$0.25"`, `"0.25"`, `"25c"`, or `"$1.50"`
+/// into integer microdollars (1 USD = 1_000_000 µ$). Up to 6 decimal places.
+pub fn parse_cost_microusd(s: &str) -> Result<u64, String> {
+    let raw = s.trim();
+    if raw.is_empty() {
+        return Err("cost must not be empty (e.g. \"$0.25\" or \"25c\")".into());
+    }
+    if raw.starts_with('-') {
+        return Err(format!("cost `{s}` must not be negative"));
+    }
+    if let Some(cents_str) = raw.strip_suffix('c') {
+        let cents_str = cents_str.trim();
+        let micro_cents = parse_decimal_scaled(cents_str, 4)
+            .map_err(|e| format!("cost `{s}`: {e}"))?;
+        return Ok(micro_cents);
+    }
+    let dollars = raw.strip_prefix('$').unwrap_or(raw).trim();
+    parse_decimal_scaled(dollars, 6).map_err(|e| format!("cost `{s}`: {e}"))
+}
+
+fn parse_decimal_scaled(s: &str, scale: usize) -> Result<u64, String> {
+    if s.is_empty() {
+        return Err("expected a number".into());
+    }
+    let (whole_s, frac_s) = match s.split_once('.') {
+        Some((w, f)) => (w, f),
+        None => (s, ""),
+    };
+    if frac_s.contains('.') {
+        return Err("invalid decimal number".into());
+    }
+    if whole_s.is_empty() && frac_s.is_empty() {
+        return Err("expected digits".into());
+    }
+    if !whole_s.bytes().all(|b| b.is_ascii_digit()) || !frac_s.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("must contain only digits and an optional decimal point".into());
+    }
+    if frac_s.len() > scale {
+        return Err(format!("supports at most {scale} decimal places"));
+    }
+    let whole: u64 = if whole_s.is_empty() {
+        0
+    } else {
+        whole_s.parse().map_err(|_| "number overflow".to_string())?
+    };
+    let mult = 10u64.pow(scale as u32);
+    let mut frac: u64 = 0;
+    for b in frac_s.bytes() {
+        frac = frac * 10 + (b - b'0') as u64;
+    }
+    let frac_scaled = frac * 10u64.pow((scale - frac_s.len()) as u32);
+    whole
+        .checked_mul(mult)
+        .and_then(|w| w.checked_add(frac_scaled))
+        .ok_or_else(|| "cost overflow".into())
+}
+
+/// Format integer microdollars as human-readable USD (e.g. `$0.0042`, `$0.25`, `$1.50`).
+pub fn fmt_cost_microusd(microusd: u64) -> String {
+    let whole = microusd / 1_000_000;
+    let frac = microusd % 1_000_000;
+    let frac_s = format!("{frac:06}");
+    let trimmed = frac_s.trim_end_matches('0');
+    if trimmed.len() <= 2 {
+        format!("${whole}.{:02}", frac / 10_000)
+    } else {
+        format!("${whole}.{trimmed}")
+    }
+}
+
 /// Parse a duration such as `500ms`, `30s`, `10m`, `2h` into milliseconds.
 pub fn parse_duration(s: &str) -> Result<u64, String> {
     let s = s.trim();
@@ -258,6 +328,9 @@ pub struct Config {
     /// `url`, and optional `api_key_env`.
     #[serde(default)]
     pub providers: std::collections::BTreeMap<String, ProviderConfig>,
+    /// Owner-configured per-model token pricing (`<provider>/<model>` or `<provider>/*`).
+    #[serde(default)]
+    pub pricing: std::collections::BTreeMap<String, PricingConfig>,
     /// Root directory of the fixture mailbox used by the `mail` reagent.
     pub mail_root: Option<String>,
     pub max_depth: Option<u32>,
@@ -291,6 +364,36 @@ pub struct Config {
     /// The `git` and `gh` programs (default: the ones on PATH).
     pub git: Option<String>,
     pub gh: Option<String>,
+}
+
+/// Owner-configured API pricing for a model or `<provider>/*` wildcard.
+#[derive(Deserialize, serde::Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PricingConfig {
+    pub input_per_mtok_usd: f64,
+    pub output_per_mtok_usd: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_input_per_mtok_usd: Option<f64>,
+}
+
+impl PricingConfig {
+    /// Exact integer microdollar cost (ceiling-rounded) for a single model call.
+    pub fn cost_microusd(&self, prompt_tokens: u64, output_tokens: u64) -> Result<u64, String> {
+        if !self.input_per_mtok_usd.is_finite()
+            || self.input_per_mtok_usd < 0.0
+            || !self.output_per_mtok_usd.is_finite()
+            || self.output_per_mtok_usd < 0.0
+        {
+            return Err("pricing rates must be finite and non-negative".into());
+        }
+        let in_rate = (self.input_per_mtok_usd * 1_000_000.0).round() as u128;
+        let out_rate = (self.output_per_mtok_usd * 1_000_000.0).round() as u128;
+        let total = (prompt_tokens as u128)
+            .saturating_mul(in_rate)
+            .saturating_add((output_tokens as u128).saturating_mul(out_rate));
+        let micro = total.div_ceil(1_000_000);
+        u64::try_from(micro).map_err(|_| "cost overflow".into())
+    }
 }
 
 /// Outbound HTTP egress policy enforced before any `http` reagent request.
@@ -558,6 +661,75 @@ impl Config {
 
     pub fn max_depth(&self) -> u32 {
         self.max_depth.unwrap_or(3)
+    }
+
+    /// Resolve owner-configured pricing for a model (`exact` -> `<provider>/*` -> `mock/*` $0 default).
+    pub fn price_for(&self, model: &str) -> Option<PricingConfig> {
+        if let Some(exact) = self.pricing.get(model) {
+            return Some(exact.clone());
+        }
+        if let Some((provider, _)) = model.split_once('/') {
+            if let Some(wild) = self.pricing.get(&format!("{provider}/*")) {
+                return Some(wild.clone());
+            }
+            if provider == "mock" {
+                return Some(PricingConfig {
+                    input_per_mtok_usd: 0.0,
+                    output_per_mtok_usd: 0.0,
+                    cached_input_per_mtok_usd: None,
+                });
+            }
+        }
+        None
+    }
+}
+
+#[cfg(test)]
+mod pricing_tests {
+    use super::*;
+
+    #[test]
+    fn parse_and_format_costs() {
+        assert_eq!(parse_cost_microusd("$0.25").unwrap(), 250_000);
+        assert_eq!(parse_cost_microusd("0.25").unwrap(), 250_000);
+        assert_eq!(parse_cost_microusd("25c").unwrap(), 250_000);
+        assert_eq!(parse_cost_microusd("$1.000001").unwrap(), 1_000_001);
+        assert_eq!(parse_cost_microusd("0").unwrap(), 0);
+        assert!(parse_cost_microusd("-1").is_err());
+        assert!(parse_cost_microusd("").is_err());
+        assert!(parse_cost_microusd("$0.1234567").is_err());
+        assert_eq!(fmt_cost_microusd(250_000), "$0.25");
+        assert_eq!(fmt_cost_microusd(4_200), "$0.0042");
+        assert_eq!(fmt_cost_microusd(1_500_000), "$1.50");
+    }
+
+    #[test]
+    fn price_for_precedence_and_integer_math() {
+        let mut cfg = Config::default();
+        cfg.pricing.insert(
+            "openai/*".into(),
+            PricingConfig {
+                input_per_mtok_usd: 1.0,
+                output_per_mtok_usd: 2.0,
+                cached_input_per_mtok_usd: None,
+            },
+        );
+        cfg.pricing.insert(
+            "openai/gpt-4.1-mini".into(),
+            PricingConfig {
+                input_per_mtok_usd: 0.40,
+                output_per_mtok_usd: 1.60,
+                cached_input_per_mtok_usd: None,
+            },
+        );
+        let exact = cfg.price_for("openai/gpt-4.1-mini").unwrap();
+        assert_eq!(exact.input_per_mtok_usd, 0.40);
+        // 1_000 input ($0.0004 = 400 µ$) + 500 output ($0.0008 = 800 µ$) = 1_200 µ$
+        assert_eq!(exact.cost_microusd(1_000, 500).unwrap(), 1_200);
+        let wild = cfg.price_for("openai/gpt-4.1").unwrap();
+        assert_eq!(wild.input_per_mtok_usd, 1.0);
+        assert_eq!(cfg.price_for("mock/keyword").unwrap().input_per_mtok_usd, 0.0);
+        assert!(cfg.price_for("anthropic/claude-sonnet-4").is_none());
     }
 }
 

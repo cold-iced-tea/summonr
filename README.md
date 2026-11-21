@@ -344,7 +344,7 @@ The integration check uses temporary homes and mock calls. No runtime-specific t
 
 | Open question | Where things stand |
 | --- | --- |
-| Can I cap the exact cost of a run? | You can budget requests, tokens, time, tool calls, and items. A single provider reply can exceed the remaining token allowance before usage is known. Monetary, CPU, and memory quotas remain open. |
+| Can I cap the exact cost of a run? | You can budget requests, tokens, time, tool calls, items, and owner-priced monetary spend (`essence.cost` + `pricing:` in `config.yaml`). A single provider reply can exceed the remaining token or cost allowance before usage is known. CPU and memory quotas remain open. |
 | Will delegation save tokens end to end? | Measuring the parent agent and the delegated work together remains an open comparison. |
 
 ## Start building
