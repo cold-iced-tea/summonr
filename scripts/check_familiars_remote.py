@@ -82,17 +82,17 @@ def main():
             # A key device A never registered.
             run(b, 'familiar', 'new', 'stranger')
             (refused,) = mcp(b, 'stranger', 'a', [('list_rituals', {})])
-            check('an unregistered key is refused', refused['isError'] and 'not authenticated' in json.dumps(refused), refused)
+            check('an unregistered key is refused', refused['isError'] and refused['structuredContent'].get('error') == 'not_authenticated', refused)
 
             # B pinned the wrong key for A: A's replies must be rejected.
             run(b, 'peer', 'add', 'fake', '--url', f'http://127.0.0.1:{port}', '--key', run(b, 'identity')['key'])
             (forged,) = mcp(b, 'partner', 'fake', [('list_rituals', {})])
-            check('replies from an unpinned core are rejected', forged['isError'] and 'not authenticated' in json.dumps(forged), forged)
+            check('replies from an unpinned core are rejected', forged['isError'] and forged['structuredContent'].get('error') == 'not_authenticated', forged)
 
             # Revocation on A takes effect on the next request.
             run(a, 'familiar', 'revoke', 'partner')
             (after,) = mcp(b, 'partner', 'a', [('list_rituals', {})])
-            check('a revoked familiar is refused', after['isError'] and 'not authenticated' in json.dumps(after), after)
+            check('a revoked familiar is refused', after['isError'] and after['structuredContent'].get('error') == 'not_authenticated', after)
 
             log = (a / 'state' / 'core.log').read_text()
             check('device A logged why it refused', 'unknown or revoked key' in log, log[-500:])

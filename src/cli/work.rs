@@ -217,6 +217,243 @@ pub(crate) fn pact_command(op: &Op, client: &mut Client) -> i32 {
     })
 }
 
+pub(crate) fn reliquary_command(op: &Op, client: &mut Client) -> i32 {
+    let p = &op.positionals;
+    let arg = |i: usize| p.get(i).cloned().unwrap_or_default();
+    let abs = |f: &str| {
+        std::fs::canonicalize(f)
+            .map(|x| x.display().to_string())
+            .unwrap_or_else(|_| {
+                let path = std::path::Path::new(f);
+                if path.is_absolute() {
+                    f.to_string()
+                } else {
+                    std::env::current_dir()
+                        .map(|d| d.join(path).display().to_string())
+                        .unwrap_or_else(|_| f.to_string())
+                }
+            })
+    };
+    let usage = "use: reliquary list [PEER] | publish RITUAL [version N] | retract NAME [version N] [because T] | add PEER | remove PEER | show [PEER] NAME [version N] | inscribe [PEER] NAME [version N] [replace] | export NAME FILE [version N] | import FILE [key K] [replace]";
+    let res = match (p.first().map(String::as_str), p.len()) {
+        (None | Some("list"), 0 | 1) => client.call("reliquary_list", json!({})),
+        (Some("list"), 2) => client.call("reliquary_list", json!({"peer": arg(1)})),
+        (Some("publish"), 2) => {
+            client.call("reliquary_publish", json!({"ritual": arg(1), "version": op.version}))
+        }
+        (Some("retract"), 2) => client.call(
+            "reliquary_retract",
+            json!({"name": arg(1), "version": op.version, "reason": op.reason}),
+        ),
+        (Some("add"), 2) => client.call("reliquary_add_peer", json!({"peer": arg(1)})),
+        (Some("remove"), 2) => client.call("reliquary_remove_peer", json!({"peer": arg(1)})),
+        (Some("show"), 2) => {
+            client.call("reliquary_show", json!({"name": arg(1), "version": op.version}))
+        }
+        (Some("show"), 3) => client.call(
+            "reliquary_show",
+            json!({"peer": arg(1), "name": arg(2), "version": op.version}),
+        ),
+        (Some("inscribe") | Some("save"), 2) => client.call(
+            "reliquary_inscribe",
+            json!({"name": arg(1), "version": op.version, "replace": op.replace}),
+        ),
+        (Some("inscribe") | Some("save"), 3) => client.call(
+            "reliquary_inscribe",
+            json!({"peer": arg(1), "name": arg(2), "version": op.version, "replace": op.replace}),
+        ),
+        (Some("export"), 3) => client.call(
+            "reliquary_export",
+            json!({"name": arg(1), "file": abs(&arg(2)), "version": op.version}),
+        ),
+        (Some("import"), 2) => client.call(
+            "reliquary_import",
+            json!({"file": abs(&arg(1)), "key": op.key, "peer": op.via, "replace": op.replace}),
+        ),
+        _ => Err(RpcErr::invalid(usage)),
+    };
+    let verb = p.first().cloned().unwrap_or_else(|| "list".into());
+    finish(res, op.json, |d| match verb.as_str() {
+        "list" => {
+            if let Some(peer) = d["peer"].as_str() {
+                rubric(&format!("RELIQUARY · {peer}"));
+            } else {
+                rubric("RELIQUARY · LOCAL");
+            }
+            let packs = d["packs"].as_array().cloned().unwrap_or_default();
+            if packs.is_empty() {
+                println!("{}", paint(Ink::Dim, "No published packs."));
+            }
+            for x in packs {
+                let retracted = x["retracted"]
+                    .as_str()
+                    .map(|r| format!(" {}", paint(Ink::Rubric, &format!("[retracted: {r}]"))))
+                    .unwrap_or_default();
+                println!(
+                    "  {} v{}  {}  ({} child, {} author-claimed evidence){}",
+                    bold(Ink::Bone, s(&x, "name")),
+                    x["version"],
+                    paint(Ink::Dim, &s(&x, "hash").chars().take(12).collect::<String>()),
+                    x["children"],
+                    x["evidence"],
+                    retracted
+                );
+            }
+            if let Some(peers) = d["peers"].as_array() {
+                if !peers.is_empty() {
+                    println!("  peers: {}", peers.iter().filter_map(|p| p["peer"].as_str()).collect::<Vec<_>>().join(", "));
+                }
+            }
+        }
+        "show" => {
+            rubric(&format!("PACK · {} v{}", s(d, "pack"), d["version"]));
+            row("hash", s(d, "hash"));
+            row("author", &format!("{} (verified)", s(d, "author_id")));
+            if let Some(why) = d["retracted"].as_str() {
+                row("retracted", &paint(Ink::Rubric, why));
+            }
+            row("grants", "none (grants never travel with packs)");
+            for e in d["effects"].as_array().into_iter().flatten() {
+                println!("    {} {} ({})", s(e, "step"), s(e, "what"), s(e, "effect"));
+            }
+            let evs = d["evidence"].as_array().cloned().unwrap_or_default();
+            if !evs.is_empty() {
+                println!("  author-claimed evidence ({} — run `summonr assay` locally to verify):", evs.len());
+                for ev in evs {
+                    println!(
+                        "    {} v{} · set={} · accuracy={}",
+                        s(&ev, "ritual"),
+                        ev["version"],
+                        s(&ev, "set_name"),
+                        ev["account"]["accuracy"]
+                    );
+                }
+            }
+        }
+        "inscribe" | "save" | "import" => {
+            println!(
+                "Inscribed pack {} v{} ({}) — grants transferred: none",
+                bold(Ink::Bone, s(d, "pack")),
+                d["version"],
+                paint(Ink::Dim, &s(d, "hash").chars().take(12).collect::<String>())
+            );
+            for r in d["inscribed"].as_array().into_iter().flatten() {
+                println!("  {} v{} ({})", s(r, "ritual"), r["version"], s(r, "status"));
+            }
+            for m in d["missing_grants"].as_array().into_iter().flatten() {
+                println!("  {} missing grant: {}", paint(Ink::Gold, "!"), m.as_str().unwrap_or(""));
+            }
+        }
+        _ => println!("{}", serde_json::to_string_pretty(d).unwrap_or_default()),
+    })
+}
+
+pub(crate) fn rite_command(op: &Op, client: &mut Client) -> i32 {
+    let p = &op.positionals;
+    let arg = |i: usize| p.get(i).cloned().unwrap_or_default();
+    let abs = |f: &str| {
+        std::fs::canonicalize(f)
+            .map(|x| x.display().to_string())
+            .unwrap_or_else(|_| f.to_string())
+    };
+    let usage = "use: rite list | rehearse FILE [given k=v...] | start FILE [given k=v...] | advance ID | show ID | events ID | falsify ID ASSUMPTION [because T] | assert ID ASSUMPTION [because T]";
+    let res = match (p.first().map(String::as_str), p.len()) {
+        (None | Some("list"), 0 | 1) => client.call("rite_list", json!({})),
+        (Some("rehearse"), 2) => {
+            client.call("rite_rehearse", json!({"file": abs(&arg(1)), "args": op.args}))
+        }
+        (Some("start"), 2) => {
+            client.call("rite_start", json!({"file": abs(&arg(1)), "args": op.args}))
+        }
+        (Some("advance") | Some("resume"), 2) => {
+            client.call("rite_advance", json!({"rite": arg(1)}))
+        }
+        (Some("show"), 2) => client.call("rite_show", json!({"rite": arg(1)})),
+        (Some("events"), 2) => client.call("rite_events", json!({"rite": arg(1)})),
+        (Some("falsify"), 3) => client.call(
+            "rite_falsify",
+            json!({"rite": arg(1), "assumption": arg(2), "reason": op.reason}),
+        ),
+        (Some("assert"), 3) => client.call(
+            "rite_assert",
+            json!({"rite": arg(1), "assumption": arg(2), "reason": op.reason}),
+        ),
+        _ => Err(RpcErr::invalid(usage)),
+    };
+    let verb = p.first().cloned().unwrap_or_else(|| "list".into());
+    finish(res, op.json, |d| match verb.as_str() {
+        "list" => {
+            let items = d.as_array().cloned().unwrap_or_default();
+            if items.is_empty() {
+                println!("{}", paint(Ink::Dim, "No rites. Start one: summonr rite start FILE"));
+            }
+            for x in items {
+                println!(
+                    "  {} {} — {} ({})",
+                    bold(Ink::Bone, s(&x, "id")),
+                    s(&x, "name"),
+                    s(&x, "status"),
+                    fmt_ago(x["updated"].as_i64().unwrap_or(0))
+                );
+            }
+        }
+        "show" | "start" | "advance" | "resume" => {
+            rubric(&format!("RITE · {} · {}", s(d, "name"), s(d, "status")));
+            row("id", s(d, "id"));
+            for st in d["stages"].as_array().into_iter().flatten() {
+                let acc = if st["accepted"] == true {
+                    paint(Ink::Verdigris, "accepted")
+                } else {
+                    paint(Ink::Gold, s(st, "gate_status"))
+                };
+                let pet = st["petition"]
+                    .as_str()
+                    .map(|p| format!(" (petition {p})"))
+                    .unwrap_or_default();
+                println!(
+                    "  {} [{}] — {} · {}{}",
+                    bold(Ink::Bone, s(st, "stage")),
+                    s(st, "ritual"),
+                    s(st, "status"),
+                    acc,
+                    pet
+                );
+            }
+            let assumps = d["assumptions"].as_array().cloned().unwrap_or_default();
+            if !assumps.is_empty() {
+                println!("  assumptions:");
+                for a in assumps {
+                    let st = if a["status"] == "held" {
+                        paint(Ink::Verdigris, "held")
+                    } else {
+                        paint(Ink::Rubric, "falsified")
+                    };
+                    println!("    {} ({st}) — {}", s(&a, "id"), s(&a, "statement"));
+                }
+            }
+        }
+        "rehearse" => {
+            rubric(&format!("RITE REHEARSAL · {}", s(d, "rite")));
+            row("hash", s(d, "hash"));
+            for st in d["stages"].as_array().into_iter().flatten() {
+                println!("  {} -> {} v{}", bold(Ink::Bone, s(st, "id")), s(st, "ritual"), st["version"]);
+            }
+        }
+        "falsify" => {
+            println!(
+                "Falsified assumption {} on {} — reopened: {}",
+                bold(Ink::Rubric, s(d, "assumption")),
+                s(d, "rite"),
+                d["reopened"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
+                    .unwrap_or_default()
+            );
+        }
+        _ => println!("{}", serde_json::to_string_pretty(d).unwrap_or_default()),
+    })
+}
+
 
 pub(crate) fn demo_command(op: &Op) -> i32 {
     struct Cleanup(std::path::PathBuf);

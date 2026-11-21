@@ -201,6 +201,18 @@ pub const VERBS: &[(&str, &str, bool, &str)] = &[
         "Shared result work: create FILE, work NAME, status NAME, item NAME ITEM, retry NAME ITEM",
     ),
     (
+        "reliquary",
+        "registry",
+        false,
+        "Signed ritual packs: publish, retract, add/remove PEER, list, show, inscribe, export, import",
+    ),
+    (
+        "rite",
+        "workflow",
+        false,
+        "Multi-stage rites with gates and assumptions: rehearse, start, advance, list, show, events, falsify, assert",
+    ),
+    (
         "daemon",
         "panel",
         false,
@@ -981,8 +993,8 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
     if op.pact.is_some() && op.verb != "familiar" {
         return Err(cur.err(last, "`pact` names a pact only in `familiar allow`", "familiar allow codex pact order-parts"));
     }
-    if op.reason.is_some() && op.verb != "pact" {
-        return Err(cur.err(last, "`because` gives a reason only to pact decline, reject or end", "pact reject order-parts 3 because late"));
+    if op.reason.is_some() && !matches!(op.verb.as_str(), "pact" | "reliquary" | "rite") {
+        return Err(cur.err(last, "`because` gives a reason only to pact, reliquary, or rite commands", "pact reject order-parts 3 because late"));
     }
     Ok(op)
 }
@@ -1336,6 +1348,22 @@ mod tests {
         assert_eq!(
             p("fence apply fk-1 returning json").unwrap(),
             p("reconcile apply fk-1 --json").unwrap(),
+        );
+        assert_eq!(
+            p("reliquary publish my-ritual version 2 returning json").unwrap(),
+            p("registry publish my-ritual --version 2 --json").unwrap(),
+        );
+        assert_eq!(
+            p("reliquary import pack.json key ed25519:abc replacement returning json").unwrap(),
+            p("registry import pack.json --key ed25519:abc --replace --json").unwrap(),
+        );
+        assert_eq!(
+            p("rite start release.yaml given repo=summonr returning json").unwrap(),
+            p("workflow start release.yaml --arg repo=summonr --json").unwrap(),
+        );
+        assert_eq!(
+            p("rite falsify rite-1 base_ok because broken returning json").unwrap(),
+            p("workflow falsify rite-1 base_ok --reason broken --json").unwrap(),
         );
     }
 }

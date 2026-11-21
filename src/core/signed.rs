@@ -46,18 +46,25 @@ impl Core {
         let found: std::cell::RefCell<Option<(String, String, Vec<String>)>> = std::cell::RefCell::new(None);
         let ward: std::cell::RefCell<Option<(String, crate::keys::PublicKey)>> = std::cell::RefCell::new(None);
         let party: std::cell::RefCell<Option<(String, crate::keys::PublicKey)>> = std::cell::RefCell::new(None);
+        let peer: std::cell::RefCell<Option<(String, crate::keys::PublicKey)>> = std::cell::RefCell::new(None);
         let lookup = |id: &str| {
             if let Some((name, key, allowed)) = self.familiar_by_key(id) {
                 *found.borrow_mut() = Some((key.id(), name, allowed));
                 return Some(key);
             }
-            // A core this core witnesses, or a pact counterparty, signing with
-            // its core key. One core may be both; the method decides which.
+            // A core this core witnesses, a pact counterparty, or a pinned peer,
+            // signing with its core key. One core may be several; the method decides.
             let w = self.ward_by_key(id);
             let c = self.counterparty_by_key(id);
-            let key = w.as_ref().map(|(_, k)| *k).or_else(|| c.as_ref().map(|(_, k)| *k));
+            let pr = self.peer_by_key(id);
+            let key = w
+                .as_ref()
+                .map(|(_, k)| *k)
+                .or_else(|| c.as_ref().map(|(_, k)| *k))
+                .or_else(|| pr.as_ref().map(|(_, k)| *k));
             *ward.borrow_mut() = w;
             *party.borrow_mut() = c;
+            *peer.borrow_mut() = pr;
             key
         };
         let mut seen = |key: &str, nonce: &str, _ts: i64| self.nonce_seen(key, nonce, now);
@@ -65,6 +72,13 @@ impl Core {
             Ok(opened) => {
                 let party = party.into_inner().filter(|(_, k)| k.id() == opened.key);
                 let ward = ward.into_inner().filter(|(_, k)| k.id() == opened.key);
+                let peer = peer.into_inner().filter(|(_, k)| k.id() == opened.key);
+                if matches!(opened.method.as_str(), "reliquary_catalog" | "reliquary_fetch")
+                    && (peer.is_some() || party.is_some())
+                {
+                    let result = self.dispatch_reliquary_peer(&opened.method, opened.params);
+                    return envelope::seal_reply(&self.key, &opened.nonce, &result);
+                }
                 if let Some((name, key)) = party.filter(|_| opened.method.starts_with("pact_") || ward.is_none()) {
                     let result = self.dispatch_counterparty(&name, &key, &opened.method, opened.params);
                     return envelope::seal_reply(&self.key, &opened.nonce, &result);

@@ -146,7 +146,9 @@ impl Core {
                 .transaction()
                 .map_err(|e| RpcErr::new("storage_failed", 11, e.to_string()))?;
             for (pet, part) in chosen.into_iter().zip(parts) {
-                let is_relayed = pet.operation == "pact.decide" || pet.operation == "pact.accept";
+                let is_relayed = pet.operation == "pact.decide"
+                    || pet.operation == "pact.accept"
+                    || pet.operation == "rite.gate";
                 if let Some(_part) = part {
                     let column = if by_caller { "caller_decision" } else { "callee_decision" };
                     let n = tx
@@ -202,6 +204,8 @@ impl Core {
         for pet in relayed {
             decided.push(if pet.operation == "pact.accept" {
                 self.decide_delivery(&pet, permit, None)?
+            } else if pet.operation == "rite.gate" {
+                self.decide_rite_gate(&pet, permit)?
             } else {
                 self.relay_decision(&pet, permit)?
             });

@@ -49,6 +49,8 @@
   - [Epitaphs, petition seals, and witnesses](concepts/epitaphs.md)
   - [Pacts: agent-to-agent contracts](concepts/pacts.md)
   - [Running pacts across three devices](guides/pacts-three-devices.md)
+  - [Reliquary: signed ritual packs](concepts/reliquary.md)
+  - [Rites: multi-stage workflows](concepts/rites.md)
 
 # Part IV — Reference & Horizon
 

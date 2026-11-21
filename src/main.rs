@@ -26,7 +26,9 @@ mod pure;
 mod reagent;
 mod reagents;
 mod records;
+mod reliquary;
 mod requests;
+mod rite;
 mod ritual;
 mod rpc;
 mod schema;
@@ -254,7 +256,7 @@ use cli::eval::{assay, drill, experiment_judge, experiment_sweep, experiment_wei
 use cli::invoke::{fence_command, follow_command, invoke, petition, wait_for};
 use cli::session::{session_bid, session_bind, session_imbue, session_lethe, session_soul, session_summon};
 use cli::trust::{chain_command, epitaph_command, epitaph_verify_command, familiar_command, key_command, peer_command, verify_command, witness_command};
-use cli::work::{demo_command, job_command, pact_command};
+use cli::work::{demo_command, job_command, pact_command, reliquary_command, rite_command};
 
 fn run(op: Op, paths: &Paths, style: Style) -> i32 {
     let json_out = op.json;
@@ -774,6 +776,8 @@ fn run(op: Op, paths: &Paths, style: Style) -> i32 {
         "witness" => witness_command(&op, &mut client),
         "peer" => peer_command(&op, &mut client),
         "pact" => pact_command(&op, &mut client),
+        "reliquary" => reliquary_command(&op, &mut client),
+        "rite" => rite_command(&op, &mut client),
         "glean" => {
             let res = target(&op, "a ritual name").and_then(|name| {
                 let count = match op.positionals.get(1) {

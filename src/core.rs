@@ -11,6 +11,8 @@ mod familiars;
 mod signed;
 mod witness;
 mod pacts;
+mod reliquary;
+mod rites;
 mod sessions;
 
 use crate::backend;
@@ -143,6 +145,63 @@ CREATE TABLE IF NOT EXISTS experiments (
   trials TEXT NOT NULL,
   judged TEXT,
   created INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS reliquary_packs (
+  name TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  hash TEXT NOT NULL UNIQUE,
+  author_key TEXT NOT NULL,
+  pack_json TEXT NOT NULL,
+  created INTEGER NOT NULL,
+  retracted TEXT,
+  PRIMARY KEY (name, version));
+CREATE TABLE IF NOT EXISTS reliquary_peers (
+  peer TEXT PRIMARY KEY,
+  added INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS reliquary_evidence (
+  ritual TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  author_key TEXT NOT NULL,
+  pack_hash TEXT NOT NULL,
+  evidence_json TEXT NOT NULL,
+  imported INTEGER NOT NULL,
+  PRIMARY KEY (ritual, version, pack_hash));
+CREATE TABLE IF NOT EXISTS rites (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  hash TEXT NOT NULL,
+  def_json TEXT NOT NULL,
+  inputs_json TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created INTEGER NOT NULL,
+  updated INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS rite_stages (
+  rite TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  ritual TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  hash TEXT NOT NULL,
+  status TEXT NOT NULL,
+  summon_id TEXT,
+  output_json TEXT,
+  gate_status TEXT NOT NULL,
+  petition_id TEXT,
+  accepted INTEGER NOT NULL DEFAULT 0,
+  reopened_reason TEXT,
+  PRIMARY KEY (rite, stage));
+CREATE TABLE IF NOT EXISTS rite_assumptions (
+  rite TEXT NOT NULL,
+  id TEXT NOT NULL,
+  statement TEXT NOT NULL,
+  status TEXT NOT NULL,
+  falsified_reason TEXT,
+  updated INTEGER NOT NULL,
+  PRIMARY KEY (rite, id));
+CREATE TABLE IF NOT EXISTS rite_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  rite TEXT NOT NULL,
+  ts INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  detail_json TEXT NOT NULL);
 ";
 
 pub(crate) enum FenceAcquire {
@@ -2220,6 +2279,23 @@ impl Core {
             "pact_verify" => self.pact_verify(p),
             "pact_reject" => self.pact_decide_delivery(p, false),
             "pact_unadmit" => self.pact_unadmit(p),
+            "reliquary_publish" => self.reliquary_publish(p),
+            "reliquary_retract" => self.reliquary_retract(p),
+            "reliquary_add_peer" => self.reliquary_add_peer(p),
+            "reliquary_remove_peer" => self.reliquary_remove_peer(p),
+            "reliquary_list" => self.reliquary_list(p),
+            "reliquary_show" => self.reliquary_show(p),
+            "reliquary_inscribe" => self.reliquary_inscribe(p),
+            "reliquary_export" => self.reliquary_export(p),
+            "reliquary_import" => self.reliquary_import(p),
+            "rite_rehearse" => self.rite_rehearse(p),
+            "rite_start" => self.rite_start(p),
+            "rite_advance" => self.rite_advance(p),
+            "rite_list" => self.rite_list(),
+            "rite_show" => self.rite_show(p),
+            "rite_events" => self.rite_events(p),
+            "rite_falsify" => self.rite_falsify(p),
+            "rite_assert" => self.rite_assert(p),
             "peer_list" => self.peer_list(),
             "peer_remove" => self.peer_remove(p),
             "invoke" => self.invoke(p),
