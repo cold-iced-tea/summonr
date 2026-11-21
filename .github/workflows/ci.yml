@@ -26,3 +26,11 @@ jobs:
         run: cargo build --locked
       - name: Offline integration & book links
         run: python3 -B scripts/check_offline.py
+      - name: Shared jobs check
+        run: python3 -B scripts/check_jobs.py
+      - name: Standard library check
+        run: python3 -B scripts/check_stdlib.py
+      - name: Python SDK unit tests
+        env:
+          PYTHONPATH: sdk/python
+        run: python3 -B -m unittest discover -s sdk/python/tests

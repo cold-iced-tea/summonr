@@ -68,7 +68,7 @@ That reading step is a proposed extension. **The shipped pact starts with an int
 After the buyer and supplier exchange keys and prepare the terms, each uses its own terminal. [Two-core setup](book/src/guides/pacts-three-devices.md)
 
 ```bash
-# Buyer
+# Buyer (using your filled-in copy of examples/07-pacts/order-parts.yaml)
 summonr pact offer supplier order-parts.yaml
 
 # Supplier
@@ -205,7 +205,7 @@ A practical rule for extending Summonr is to write another ritual when the ingre
 
 ## Persistent usage
 
-Point `SUMMONR_HOME` at any directory (or use the default XDG paths) and inscribe rituals from `rituals/repo/` or `tests/fixtures/rituals/`:
+Point `SUMMONR_HOME` at any directory (or use the default XDG paths) and inscribe rituals from `rituals/repo/` or `tests/fixtures/rituals/` (for `inbox-triage`, also create a fixture mailbox and set `mail_root` in `$SUMMONR_HOME/config/config.yaml` as shown in [First ritual](book/src/getting-started/first-ritual.md)):
 
 ```bash
 summonr inscribe tests/fixtures/rituals/classify-message.yaml
@@ -297,7 +297,7 @@ An agent can invoke a saved ritual through MCP. Give it a named identity and an 
 | Inference | Ollama, OpenAI-compatible and Anthropic endpoints, named providers, and a deterministic mock. A run records outgoing payloads, usage, timing, and decoder enforcement. |
 | Operations | Pure `data` steps for arithmetic and structured data. Scoped file, HTTP, mail, Git, GitHub, test, command, and MCP operations for external work. |
 | Evaluation | Record and replay cassettes, simulate writes, sample finished runs with `glean`, compute expected answers with a pure ritual, and compare experiments with `sweep`, `judge`, and `weigh`. |
-| Operator tools | Open the workbench with `summonr`, inspect a plan with `inspect NAME`, and watch events with `summonr scry`. Interactive sessions can also be saved as rituals. |
+| Operator tools | Open the workbench with `summonr` (and inspect a plan inside it with `inspect NAME`), or watch events with `summonr scry`. Interactive sessions can also be saved as rituals. |
 | Verification | Ed25519 identities, chained receipts, offline verification, peer witnesses, and optional RFC 3161 timestamps. |
 
 [Full capability reference](book/src/reference/capabilities.md) · [Standard library](book/src/reference/standard-library.md) · [Command reference](book/src/reference/cli.md)
@@ -321,7 +321,7 @@ python3 -B scripts/check_offline.py
 mdbook build book
 ```
 
-The integration check uses temporary homes and mock calls. Existing benchmark manifests remain frozen; rebuilding the pinned binary requires a new experiment freeze before real inference. No runtime-specific token saving or proven delegation benefit is claimed by the existing results.
+The integration check uses temporary homes and mock calls. No runtime-specific token saving or proven delegation benefit is claimed by existing pilot results.
 
 ## Layout
 
@@ -344,7 +344,7 @@ The integration check uses temporary homes and mock calls. Existing benchmark ma
 | Open question | Where things stand |
 | --- | --- |
 | Can I cap the exact cost of a run? | You can budget requests, tokens, time, tool calls, and items. A single provider reply can exceed the remaining token allowance before usage is known. Monetary, CPU, and memory quotas remain open. |
-| Will delegation save tokens end to end? | The repository includes frozen pilot results. Measuring the parent agent and the delegated work together remains an open comparison. |
+| Will delegation save tokens end to end? | Measuring the parent agent and the delegated work together remains an open comparison. |
 
 ## Start building
 

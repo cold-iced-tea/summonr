@@ -31,15 +31,15 @@ A ritual is a YAML file. Inscribing it validates it completely and saves it as a
 $ summonr inscribe tests/fixtures/rituals/classify-message.yaml
 Inscribed classify-message as version 1.
   hash       89c7490621da65e489da16e58ff2ac9de58b41af5621cc5beca744b985b0ee35
-  classify                               read              ollama/qwen36-lite · probabilistic
+  classify                               read              ollama/qwen3:4b · probabilistic
                                          ↳ output is a model's claim; its structure is checked
 
-$ summonr inscribe rituals/inbox-triage.yaml
+$ summonr inscribe tests/fixtures/rituals/inbox-triage.yaml
 Inscribed inbox-triage as version 1.
   hash       271bcc8153261f2c2d981c7c282a9f5a62b160b4079af2444e3c99788a6e17d7
   select                                 read              mail.search · deterministic over live state
   triage/body                            read              mail.read · deterministic over live state
-  triage/classify > classify-message v1 / classify read              ollama/qwen36-lite · probabilistic
+  triage/classify > classify-message v1 / classify read              ollama/qwen3:4b · probabilistic
                                          ↳ output is a model's claim; its structure is checked
   triage/#3/move                         idempotent write  mail.move · deterministic
                                          ↳ observed afterward by mail.locate
@@ -182,7 +182,7 @@ $ summonr elegy s-68df2d99 --json
 
 ## 8. Run it for real
 
-With Ollama available, drop the `through` clause (the demo ritual names `ollama/qwen36-lite`), or name a model you have:
+With Ollama available, drop the `through` clause (the demo ritual names `ollama/qwen3:4b`), or name another model you have:
 
 ```bash
 summonr invoke inbox-triage given count=6 apply=true through ollama/qwen3:4b then return
@@ -191,7 +191,7 @@ summonr invoke inbox-triage given count=6 apply=true through ollama/qwen3:4b the
 Open the observer in another terminal to watch it live:
 
 ```bash
-summonr
+summonr scry
 ```
 
 When you are finished:

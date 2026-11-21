@@ -29,7 +29,7 @@ summonr assay triage-ticket --against examples/02-triage-ticket/tickets.yaml --b
 Later, test a smaller/local model—or re-check after editing instructions—against the same cases:
 
 ```bash
-summonr assay triage-ticket --against examples/02-triage-ticket/tickets.yaml --model ollama/qwen36-lite
+summonr assay triage-ticket --against examples/02-triage-ticket/tickets.yaml --model ollama/qwen3:4b
 ```
 
 Exit codes let scripts and CI act on the verdict:
@@ -45,7 +45,7 @@ When you want to compare multiple models, temperatures, or prompt variants at on
 ritual: route-form
 models:
   - mock/keyword
-  - ollama/qwen36-lite
+  - ollama/qwen3:4b
 settings:
   - {temperature: "0"}
   - {temperature: "0.2"}

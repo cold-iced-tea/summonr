@@ -1,11 +1,11 @@
 # Installation
 
-Summonr is a single Rust binary. You need a Rust toolchain (edition 2021) and, to use real models, an [Ollama](https://ollama.com) server.
+Summonr is a single Rust binary. You need a Rust toolchain (Rust 1.87+, edition 2021) and, to use real models, an [Ollama](https://ollama.com) server or an OpenAI-compatible / Anthropic API endpoint.
 
 ## Build
 
 ```bash
-git clone <your summonr checkout>
+git clone https://github.com/manaforge/summonr
 cd summonr
 cargo build            # debug build at target/debug/summonr
 cargo test             # the test suite runs without a model
@@ -20,7 +20,7 @@ cargo install --path .     # installs to ~/.cargo/bin/summonr
 If `~/.local/bin` is already on your PATH, you can instead install a release build there:
 
 ```bash
-cargo build --release --offline
+cargo build --release
 install -m 755 target/release/summonr ~/.local/bin/summonr
 ```
 
@@ -40,16 +40,19 @@ Rebuild and repeat the install command after source changes to update the instal
 
 SQLite is bundled, so there is no separate database to install.
 
-## A model backend
+## Model backends
 
-Summonr talks to two backends:
+Summonr talks to built-in and named model backends:
 
 | Model id | What it is |
 | --- | --- |
 | `ollama/<name>` | A model served by Ollama, for example `ollama/qwen3:4b` |
+| `openai/<name>` | An OpenAI-compatible `/v1/chat/completions` endpoint (OpenAI, OpenRouter, vLLM, llama-server, LM Studio) |
+| `anthropic/<name>` | An Anthropic Messages `/v1/messages` endpoint |
+| `<provider>/<name>` | A custom provider defined under `providers:` in `config.yaml` (`kind: openai \| anthropic \| ollama`) |
 | `mock/keyword` | A deterministic stand-in with no model at all |
 
-Point Summonr at Ollama with `ollama_url` in the [config file](../reference/config.md), or with the `SUMMONR_OLLAMA_URL` or `OLLAMA_HOST` environment variables. The default is `http://127.0.0.1:11434`.
+Point Summonr at Ollama with `ollama_url` in the [config file](../reference/config.md), or with the `SUMMONR_OLLAMA_URL` or `OLLAMA_HOST` environment variables (default `http://127.0.0.1:11434`). For OpenAI and Anthropic endpoints, configure `openai_url` / `anthropic_url` (or `SUMMONR_OPENAI_URL` / `SUMMONR_ANTHROPIC_URL`) and set `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`.
 
 `mock/keyword` needs nothing. It picks the first option in an `enum` whose name appears in the prompt, and otherwise answers `abstain`. It is good for exercising mechanics (grants, holds, limits, records) and useless as evidence of quality. Its token counts are estimates and are labeled that way.
 

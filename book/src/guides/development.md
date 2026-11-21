@@ -12,7 +12,7 @@ python3 -B scripts/check_workbench.py
 mdbook build book
 ```
 
-`--offline` requires dependencies already cached. The Python integration uses temporary homes and mock inference; it does not use the demo's live state. The handoff benchmark files are checked without replacing their frozen reports. The rebuilt binary is expected to require a new experiment freeze.
+`--offline` requires dependencies already cached. The Python integration scripts use temporary homes and mock inference; they do not touch your live state.
 
 ## Regression boundaries
 

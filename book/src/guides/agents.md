@@ -78,10 +78,10 @@ For a trusted local HTTP client:
 summonr mcp http 127.0.0.1:7341
 ```
 
-The printed URL contains a secret. It is stored with owner-only permissions in `config/mcp_token`. Requests with an Origin header are refused; Host is checked against the listener address (with localhost aliases for loopback). The parser limits request/header sizes, body size, timeouts, and concurrent connections. Chunked requests and duplicate Content-Length headers are rejected.
+The printed URL contains a secret. It is stored with owner-only permissions in `config/mcp_token`. Requests with an Origin header are refused; Host is checked against the listener address (with localhost aliases for loopback, plus any `mcp_allowed_hosts` or `mcp_auth.audience` host configured in `config.yaml`). The parser limits request/header sizes, body size, timeouts, and concurrent connections. Chunked requests and duplicate Content-Length headers are rejected. Optional TLS (`tls: {cert, key}`) and OAuth 2.1 Bearer JWT verification (`mcp_auth`) can be enabled in `config.yaml`.
 
-This remains a small custom transport, not a claim of complete MCP conformance or an Internet-ready authentication layer. Use stdio by preference. TLS, individual credentials, rotation while serving, delegated authentication, and general reverse-proxy Host configuration are not implemented. An absent Origin is not proof that a request came from a trusted client.
+This remains a small custom transport, not a claim of complete MCP conformance. Use stdio by preference. Token rotation while serving is not implemented, and an absent Origin is not proof that a request came from a trusted client.
 
 ## Integration checks
 
-After building, run `python3 -B scripts/check_offline.py`. It exercises the production MCP server with a mock ritual, hash guards and idempotency, user-only input rejection, the benchmark's mock handoff shim, frozen-file integrity, and documentation links. It runs no real model.
+After building, run `python3 -B scripts/check_offline.py`. It exercises the production MCP server with a mock ritual, hash guards and idempotency, user-only input rejection, and documentation links. It runs no real model.

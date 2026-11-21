@@ -6,7 +6,7 @@ Execution evidence follows work across applications and between parties. A recei
 
 Every core has a signing identity. Ritual proofs use that identity to sign execution receipts. See [Identity](concepts/identity.md).
 
-Ritual proofs are built as [epitaphs](concepts/epitaphs.md): a signed, chained, fingerprint-only account of every run and post-run petition decision, checkable offline, revealable piece by piece, and witnessed by other cores or RFC 3161 timestamp authorities. Still open: the Merkle-log form of the chain (`chain: 2`).
+Ritual proofs are built as [epitaphs](concepts/epitaphs.md): a signed, chained, fingerprint-only account of every run and post-run petition decision, checkable offline, revealable piece by piece, with Merkle inclusion proofs (`epitaph_prove`) and witnessing by other cores or RFC 3161 timestamp authorities.
 
 Every summon leaves an elegy: the exact outgoing payloads, a context manifest, usage, timing, the authority it held, and whether each write was observed by the runtime or only reported by a tool. A ritual proof makes that record portable and checkable by someone who does not trust the machine that produced it.
 
@@ -41,4 +41,4 @@ Contract negotiation fixes the version, deliverable, acceptance conditions, and 
 
 ## Pacts: built
 
-Agent-to-agent contracts are built as [pacts](concepts/pacts.md) (plain spelling `contract`). Still open: TLS between devices, pacts between more than two parties, the callee pushing to the caller instead of the caller polling, and caller holds on steps inside child rituals.
+Agent-to-agent contracts are built as [pacts](concepts/pacts.md) (plain spelling `contract`), including optional TLS (`tls` in `config.yaml`) and asynchronous callee-to-caller/witness push with polling fallback. Still open: pacts between more than two parties and caller holds on steps inside child rituals.

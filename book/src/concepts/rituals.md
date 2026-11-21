@@ -9,7 +9,7 @@ inputs:
   text: {type: string}
 bindings:
   rules: {document: rules.md}
-model: ollama/qwen36-lite
+model: ollama/qwen3:4b
 settings: {temperature: 0}
 essence: {requests: 1, tokens: 20000, time: 5m}
 steps:

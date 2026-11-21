@@ -2,7 +2,6 @@
 """Independent structural-schema checks and SDK/YAML runtime parity; no inference.
 Requires sdk/python/requirements-dev.txt in the test interpreter.
 """
-import copy
 import json
 import os
 from pathlib import Path

@@ -93,9 +93,9 @@ MCP tools for a familiar (`summonr mcp as NAME`): `list_pacts`, `describe_pact`,
 
 ## Limits, plainly
 
-- **Plain HTTP:** inputs and results travel readable on the network. Every message is signed and checked, but not encrypted. Use a private network until TLS exists.
+- **Transport encryption is opt-in:** without `tls: {cert, key}` in `config.yaml`, inputs and results travel over plain HTTP (signed and checked, but readable on the network). Configure `tls` for encrypted transport or run over a private network.
 - **The callee runs the work on its machine.** Its epitaph proves what its core recorded, not that its model or backend was honest.
 - **Only the two cores hold contents.** A regulator or court checks an export one of them hands over; witnesses only prove entries existed when witnessed.
 - **Which familiar asked** is the caller's own claim, recorded but not provable to the callee.
 - **Two parties per pact.** A claim involving three companies is several pacts.
-- **The caller polls** (every 15 s while calls are open, backing off to 5 min); the callee never connects out.
+- **Push with polling fallback:** when the callee has a reachable URL for the caller or a witness, it pushes new entries asynchronously; the caller also polls (every 15 s while calls are open, backing off to 5 min) so callers behind NAT still sync.

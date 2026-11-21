@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Mock-only integration, frozen benchmark integrity, and book link checks.
-Never runs a real model or overwrites historical benchmark artifacts.
+"""Mock-only integration and book link checks.
+Never runs a real model.
 """
-import hashlib
 import http.client
 import socket
 import time
@@ -10,7 +9,6 @@ import json
 import os
 import pathlib
 import re
-import runpy
 import subprocess
 import sys
 import tempfile

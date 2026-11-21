@@ -8,7 +8,7 @@ This walks through pacts on three devices you control, each standing in for an o
 
 `scripts/check_pacts_remote.py` runs the A/B part on one machine over loopback. This guide is the same test on real devices.
 
-> Pact contents travel over plain HTTP: signed and checked, but readable on the network. Use your home network or a private one.
+> Without `tls: {cert, key}` in `config.yaml`, pact contents travel over plain HTTP: signed and checked, but readable on the network. Configure `tls` or use a private network.
 
 ## 1. Identities and pins
 
@@ -25,7 +25,7 @@ Compare every full fingerprint out of band, by reading it aloud or on another sc
 summonr peer add supplier url http://B:7744 key ed25519:…B
 summonr peer add witness  url http://C:7744 key ed25519:…C
 # on B
-summonr peer add maker    url http://A:7744 key ed25519:…A   # A's URL is unused; B never connects out
+summonr peer add maker    url http://A:7744 key ed25519:…A   # optional push target if A listens; A also polls
 summonr peer add insurer  url http://C:7744 key ed25519:…C
 summonr pact admit maker   key ed25519:…A
 summonr pact admit insurer key ed25519:…C

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Build the demo mailbox and its labeled assay set from one list of messages."""
-import json, pathlib, shutil
+import json, pathlib, shutil, sys
 
 here = pathlib.Path(__file__).parent
 M = [
@@ -38,7 +38,7 @@ M = [
   "Had such a good time at the lake. The photos came out great. Hope the drive home was easy."),
 ]
 
-box = here / "mailbox"
+box = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else here / "mailbox"
 shutil.rmtree(box, ignore_errors=True)
 for folder in ["Inbox", "Receipts", "Newsletters", "Action"]:
     (box / folder).mkdir(parents=True)

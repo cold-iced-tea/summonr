@@ -1,7 +1,5 @@
 target/
-demo/home/
-demo/mailbox/
-benchmarks/__pycache__/
+tests/fixtures/mailbox/
 book/build/
 
 __pycache__/
