@@ -687,6 +687,21 @@ impl Core {
         }))
     }
 
+    /// Where a caller's named cassettes live. The owner's are in
+    /// `cassettes/`; every agent, familiar and pact has its own directory,
+    /// so none can replay or overwrite another's recordings.
+    fn cassette_dir(&self, caller: &str) -> PathBuf {
+        let dir = self.paths.state.join("cassettes");
+        if caller.is_empty() {
+            return dir;
+        }
+        let safe: String = caller
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .collect();
+        dir.join("callers").join(format!("{safe}-{}", &crate::util::sha256_hex(caller.as_bytes())[..8]))
+    }
+
     /// Everything that can be decided before any work starts: the definition,
     /// typed inputs, effective model, authority, effects, and drift state.
     pub fn resolve(&self, spec: &Spec) -> Result<Resolved, RpcErr> {
@@ -1584,7 +1599,7 @@ impl Core {
         let rec_path = if let Some(path) = &spec.record {
             Some(PathBuf::from(path))
         } else if let Some(name) = &spec.cassette_record {
-            let dir = self.paths.state.join("cassettes");
+            let dir = self.cassette_dir(&spec.caller);
             std::fs::create_dir_all(&dir)
                 .map_err(|e| RpcErr::new("storage_failed", 11, e.to_string()))?;
             Some(dir.join(format!("{name}.json")))
@@ -1598,7 +1613,7 @@ impl Core {
             .or_else(|| {
                 spec.cassette_replay
                     .as_deref()
-                    .map(|name| self.paths.state.join("cassettes").join(format!("{name}.json")))
+                    .map(|name| self.cassette_dir(&spec.caller).join(format!("{name}.json")))
             });
         let base: Option<Arc<dyn crate::io::Io>> = match (rec_path, rep_path.as_ref()) {
             (Some(_), Some(_)) => {

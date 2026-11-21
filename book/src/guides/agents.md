@@ -24,6 +24,8 @@ Without `--name`, configure your MCP client to launch the Summonr executable wit
 | `stop_run` | Request cancellation; does not roll back completed effects |
 | `list_held_actions` | Pending actions (held writes and authority petitions); only the owner can decide them |
 
+Named cassettes belong to whoever recorded them: the owner, each familiar and each pact have their own, so one agent cannot replay or overwrite another's recordings.
+
 Arguments are validated before connecting to the core. Unknown keys, malformed types, out-of-range waits, and file paths in place of saved names are refused. `preview_ritual` may inspect a backend fingerprint when a baseline exists; use the offline compiler for a check that makes no backend requests.
 
 ## Pin what you reviewed

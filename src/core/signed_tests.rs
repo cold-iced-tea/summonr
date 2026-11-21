@@ -447,3 +447,20 @@ fn a_refusal_never_claims_to_answer_an_unverified_request() {
     assert_eq!(e.code, "not_authenticated");
     assert!(e.message.contains("cannot say"), "{}", e.message);
 }
+
+#[test]
+fn named_cassettes_belong_to_their_caller() {
+    let h = home();
+    let a = agent(&h, "alpha", &["total-receipt"]);
+    let b = agent(&h, "beta", &["total-receipt"]);
+    receipt(&h, &a, json!({"cassette_record": "mine"}));
+    // Another familiar can neither replay nor overwrite it.
+    let p = json!({"target":"total-receipt","args":{"text":"{\"amounts_minor\":[9]}"},"cassette_replay":"mine"});
+    assert!(signed(&h, &b, "invoke", p).is_err(), "beta replayed alpha's cassette");
+    receipt(&h, &b, json!({"cassette_record": "mine", "args": {"text": "{\"amounts_minor\":[9]}"}}));
+    let started = signed(&h, &a, "invoke", json!({"target":"total-receipt","args":{"text":"{\"amounts_minor\":[100,25]}"},"cassette_replay":"mine"})).unwrap();
+    let done = signed(&h, &a, "wait", json!({"summon": started["summon"], "timeout_ms": 10000})).unwrap();
+    assert_eq!(done["result"]["total_minor"], 125, "{done}");
+    // The owner's names are the owner's.
+    assert!(h.call("invoke", json!({"target":"total-receipt","args":{"text":"{\"amounts_minor\":[1]}"},"cassette_replay":"mine"})).is_err());
+}
