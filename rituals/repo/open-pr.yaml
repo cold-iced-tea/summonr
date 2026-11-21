@@ -33,7 +33,7 @@ steps:
     then:
       - id: dirty
         operation: data.assert
-        arguments: {condition: false, message: "the ${inputs.branch} worktree has uncommitted changes: ${steps.tree.output.changed}"}
+        arguments: {condition: false, message: "the ${inputs.branch} worktree has uncommitted changes: ${steps.tree.output.summary}"}
   - id: tip
     operation: git.head
     arguments: {repo: "${inputs.repo}", ref: "${inputs.branch}"}

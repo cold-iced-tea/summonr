@@ -2875,6 +2875,28 @@ mod result_tests {
     }
 
     #[test]
+    fn core_stops_when_its_socket_is_removed() {
+        let dir = std::env::temp_dir().join(format!("summonr-core-orphan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = Paths { runtime: dir.join("run"), state: dir.join("state"), config: dir.join("config") };
+        std::fs::create_dir_all(&paths.runtime).unwrap();
+        let core = core::Core::open(paths.clone()).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(core.serve());
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline && std::os::unix::net::UnixStream::connect(paths.socket()).is_err() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // The home is deleted under the core (a test's temp dir, a cleared
+        // runtime dir): nothing can reach it any more, so it must exit.
+        std::fs::remove_dir_all(&dir).unwrap();
+        let ended = rx.recv_timeout(std::time::Duration::from_secs(10));
+        assert!(matches!(ended, Ok(Ok(()))), "{ended:?}");
+    }
+
+    #[test]
     fn stop_running_core_reports_absent_and_waits_for_shutdown() {
         let dir = std::env::temp_dir().join(format!(
             "summonr-core-restart-{}",

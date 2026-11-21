@@ -8,13 +8,13 @@ All three act only on repositories listed under `repos:` in `config.yaml`, by na
 | --- | --- | --- | --- |
 | `repos` | read | | configured repository names |
 | `info` | read | `repo` | `{trunk, remote}` |
-| `status` | read | `repo`, `worktree`? | `{branch\|null, clean, changed}` (untracked files count) |
+| `status` | read | `repo`, `worktree`? | `{branch\|null, clean, summary, changed}` (untracked files count; `summary` is a short line for messages, at most 300 bytes) |
 | `ahead_behind` | read | `repo`, `from`, `to` | `{ahead, behind}`: commits only in `from`, only in `to` |
 | `merged` | read | `repo`, `branch` | `{merged}`: contained in the trunk |
 | `head` | read | `repo`, `ref` | `{commit}` |
 | `remote_head` | read | `repo`, `branch` | `{commit\|null}` on the remote |
 | `worktrees` | read | `repo` | `[{path, branch, head, clean, main}]` |
-| `worktree_for` | read | `repo`, `branch` | `{path\|null, clean, changed}` |
+| `worktree_for` | read | `repo`, `branch` | `{path\|null, clean, summary, changed}` |
 | `branches` | read | `repo` | `[{name, merged, current}]` |
 | `branch_exists` | read | `repo`, `branch` | `{exists}` |
 | `cleanup_plan` | read | `repo` | worktrees and branches with `action` (`remove`/`keep`) and `reason` |
@@ -40,6 +40,6 @@ Uses the `gh` program (set `gh:` in `config.yaml`) and its login.
 
 | Operation | Effect | Arguments | Output |
 | --- | --- | --- | --- |
-| `run` | read | `repo`, `worktree`? | `{passed, code, tail}`: the repository's `test` command, its exit code and the end of its combined output in the order written (last 30 lines, at most 900 bytes) |
+| `run` | read | `repo`, `worktree`? | `{passed, code, tail}`: the repository's `test` command, its exit code and the end of its output: the last lines of stderr, then of stdout after a `--- stdout ---` line (at most 900 bytes together; streams are kept apart because a runner may buffer stdout until exit) |
 
 A test command that outlives the run's time limit is stopped and reported as not passed.

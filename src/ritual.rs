@@ -2152,6 +2152,7 @@ fn operation_output_type(
         "git.status" => closed_obj([
             ("branch", nullable(Ty::Str)),
             ("clean", Ty::Bool),
+            ("summary", Ty::Str),
             ("changed", Ty::List(Box::new(Ty::Str))),
         ]),
         "git.ahead_behind" => closed_obj([("ahead", Ty::Int), ("behind", Ty::Int)]),
@@ -2176,6 +2177,7 @@ fn operation_output_type(
         "git.worktree_for" => closed_obj([
             ("path", nullable(Ty::Str)),
             ("clean", nullable(Ty::Bool)),
+            ("summary", Ty::Str),
             ("changed", Ty::List(Box::new(Ty::Str))),
         ]),
         "git.branch_exists" => closed_obj([("exists", Ty::Bool)]),

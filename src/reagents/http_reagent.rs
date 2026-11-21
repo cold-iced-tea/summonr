@@ -459,28 +459,46 @@ mod tests {
         let origin = format!("http://{addr}");
         let url = format!("{origin}/items/1");
 
+        // The server reports its own failures here instead of panicking on
+        // its thread, so a broken exchange names its cause.
+        let server_errors = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let errors = server_errors.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten().take(3) {
                 let mut reader = BufReader::new(stream);
-                let mut req_line = String::new();
-                reader.read_line(&mut req_line).unwrap();
-                let mut headers = Vec::new();
+                let mut head = Vec::new();
                 loop {
-                    let mut h = String::new();
-                    reader.read_line(&mut h).unwrap();
-                    if h.trim().is_empty() {
-                        break;
+                    let mut line = String::new();
+                    match reader.read_line(&mut line) {
+                        Ok(0) => break,
+                        Ok(_) if line.trim().is_empty() => break,
+                        Ok(_) => head.push(line),
+                        Err(e) => {
+                            errors.lock().unwrap().push(format!("reading the request: {e}"));
+                            break;
+                        }
                     }
-                    headers.push(h);
                 }
-                // Read the body too: closing a socket with unread input sends
-                // a reset, which the client can see before the reply.
-                let len = headers
-                    .iter()
-                    .find_map(|h| h.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)))
-                    .unwrap_or(0);
-                let mut body = vec![0; len];
-                std::io::Read::read_exact(&mut reader, &mut body).unwrap();
+                let req_line = head.first().cloned().unwrap_or_default();
+                let headers = head.get(1..).unwrap_or_default().to_vec();
+                let header = |name: &str| headers.iter().find_map(|h| h.to_ascii_lowercase().strip_prefix(name).map(|v| v.trim().to_string()));
+                // Read the whole body: closing a socket with unread input
+                // sends a reset, which the client can see before the reply.
+                let mut status = "200 OK";
+                if !req_line.starts_with("GET ") {
+                    match header("content-length:").map(|v| v.parse::<usize>()) {
+                        Some(Ok(len)) => {
+                            let mut body = vec![0; len];
+                            if let Err(e) = std::io::Read::read_exact(&mut reader, &mut body) {
+                                errors.lock().unwrap().push(format!("reading the body: {e}"));
+                            }
+                        }
+                        _ => {
+                            errors.lock().unwrap().push(format!("{} came without a Content-Length", req_line.trim()));
+                            status = "411 Length Required";
+                        }
+                    }
+                }
                 let out = reader.get_mut();
                 if req_line.starts_with("GET ") {
                     let body = b"{\"v\":1}";
@@ -491,12 +509,12 @@ mod tests {
                     );
                     let _ = out.write_all(body);
                 } else {
-                    let has_auth = headers.iter().any(|h| h.to_ascii_lowercase().starts_with("authorization: bearer secret-tok"));
-                    let has_idem = headers.iter().any(|h| h.to_ascii_lowercase().starts_with("idempotency-key: ik-1"));
+                    let has_auth = header("authorization:").is_some_and(|v| v == "bearer secret-tok");
+                    let has_idem = header("idempotency-key:").is_some_and(|v| v == "ik-1");
                     let body = json!({"ok": has_auth && has_idem}).to_string();
                     let _ = write!(
                         out,
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                         body.len(),
                         body
                     );
@@ -562,7 +580,8 @@ mod tests {
             &json!({"url": url, "auth": "api", "idempotency_key": "ik-1", "body": {"x": 1}}),
             &auth_dig,
         )
-        .unwrap();
+        .unwrap_or_else(|e| panic!("{e:?}; server: {:?}", server_errors.lock().unwrap()));
+        assert!(server_errors.lock().unwrap().is_empty(), "{:?}", server_errors.lock().unwrap());
         assert_eq!(res["status"], 200);
         assert_eq!(res["json"]["ok"], true);
     }

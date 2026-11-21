@@ -106,6 +106,18 @@ fn land_branch_reports_a_loud_test_failure() {
 }
 
 #[test]
+fn land_branch_reports_a_long_list_of_uncommitted_changes() {
+    let f = fixture();
+    let h = home(&f, "true", "");
+    for i in 0..60 {
+        dirty(&f.main(), &format!("generated_module_with_a_long_name_{i:03}.rs"));
+    }
+    let done = invoke(&h, "land-branch", json!({"repo": "demo", "branch": "feature"}));
+    assert_ne!(done["outcome"], "returned");
+    assert!(done.to_string().contains("the main checkout has uncommitted changes: 60 paths"), "{done}");
+}
+
+#[test]
 fn land_branch_refuses_behind_remote() {
     let f = fixture();
     let h = home(&f, "true", "");

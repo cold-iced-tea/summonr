@@ -95,71 +95,147 @@ pub(crate) fn run_bounded(prog: &str, args: &[&str], cwd: &Path, deadline: Optio
 
 /// Run a program in its own process group with separate arguments (never a
 /// shell) and no input. At the deadline the whole group is stopped; when the
-/// program exits, anything it left running is stopped too, so a background
-/// child can neither outlive the run nor hold its output open.
+/// program exits, anything it left running in its group is stopped too. A
+/// child that left the group (`setsid`) and still holds the output open is
+/// not waited for beyond a short grace period.
 pub(crate) fn run_bounded_as(prog: &str, args: &[&str], cwd: &Path, deadline: Option<Instant>, git: bool) -> Result<(i32, String, String), Fail> {
-    run_bounded_inner(prog, args, cwd, deadline, git, false)
+    run_bounded_inner(prog, args, cwd, deadline, git, None)
 }
 
-/// The same, with stdout and stderr written to one pipe, so the output keeps
-/// the order the program wrote it in (a test runner's build log on stderr
-/// comes before its results on stdout, not after them).
-pub(crate) fn run_bounded_merged(prog: &str, args: &[&str], cwd: &Path, deadline: Option<Instant>) -> Result<(i32, String), Fail> {
-    run_bounded_inner(prog, args, cwd, deadline, false, true).map(|(code, out, _)| (code, out))
+/// The same, keeping only the last `keep` bytes of stdout and of stderr, so a
+/// program that writes without end cannot fill memory.
+pub(crate) fn run_bounded_kept(prog: &str, args: &[&str], cwd: &Path, deadline: Option<Instant>, keep: usize) -> Result<(i32, String, String), Fail> {
+    run_bounded_inner(prog, args, cwd, deadline, false, Some(keep))
 }
 
-fn run_bounded_inner(prog: &str, args: &[&str], cwd: &Path, deadline: Option<Instant>, git: bool, merge: bool) -> Result<(i32, String, String), Fail> {
+/// How long to keep reading after the program ended, for output a child
+/// outside its process group may still hold open.
+const OUTPUT_GRACE: Duration = Duration::from_secs(2);
+
+/// One output stream, read on its own thread into a shared buffer.
+struct Drain {
+    buf: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    done: std::sync::mpsc::Receiver<()>,
+}
+
+impl Drain {
+    fn start(mut r: impl std::io::Read + Send + 'static, keep: Option<usize>) -> Drain {
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (tx, done) = std::sync::mpsc::channel();
+        let shared = buf.clone();
+        std::thread::spawn(move || {
+            let mut chunk = [0u8; 8192];
+            while let Ok(n) = r.read(&mut chunk) {
+                if n == 0 {
+                    break;
+                }
+                let mut b = shared.lock().unwrap_or_else(|e| e.into_inner());
+                b.extend_from_slice(&chunk[..n]);
+                // Trim only now and then, so keeping the end stays cheap.
+                if let Some(k) = keep {
+                    if b.len() > 2 * k {
+                        let cut = b.len() - k;
+                        b.drain(..cut);
+                    }
+                }
+            }
+            let _ = tx.send(());
+        });
+        Drain { buf, done }
+    }
+
+    /// What was read, once the stream closed or the grace period ran out.
+    fn finish(self, until: Instant, keep: Option<usize>) -> String {
+        let _ = self.done.recv_timeout(until.saturating_duration_since(Instant::now()));
+        let b = self.buf.lock().unwrap_or_else(|e| e.into_inner());
+        let from = keep.map_or(0, |k| b.len().saturating_sub(k));
+        String::from_utf8_lossy(&b[from..]).into_owned()
+    }
+}
+
+fn run_bounded_inner(prog: &str, args: &[&str], cwd: &Path, deadline: Option<Instant>, git: bool, keep: Option<usize>) -> Result<(i32, String, String), Fail> {
     use std::os::unix::process::CommandExt;
-    let mut cmd = command(prog, git);
-    cmd.args(args).current_dir(cwd).stdin(Stdio::null()).process_group(0);
-    // With `merge`, both streams share one pipe; the reader is kept here and
-    // the writers are dropped (by `cmd`) once the child holds them.
-    let merged = if merge {
-        let (reader, writer) = std::io::pipe().map_err(|e| Fail::Failed(format!("cannot run {prog}: {e}")))?;
-        let writer2 = writer.try_clone().map_err(|e| Fail::Failed(format!("cannot run {prog}: {e}")))?;
-        cmd.stdout(writer).stderr(writer2);
-        Some(reader)
-    } else {
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-        None
-    };
-    let spawned = cmd.spawn();
-    drop(cmd);
-    let mut child = spawned.map_err(|e| Fail::Failed(format!("cannot run {prog}: {e}")))?;
+    let mut child = command(prog, git)
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .map_err(|e| Fail::Failed(format!("cannot run {prog}: {e}")))?;
     let group = child.id() as i32;
     let stop_group = || unsafe {
         libc::kill(-group, libc::SIGKILL);
     };
     // Drain output on threads so a full pipe can never stall the wait.
-    let drain = |mut r: Box<dyn std::io::Read + Send>| {
-        std::thread::spawn(move || {
-            let mut s = Vec::new();
-            let _ = r.read_to_end(&mut s);
-            s
-        })
-    };
-    let (o, e) = match merged {
-        Some(reader) => (drain(Box::new(reader)), drain(Box::new(std::io::empty()))),
-        None => (drain(Box::new(child.stdout.take().unwrap())), drain(Box::new(child.stderr.take().unwrap()))),
-    };
+    let out = Drain::start(child.stdout.take().unwrap(), keep);
+    let err = Drain::start(child.stderr.take().unwrap(), keep);
     let status = loop {
-        if let Some(st) = child.try_wait().map_err(|e| Fail::Failed(e.to_string()))? {
-            break st;
+        match child.try_wait() {
+            Ok(Some(st)) => break st,
+            Ok(None) => {}
+            Err(e) => {
+                stop_group();
+                let _ = child.wait();
+                return Err(Fail::Failed(format!("cannot wait for {prog}: {e}")));
+            }
         }
         if deadline.is_some_and(|d| Instant::now() >= d) {
             stop_group();
             let _ = child.wait();
-            let _ = (o.join(), e.join());
             return Err(Fail::Exhausted(format!("{prog} ran past the time limit")));
         }
         std::thread::sleep(Duration::from_millis(10));
     };
-    // The program is done; nothing it started may keep running or keep its
-    // output open.
+    // The program is done; nothing it started in its group may keep running.
     stop_group();
-    let stdout = String::from_utf8_lossy(&o.join().unwrap_or_default()).into_owned();
-    let stderr = String::from_utf8_lossy(&e.join().unwrap_or_default()).into_owned();
+    let until = Instant::now() + OUTPUT_GRACE;
+    let stdout = out.finish(until, keep);
+    let stderr = err.finish(until, keep);
     Ok((status.code().unwrap_or(-1), stdout, stderr))
+}
+
+/// The most a change summary may hold, so it fits in a ritual's message.
+const SUMMARY_BYTES: usize = 300;
+
+/// A short, bounded description of changed paths for messages:
+/// `a.txt`, or `42 paths: a.txt, b.txt and 40 more`.
+pub(crate) fn change_summary(changed: &[String]) -> String {
+    fn cut(s: &str, max: usize) -> &str {
+        let mut end = s.len().min(max);
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        &s[..end]
+    }
+    match changed {
+        [] => String::new(),
+        [one] => cut(one, SUMMARY_BYTES).to_string(),
+        _ => {
+            let mut text = format!("{} paths: ", changed.len());
+            let mut shown = 0;
+            for p in changed {
+                let sep = if shown == 0 { "" } else { ", " };
+                // Leave room for " and N more".
+                if text.len() + sep.len() + p.len() + 16 > SUMMARY_BYTES {
+                    break;
+                }
+                text.push_str(sep);
+                text.push_str(p);
+                shown += 1;
+            }
+            if shown == 0 {
+                let room = SUMMARY_BYTES - text.len() - 16;
+                text.push_str(cut(&changed[0], room));
+                shown = 1;
+            }
+            if shown < changed.len() {
+                text.push_str(&format!(" and {} more", changed.len() - shown));
+            }
+            text
+        }
+    }
 }
 
 /// Run git; a non-zero exit is a failure carrying git's last error line.
@@ -405,7 +481,7 @@ impl Reagent for Git {
             "status" => {
                 let path = checkout_path(cfg, r, args, d)?;
                 let (branch, changed) = checkout_state(cfg, &path, d)?;
-                Ok(json!({"branch": branch, "clean": changed.is_empty(), "changed": changed}))
+                Ok(json!({"branch": branch, "clean": changed.is_empty(), "summary": change_summary(&changed), "changed": changed}))
             }
             "ahead_behind" => {
                 let range = format!("{}...{}", arg(args, "from")?, arg(args, "to")?);
@@ -453,9 +529,9 @@ impl Reagent for Git {
                 match list_worktrees(cfg, r, d)?.into_iter().find(|w| !w.main && !w.prunable && w.branch.as_deref() == Some(branch)) {
                     Some(w) => {
                         let (_, changed) = checkout_state(cfg, &w.path, d)?;
-                        Ok(json!({"path": w.path, "clean": changed.is_empty(), "changed": changed}))
+                        Ok(json!({"path": w.path, "clean": changed.is_empty(), "summary": change_summary(&changed), "changed": changed}))
                     }
-                    None => Ok(json!({"path": null, "clean": null, "changed": []})),
+                    None => Ok(json!({"path": null, "clean": null, "summary": "", "changed": []})),
                 }
             }
             "branch_exists" => {
@@ -955,6 +1031,25 @@ mod tests {
         assert!(reason("held").contains("locked"), "{plan}");
         let path = f.root.join("wt-held").to_string_lossy().into_owned();
         assert!(call(&f, "remove_worktree", json!({"repo": "demo", "path": path})).unwrap_err().message().contains("locked"));
+    }
+
+    #[test]
+    fn bounded_output_keeps_only_the_end() {
+        let script = "head -c 4000000 /dev/zero | tr '\\0' x; printf 'the end'";
+        let (code, out, _) = run_bounded_kept("sh", &["-c", script], Path::new("/"), None, 4096).unwrap();
+        assert_eq!(code, 0);
+        assert!(out.len() <= 4096 && out.ends_with("the end"), "{} bytes", out.len());
+    }
+
+    #[test]
+    fn change_summary_is_bounded() {
+        assert_eq!(change_summary(&[]), "");
+        assert_eq!(change_summary(&["a.txt".into()]), "a.txt");
+        let many: Vec<String> = (0..200).map(|i| format!("target/generated/module_{i:03}.rs")).collect();
+        let s = change_summary(&many);
+        assert!(s.len() <= 300 && s.starts_with("200 paths: target/generated/module_000.rs") && s.ends_with(" more"), "{s}");
+        let long = vec!["é".repeat(400)];
+        assert!(change_summary(&long).len() <= 300);
     }
 
     #[test]

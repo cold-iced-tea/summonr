@@ -48,12 +48,12 @@ steps:
     then:
       - id: main_dirty
         operation: data.assert
-        arguments: {condition: false, message: "the main checkout has uncommitted changes: ${steps.main.output.changed}"}
+        arguments: {condition: false, message: "the main checkout has uncommitted changes: ${steps.main.output.summary}"}
   - if: not steps.tree.output.clean
     then:
       - id: tree_dirty
         operation: data.assert
-        arguments: {condition: false, message: "the ${inputs.branch} worktree has uncommitted changes: ${steps.tree.output.changed}"}
+        arguments: {condition: false, message: "the ${inputs.branch} worktree has uncommitted changes: ${steps.tree.output.summary}"}
   - id: fetch
     operation: git.fetch
     arguments: {repo: "${inputs.repo}"}

@@ -2275,6 +2275,15 @@ impl Core {
             let _ = std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600));
         }
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+        // The socket is the only way in. If it is removed or replaced (the
+        // home was deleted, the runtime dir cleared, another core bound it),
+        // nothing can reach this core again, so it ends.
+        let socket_id = |p: &std::path::Path| {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::symlink_metadata(p).ok().map(|m| (m.dev(), m.ino()))
+        };
+        let bound = socket_id(&sock);
+        let mut checked = std::time::Instant::now();
         let poller = self.clone();
         std::thread::spawn(move || poller.pact_poller());
         eprintln!(
@@ -2319,6 +2328,14 @@ impl Core {
                     std::thread::sleep(Duration::from_millis(25))
                 }
                 Err(e) => eprintln!("accept failed: {e}"),
+            }
+            if checked.elapsed() >= Duration::from_secs(1) {
+                checked = std::time::Instant::now();
+                if socket_id(&sock) != bound {
+                    eprintln!("summonr core: {} was removed or replaced; stopping", sock.display());
+                    self.stop.store(true, Ordering::SeqCst);
+                    return Ok(());
+                }
             }
         }
         let _ = std::fs::remove_file(&sock);
