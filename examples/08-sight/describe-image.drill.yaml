@@ -1,8 +1,9 @@
 # Drill for describe-image: the model's caption is scripted, so no vision model
-# is needed. The image is still read for real, so the fixture root must be
-# granted (see the README line).
-#   (see examples/README.md for the grant root)
-#   summonr inscribe describe-image.yaml   # with the root edited to your checkout
+# is needed. The image is still read for real, so the ritual's root must be
+# rewritten to your checkout and granted. From the repository root:
+#   sed "s|/absolute/path/to/summonr|$PWD|g" examples/08-sight/describe-image.yaml > "$SUMMONR_HOME/describe-image.yaml"
+#   summonr inscribe "$SUMMONR_HOME/describe-image.yaml"
+#   summonr allow describe-image --from sight --select read_image --on root="$PWD/examples/08-sight/fixtures"
 #   summonr drill describe-image against examples/08-sight/describe-image.drill.yaml
 drill: describe-image-cases
 ritual: describe-image

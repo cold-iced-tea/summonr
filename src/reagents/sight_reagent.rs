@@ -117,13 +117,16 @@ fn read_image_bytes(root: &str, path: &str, max: u64, auth: Option<&Authority>) 
     let mut file = open_at(&parent, leaf, false)?;
     let st = fstat_fd(&file, leaf)?;
     if (st.st_mode & libc::S_IFMT) == libc::S_IFREG && st.st_size as u64 > max {
-        return Err(Fail::Exhausted(format!(
+        return Err(Fail::Invalid(format!(
             "image is {} bytes, over the {max}-byte limit",
             st.st_size
         )));
     }
     read_bounded_bytes(&mut file, max as usize, auth).map_err(|e| match e {
-        Fail::Exhausted(_) => Fail::Exhausted(format!("image exceeds the {max}-byte limit")),
+        // A spent read deadline stays a spent budget; anything else is the
+        // file outgrowing the limit while it was read.
+        Fail::Exhausted(_) if auth.and_then(|a| a.deadline).is_some_and(|d| std::time::Instant::now() >= d) => e,
+        Fail::Exhausted(_) => Fail::Invalid(format!("image exceeds the {max}-byte limit")),
         e => e,
     })
 }
@@ -141,12 +144,17 @@ pub(crate) fn load_verified(handle: &Value, max_bytes: u64) -> Result<Vec<u8>, F
     let data = match read_image_bytes(root, path, max_bytes, None) {
         // The handle was issued within the limit; a file now over it is not
         // the file that was read.
-        Err(Fail::Exhausted(_)) => {
+        Err(Fail::Invalid(m)) if m.contains("-byte limit") => {
             return Err(Fail::Failed(format!(
                 "stale image `{path}`: now larger than the {max_bytes}-byte limit"
             )))
         }
-        Err(e) => return Err(Fail::Failed(format!("stale image `{path}`: cannot reread ({e:?})"))),
+        Err(e) => {
+            return Err(Fail::Failed(format!(
+                "stale image `{path}`: cannot reread ({})",
+                e.message()
+            )))
+        }
         Ok(d) => d,
     };
     if crate::util::sha256_hex(&data) != sha {
@@ -213,7 +221,10 @@ impl Reagent for Sight {
         if auth.deadline.is_some_and(|d| std::time::Instant::now() >= d) {
             return Err(Fail::Exhausted("image read deadline".into()));
         }
-        let max = args["max_bytes"].as_u64().unwrap_or(DEFAULT_MAX_BYTES);
+        let mut max = args["max_bytes"].as_u64().unwrap_or(DEFAULT_MAX_BYTES);
+        if let Some(cfg) = auth.config {
+            max = max.min(cfg.sight_limits().0);
+        }
         let data = read_image_bytes(root, path, max, Some(auth))?;
         let (mime, width, height) = sniff(&data)?;
         let handle = json!({
@@ -392,7 +403,49 @@ pub(crate) mod tests {
         std::fs::write(dir.join("big.png"), &big).unwrap();
         let r = reagent::call(None, "sight", "read_image", &json!({"root":root,"path":"big.png","max_bytes":100}), &auth(&g, &sel));
         match r {
-            Err(Fail::Exhausted(m)) => assert!(m.contains("100"), "{m}"),
+            Err(Fail::Invalid(m)) => assert!(m.contains("100-byte limit"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn deadline_during_read_stays_exhausted() {
+        let dir = tmp();
+        let root = dir.to_str().unwrap();
+        let g = grants(root);
+        let sel = Mutex::new(HashSet::new());
+        let mut big = PNG_1X1.to_vec();
+        big.resize(101, 0);
+        std::fs::write(dir.join("big.png"), &big).unwrap();
+        // Within the limit at fstat, but the deadline is already spent.
+        let mut a = auth(&g, &sel);
+        a.deadline = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        match read_image_bytes(root, "big.png", 1000, Some(&a)) {
+            Err(Fail::Exhausted(m)) => assert!(m.contains("deadline"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn config_lowered_max_bytes_applies_at_read() {
+        let dir = tmp();
+        let root = dir.to_str().unwrap();
+        let g = grants(root);
+        let sel = Mutex::new(HashSet::new());
+        let mut big = PNG_1X1.to_vec();
+        big.resize(101, 0);
+        std::fs::write(dir.join("big.png"), &big).unwrap();
+        let cfg = crate::util::Config {
+            sight: Some(crate::util::SightConfig { max_bytes: Some(100), max_per_step: None }),
+            ..Default::default()
+        };
+        let mut a = auth(&g, &sel);
+        a.config = Some(&cfg);
+        let r = reagent::call(None, "sight", "read_image", &json!({"root":root,"path":"big.png"}), &a);
+        match r {
+            Err(Fail::Invalid(m)) => assert!(m.contains("100-byte limit"), "{m}"),
             other => panic!("{other:?}"),
         }
         std::fs::remove_dir_all(dir).unwrap();

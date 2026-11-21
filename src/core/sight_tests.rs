@@ -75,7 +75,8 @@ fn replay_with_changed_image_is_stale_not_matched_by_bytes() {
     // The recorded handle is replayed, but its bytes are re-verified at send.
     std::fs::write(dir.join("a.png"), b"changed").unwrap();
     let rep = h.run(json!({"target":"see","replay":cassette}));
-    assert_ne!(rep["outcome"], "returned", "{rep}");
+    assert_eq!(rep["outcome"], "failed", "{rep}");
+    assert!(rep["error"].as_str().unwrap_or_default().contains("stale image"), "{rep}");
 }
 
 #[test]

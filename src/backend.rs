@@ -17,11 +17,22 @@ use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 /// One image carried to a vision-capable model.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ImagePart {
     pub sha256: String,
     pub mime: String,
     pub bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for ImagePart {
+    /// Never prints the bytes.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImagePart")
+            .field("sha256", &self.sha256)
+            .field("mime", &self.mime)
+            .field("len", &self.bytes.len())
+            .finish()
+    }
 }
 
 /// `Inline` sends the bytes; `Placeholder` is the record form (digest only).
@@ -42,8 +53,16 @@ fn scrub_error(err: String, images: &[ImagePart]) -> String {
         return err;
     }
     let mut out = err;
-    for i in images {
-        out = out.replace(&b64(&i.bytes), &format!("[sight:{}]", i.sha256));
+    // Exact copies become sentinels first so the digest marker survives the
+    // run elision below (a digest is itself 64 alphabet characters).
+    for (n, i) in images.iter().enumerate() {
+        out = out.replace(&b64(&i.bytes), &format!("\u{1}{n}\u{1}"));
+    }
+    // Truncated, `\/`-escaped or line-wrapped copies: elide any long run of
+    // base64-looking characters.
+    out = elide_base64_runs(&out);
+    for (n, i) in images.iter().enumerate() {
+        out = out.replace(&format!("\u{1}{n}\u{1}"), &format!("[sight:{}]", i.sha256));
     }
     match out.char_indices().nth(2000) {
         Some((at, _)) => {
@@ -53,6 +72,33 @@ fn scrub_error(err: String, images: &[ImagePart]) -> String {
         }
         None => out,
     }
+}
+
+/// Replace every run of 64 or more base64-alphabet characters (plus the
+/// escape and line-break characters a server may add) with a marker.
+fn elide_base64_runs(s: &str) -> String {
+    const MARK: &str = "[sight:redacted]";
+    let is_b64 = |c: char| c.is_ascii_alphanumeric() || matches!(c, '\\' | '/' | '+' | '=' | '\n' | '\r');
+    let mut out = String::with_capacity(s.len());
+    let mut run = String::new();
+    let flush = |run: &mut String, out: &mut String| {
+        if run.chars().count() >= 64 {
+            out.push_str(MARK);
+        } else {
+            out.push_str(run);
+        }
+        run.clear();
+    };
+    for c in s.chars() {
+        if is_b64(c) {
+            run.push(c);
+        } else {
+            flush(&mut run, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut run, &mut out);
+    out
 }
 
 fn placeholder(img: &ImagePart) -> Value {
@@ -262,7 +308,7 @@ pub fn payload(model_id: &str, req: &ChatReq) -> Result<Value, String> {
 
 /// Whether `model_id`'s backend can take images. Ollama is asked once per
 /// `(url, model)` and must list the `vision` capability.
-pub fn supports_images(base_url: &str, model_id: &str) -> Result<(), String> {
+pub fn supports_images(base_url: &str, model_id: &str, timeout: Option<Duration>) -> Result<(), String> {
     let (backend, model) = split_model(model_id)?;
     let (kind, _) = resolve_protocol(backend)?;
     if kind != "ollama" {
@@ -275,10 +321,11 @@ pub fn supports_images(base_url: &str, model_id: &str) -> Result<(), String> {
     let vision = match known {
         Some(v) => v,
         None => {
-            let r = http(
+            let r = http_with_timeout(
                 "POST",
                 &format!("{base_url}/api/show"),
                 Some(&json!({"model": model})),
+                timeout,
             )?;
             let v = r["capabilities"]
                 .as_array()
@@ -1292,20 +1339,20 @@ mod tests {
     #[test]
     fn ollama_without_vision_is_refused() {
         let (url, hits) = show_server(r#"["completion"]"#);
-        let err = supports_images(&url, "ollama/text-only").unwrap_err();
+        let err = supports_images(&url, "ollama/text-only", None).unwrap_err();
         assert!(err.contains("does not support images"), "{err}");
-        assert!(supports_images(&url, "ollama/text-only").is_err());
+        assert!(supports_images(&url, "ollama/text-only", None).is_err());
         assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1, "cached");
     }
 
     #[test]
     fn ollama_with_vision_is_allowed() {
         let (url, hits) = show_server(r#"["completion","vision"]"#);
-        supports_images(&url, "ollama/seer").unwrap();
-        supports_images(&url, "ollama/seer").unwrap();
+        supports_images(&url, "ollama/seer", None).unwrap();
+        supports_images(&url, "ollama/seer", None).unwrap();
         assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1, "cached");
-        supports_images("http://127.0.0.1:1", "openai/x").unwrap();
-        supports_images("http://127.0.0.1:1", "mock/keyword").unwrap();
+        supports_images("http://127.0.0.1:1", "openai/x", None).unwrap();
+        supports_images("http://127.0.0.1:1", "mock/keyword", None).unwrap();
     }
 
     /// Records each request body; answers `status` with `reply`, or echoes
@@ -1413,6 +1460,19 @@ mod tests {
         let err = chat_with_images(&url, "openai/m", &small).err().unwrap();
         assert!(err.contains(&format!("[sight:{}]", small[0].sha256)), "{err}");
         assert!(!err.contains(&b64(b"tiny")), "{err}");
+        // Escaped and truncated copies are elided too.
+        let big = [img(&vec![9u8; 600])];
+        let enc = b64(&big[0].bytes);
+        let escaped = enc.replace('/', "\\/");
+        let reply: &'static str = format!("bad image: {}...", &escaped[..400]).leak();
+        let (url, _) = recording_server("422 Unprocessable Entity", Some(reply));
+        let err = chat_with_images(&url, "openai/m", &big).err().unwrap();
+        assert!(err.contains("[sight:redacted]"), "{err}");
+        assert!(!err.contains(&enc[..64]), "{err}");
+        let reply: &'static str = format!("invalid image: {}", &enc[..120]).leak();
+        let (url, _) = recording_server("422 Unprocessable Entity", Some(reply));
+        let err = chat_with_images(&url, "openai/m", &big).err().unwrap();
+        assert!(err.contains("[sight:redacted]") && !err.contains(&enc[..64]), "{err}");
         // No images: error text is left alone.
         let (url, _) = recording_server("422 Unprocessable Entity", Some("x".repeat(3000).leak()));
         let err = chat_with_images(&url, "openai/m", &[]).err().unwrap();

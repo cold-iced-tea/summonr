@@ -1078,7 +1078,7 @@ impl Run {
         let images = self.step_images(sid, m.images.as_ref(), scope, &mut manifest)?;
         let base_url = self.core.cfg.backend_url_for(&model);
         if !images.is_empty() && !self.io.offline() && !self.io.scripted() {
-            backend::supports_images(&base_url, &model)
+            backend::supports_images(&base_url, &model, self.request_limits().0)
                 .map_err(|e| Fail::Failed(format!("step {sid}: {e}")))?;
         }
 
@@ -2383,7 +2383,7 @@ mod tests {
         let mut run = granted(&f, def);
         run.inputs = json!({"h": handle(&root, "a.png", PNG_1X1)});
         let fin = run.execute();
-        assert_ne!(fin.outcome, Outcome::Returned);
+        assert_eq!(fin.outcome, Outcome::Failed, "{:?}", fin.error);
         let err = fin.error.unwrap_or_default();
         assert!(err.contains("image was not read by sight in this run"), "{err}");
         assert_eq!(requests(&run), 0);
@@ -2432,7 +2432,7 @@ mod tests {
         run.selected.lock().unwrap().insert(issue_key(&h).unwrap());
         run.inputs = json!({ "h": h });
         let fin = run.execute();
-        assert_ne!(fin.outcome, Outcome::Returned);
+        assert_eq!(fin.outcome, Outcome::Failed, "{:?}", fin.error);
         let err = fin.error.unwrap_or_default();
         assert!(err.contains("grant"), "{err}");
         assert_eq!(requests(&run), 0);
@@ -2468,7 +2468,7 @@ mod tests {
         run.selected.lock().unwrap().insert(issue_key(&h).unwrap());
         run.inputs = json!({ "h": h });
         let fin = run.execute();
-        assert_ne!(fin.outcome, Outcome::Returned);
+        assert_eq!(fin.outcome, Outcome::Failed, "{:?}", fin.error);
         let err = fin.error.unwrap_or_default();
         assert!(err.contains("stale image"), "{err}");
         assert_eq!(requests(&run), 0);
@@ -2592,6 +2592,36 @@ mod tests {
         assert!(items[0]["error"].as_str().unwrap_or_default().contains("stale image"), "{}", fin.result);
         assert_eq!(items[1]["status"], "returned", "{}", fin.result);
         assert_eq!(f.model_events()[0]["payload"]["images"], json!([crate::util::sha256_hex(JPEG_1X1)]));
+    }
+
+    #[test]
+    fn oversize_image_in_each_continue_is_invalid_and_batch_goes_on() {
+        let mut f = Fixture::new();
+        let (dir, root) = image_dir(&f);
+        std::fs::write(dir.join("big.png"), vec![0u8; 2000]).unwrap();
+        Arc::get_mut(&mut f.core).unwrap().cfg.sight = Some(crate::util::SightConfig {
+            max_bytes: Some(1000),
+            max_per_step: None,
+        });
+        let def = definition(json!({
+            "ritual":"sight-batch","model":"mock/keyword",
+            "inputs":{"files":{"type":"list"}},
+            "requires":[{"reagent":"sight","action":"read_image","on":{"root":&root}}],
+            "steps":[{"id":"batch","each":"f in inputs.files","on_failure":"continue","steps":[
+                {"id":"page","operation":"sight.read_image","arguments":{"root":&root,"path":"${f}"}},
+                {"id":"look","model":{"prompt":"what is this","images":["${steps.page.output}"]}}
+            ]}],
+            "return":{"batch":"${steps.batch.output}"},
+        }));
+        let mut run = granted(&f, def);
+        run.inputs = json!({"files":["big.png","b.jpg"]});
+        let fin = run.execute();
+        assert_eq!(fin.outcome, Outcome::Returned, "{:?} {}", fin.error, fin.result);
+        let items = &fin.result["batch"];
+        assert_eq!(items[0]["status"], "invalid", "{}", fin.result);
+        assert!(items[0]["error"].as_str().unwrap_or_default().contains("1000-byte limit"), "{}", fin.result);
+        assert_eq!(items[1]["status"], "returned", "{}", fin.result);
+        assert_eq!(requests(&run), 1);
     }
 
     #[test]

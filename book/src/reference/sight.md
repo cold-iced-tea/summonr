@@ -31,13 +31,13 @@ steps:
       schema: {type: object, required: [text], properties: {text: {type: string}}}
 ```
 
-A runnable version is `examples/08-sight`.
+`examples/08-sight` is runnable after rewriting its placeholder root to your checkout (see the examples README).
 
 ## What is read
 
 - The type comes from the file's magic bytes, not its name: PNG, JPEG or WebP. Anything else fails. GIF and animated WebP are refused.
 - Path rules match [`file`](file.md): every component is opened relative to a directory descriptor, with no symlinks, no `..`, and regular files only.
-- A file over the limit (10 MiB by default, or a lower `max_bytes`) fails the step with an `exhausted` outcome; it is never truncated.
+- A file over the limit fails the step as `invalid`, naming the limit; it is never truncated. The limit is the lower of `max_bytes` (default 10 MiB) and the owner's `sight.max_bytes` in `config.yaml`, applied at read time too. Being `invalid` rather than `exhausted`, one oversize file does not abort an `each` with `on_failure: continue`, and retry and fallback apply as for any bad input. A read that runs out of time is still `exhausted`.
 - The output is a handle, never bytes. Reads are `deterministic over live state`, like other reads.
 
 ## Handles are issued, not asserted
@@ -54,14 +54,18 @@ Defaults are 10,485,760 bytes per image and 8 images per step. `config.yaml` may
 
 ## Backends and the vision check
 
-Ollama receives `images` on the user message and the model must report `vision` in `/api/show`; the answer is checked once per model and cached, and skipped in drills and replays. OpenAI-compatible providers receive `image_url` data URLs and Anthropic receives `image` base64 blocks. For these two there is no reliable pre-check, so an unsupported model surfaces the backend's error. The mock backend accepts images, so a [drill](../guides/safe-building.md) with a scripted reply needs no vision model.
+Ollama receives the images in a separate `images` field on the user message (the text stays in `content`) and the model must report `vision` in `/api/show`; the answer is checked once per model and cached, and skipped in drills and replays. OpenAI-compatible providers receive `image_url` data URLs, and Anthropic receives `image` base64 blocks; for both, the images come before the text in the user turn, in `images:` order. For these two there is no reliable pre-check, so an unsupported model surfaces the backend's error. The mock backend accepts images, so a [drill](../guides/safe-building.md) with a scripted reply needs no vision model.
 
 ## Records hold digests only
 
 - A recorded request payload replaces each image's data with `{"sight": {"sha256", "mime", "bytes"}}` at the same position. This is the one substitution to the "exact body sent" rule.
 - Cassette request hashes cover image digests, not bytes.
-- Backend error text for image requests is scrubbed of base64 and capped at 2,000 characters.
+- Backend error text for image requests is scrubbed of base64 (exact copies, and any run of 64 or more base64-looking characters, including truncated, `\/`-escaped or line-wrapped copies) and capped at 2,000 characters.
 - Elegies, epitaphs, events and MCP records show handles and digests only.
-- `revive` re-adopts only handles from a live `read_image` result, never from a fallback's output, and re-checks the digests.
+- `revive` re-adopts only handles from a live `read_image` result at the top level of the run, never from a fallback's output, and re-checks the digests. Handles produced inside child rituals or carried out of `each` items are refused after a revive (it fails closed); re-read the image in the step that uses it.
+
+## Memory
+
+Each image step holds the raw bytes, a base64 copy and the serialized request body at once. Many large images combined with a high `parallel` use proportionally more memory, so size `parallel` for the images, not just the model.
 
 Image tokens count under the `tokens` essence; see [Essence](../concepts/essence.md).

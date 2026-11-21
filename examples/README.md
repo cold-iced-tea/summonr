@@ -32,4 +32,5 @@ sed "s|/absolute/path/to/summonr|$PWD|g" examples/08-sight/describe-image.yaml >
 summonr inscribe "$SUMMONR_HOME/describe-image.yaml"
 summonr allow describe-image --from sight --select read_image --on root="$PWD/examples/08-sight/fixtures"
 summonr drill describe-image against examples/08-sight/describe-image.drill.yaml
+summonr core stop
 ```
