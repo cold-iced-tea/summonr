@@ -2705,6 +2705,8 @@ mod signed_tests;
 #[cfg(test)]
 mod epitaph_tests;
 #[cfg(test)]
+mod sight_tests;
+#[cfg(test)]
 mod witness_tests;
 #[cfg(test)]
 mod pact_tests;

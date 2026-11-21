@@ -1861,6 +1861,54 @@ mod tests {
     }
 
     #[test]
+    fn mcp_get_record_has_no_image_bytes() {
+        use base64::Engine;
+        use crate::reagents::sight_reagent::tests::PNG_1X1;
+        let (p, mut w, _rx, core) = stalled();
+        drop(w.flush());
+        let dir = p.config.join("scans");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.png"), PNG_1X1).unwrap();
+        let root = dir.to_string_lossy().into_owned();
+        let def = json!({
+            "ritual": "see", "model": "mock/keyword",
+            "reagents": {"sight": {"select": ["read_image"]}},
+            "requires": [{"reagent":"sight","action":"read_image","on":{"root":&root}}],
+            "steps": [
+                {"id":"page","operation":"sight.read_image","arguments":{"root":&root,"path":"a.png"}},
+                {"id":"look","model":{"prompt":"what is this","images":["${steps.page.output}"]}}
+            ],
+            "return": {"seen": "${steps.look.output}"}
+        });
+        let file = p.config.join("see.json");
+        std::fs::write(&file, def.to_string()).unwrap();
+        core.dispatch("inscribe", json!({"path": file.to_str().unwrap()})).unwrap();
+        core.dispatch("grant", json!({"ritual":"see","scopes":[{"reagent":"sight","select":["read_image"]}],"on":{"root":&root}})).unwrap();
+        let link = crate::link::factory(&p, None, None).unwrap();
+        let ran = handle(
+            &link,
+            &json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run_ritual","arguments":{"name":"see"}}}),
+        )
+        .unwrap();
+        assert_eq!(ran["result"]["isError"], false, "{ran}");
+        assert_eq!(ran["result"]["structuredContent"]["state"], "returned", "{ran}");
+        let run_id = ran["result"]["structuredContent"]["run_id"].as_str().unwrap();
+        let rec = handle(
+            &link,
+            &json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_record","arguments":{"run_id":run_id}}}),
+        )
+        .unwrap();
+        assert_eq!(rec["result"]["isError"], false, "{rec}");
+        let text = rec.to_string();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(PNG_1X1);
+        assert!(!text.contains(&b64), "image bytes leaked over MCP");
+        assert!(text.contains(&crate::util::sha256_hex(PNG_1X1)), "{text}");
+        assert!(!ran.to_string().contains(&b64));
+        core.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = std::fs::remove_dir_all(p.state.parent().unwrap());
+    }
+
+    #[test]
     fn compact_truncates_large_results_and_points_to_get_record() {
         let huge = "x".repeat(40_000);
         let c = compact(&json!({

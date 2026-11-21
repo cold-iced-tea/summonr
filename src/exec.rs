@@ -480,6 +480,22 @@ impl Run {
             let id = s.id().cloned().unwrap_or_default();
             let top_level = self.depth == 0 && scope.frames.len() == 1;
             if top_level && !id.is_empty() && scope.frames[0].steps.contains_key(&id) {
+                // A restored read happened in an earlier run, so this run's
+                // issue key for its handle is re-issued; only a step that
+                // is statically a sight read earns one, never a model output.
+                if let Step::Operation(op) = s {
+                    if op.operation == "sight.read_image" {
+                        let auth = Authority {
+                            grants: &self.grants,
+                            deadline: None,
+                            on_item: None,
+                            selected: &self.selected,
+                            expected_digest: None,
+                            config: Some(&self.core.cfg),
+                        };
+                        reagent::adopt(&op.operation, &scope.frames[0].steps[&id].output, &auth);
+                    }
+                }
                 continue;
             }
             match s {
