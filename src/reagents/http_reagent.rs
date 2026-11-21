@@ -473,6 +473,14 @@ mod tests {
                     }
                     headers.push(h);
                 }
+                // Read the body too: closing a socket with unread input sends
+                // a reset, which the client can see before the reply.
+                let len = headers
+                    .iter()
+                    .find_map(|h| h.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)))
+                    .unwrap_or(0);
+                let mut body = vec![0; len];
+                std::io::Read::read_exact(&mut reader, &mut body).unwrap();
                 let out = reader.get_mut();
                 if req_line.starts_with("GET ") {
                     let body = b"{\"v\":1}";

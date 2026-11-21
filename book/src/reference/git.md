@@ -40,6 +40,6 @@ Uses the `gh` program (set `gh:` in `config.yaml`) and its login.
 
 | Operation | Effect | Arguments | Output |
 | --- | --- | --- | --- |
-| `run` | read | `repo`, `worktree`? | `{passed, code, tail}`: the repository's `test` command, its exit code and last 30 lines |
+| `run` | read | `repo`, `worktree`? | `{passed, code, tail}`: the repository's `test` command, its exit code and the end of its combined output in the order written (last 30 lines, at most 900 bytes) |
 
 A test command that outlives the run's time limit is stopped and reported as not passed.

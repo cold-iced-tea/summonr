@@ -98,33 +98,50 @@ pub(crate) fn run_bounded(prog: &str, args: &[&str], cwd: &Path, deadline: Optio
 /// program exits, anything it left running is stopped too, so a background
 /// child can neither outlive the run nor hold its output open.
 pub(crate) fn run_bounded_as(prog: &str, args: &[&str], cwd: &Path, deadline: Option<Instant>, git: bool) -> Result<(i32, String, String), Fail> {
+    run_bounded_inner(prog, args, cwd, deadline, git, false)
+}
+
+/// The same, with stdout and stderr written to one pipe, so the output keeps
+/// the order the program wrote it in (a test runner's build log on stderr
+/// comes before its results on stdout, not after them).
+pub(crate) fn run_bounded_merged(prog: &str, args: &[&str], cwd: &Path, deadline: Option<Instant>) -> Result<(i32, String), Fail> {
+    run_bounded_inner(prog, args, cwd, deadline, false, true).map(|(code, out, _)| (code, out))
+}
+
+fn run_bounded_inner(prog: &str, args: &[&str], cwd: &Path, deadline: Option<Instant>, git: bool, merge: bool) -> Result<(i32, String, String), Fail> {
     use std::os::unix::process::CommandExt;
-    let mut child = command(prog, git)
-        .args(args)
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0)
-        .spawn()
-        .map_err(|e| Fail::Failed(format!("cannot run {prog}: {e}")))?;
+    let mut cmd = command(prog, git);
+    cmd.args(args).current_dir(cwd).stdin(Stdio::null()).process_group(0);
+    // With `merge`, both streams share one pipe; the reader is kept here and
+    // the writers are dropped (by `cmd`) once the child holds them.
+    let merged = if merge {
+        let (reader, writer) = std::io::pipe().map_err(|e| Fail::Failed(format!("cannot run {prog}: {e}")))?;
+        let writer2 = writer.try_clone().map_err(|e| Fail::Failed(format!("cannot run {prog}: {e}")))?;
+        cmd.stdout(writer).stderr(writer2);
+        Some(reader)
+    } else {
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        None
+    };
+    let spawned = cmd.spawn();
+    drop(cmd);
+    let mut child = spawned.map_err(|e| Fail::Failed(format!("cannot run {prog}: {e}")))?;
     let group = child.id() as i32;
     let stop_group = || unsafe {
         libc::kill(-group, libc::SIGKILL);
     };
     // Drain output on threads so a full pipe can never stall the wait.
-    let mut out = child.stdout.take().unwrap();
-    let mut err = child.stderr.take().unwrap();
-    let o = std::thread::spawn(move || {
-        let mut s = Vec::new();
-        let _ = std::io::Read::read_to_end(&mut out, &mut s);
-        s
-    });
-    let e = std::thread::spawn(move || {
-        let mut s = Vec::new();
-        let _ = std::io::Read::read_to_end(&mut err, &mut s);
-        s
-    });
+    let drain = |mut r: Box<dyn std::io::Read + Send>| {
+        std::thread::spawn(move || {
+            let mut s = Vec::new();
+            let _ = r.read_to_end(&mut s);
+            s
+        })
+    };
+    let (o, e) = match merged {
+        Some(reader) => (drain(Box::new(reader)), drain(Box::new(std::io::empty()))),
+        None => (drain(Box::new(child.stdout.take().unwrap())), drain(Box::new(child.stderr.take().unwrap()))),
+    };
     let status = loop {
         if let Some(st) = child.try_wait().map_err(|e| Fail::Failed(e.to_string()))? {
             break st;

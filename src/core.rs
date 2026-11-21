@@ -2436,4 +2436,4 @@ mod witness_tests;
 #[cfg(test)]
 mod pact_tests;
 #[cfg(test)]
-mod repo_tests;
+pub(crate) mod repo_tests;

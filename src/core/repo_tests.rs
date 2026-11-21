@@ -87,6 +87,24 @@ fn land_branch_refuses_failing_tests_and_merges_nothing() {
     assert_eq!(head(&f.main(), "master"), before);
 }
 
+/// Like cargo: a long build log on stderr, then the failure on stdout.
+pub(crate) const LOUD_FAILURE: &str = "i=0\nwhile [ $i -lt 40 ]; do echo \"   Compiling crate-$i v1.0.0 (a long line of build noise that pads the log out)\" >&2; i=$((i+1)); done\necho 'test widget::spins ... FAILED'\nexit 101\n";
+
+#[test]
+fn land_branch_reports_a_loud_test_failure() {
+    let f = fixture();
+    std::fs::write(f.feature().join("loud.sh"), LOUD_FAILURE).unwrap();
+    sh(&f.feature(), &["add", "loud.sh"]);
+    sh(&f.feature(), &["commit", "-q", "-m", "loud tests"]);
+    let h = home(&f, "sh loud.sh", "");
+    let before = head(&f.main(), "master");
+    let done = invoke(&h, "land-branch", json!({"repo": "demo", "branch": "feature"}));
+    assert_ne!(done["outcome"], "returned");
+    let text = done.to_string();
+    assert!(text.contains("tests failed") && text.contains("widget::spins ... FAILED"), "{done}");
+    assert_eq!(head(&f.main(), "master"), before);
+}
+
 #[test]
 fn land_branch_refuses_behind_remote() {
     let f = fixture();

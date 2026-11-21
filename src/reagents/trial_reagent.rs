@@ -1,7 +1,7 @@
 //! The `trial` reagent: run a repository's test command, as the owner wrote
 //! it in config.yaml, split into words and never given to a shell.
 
-use crate::git_reagent::{checkout_path, config, repo, run_bounded};
+use crate::git_reagent::{checkout_path, config, repo, run_bounded_merged};
 use crate::reagent::{self, Authority, Fail, Reagent, ToolSpec};
 use serde_json::{json, Value};
 
@@ -15,9 +15,19 @@ const TOOLS: &[ToolSpec] = &[ToolSpec {
     description: "Run the repository's configured test command in its main checkout or a listed worktree",
 }];
 
+/// The most a tail may hold, so it fits in a 1024-byte message with room for a prefix.
+pub(crate) const TAIL_BYTES: usize = 900;
+
+/// The last `n` lines, then at most the last `TAIL_BYTES` of those, cut on a
+/// character boundary. The end of a test log is where the failure is.
 fn tail(text: &str, n: usize) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    lines[lines.len().saturating_sub(n)..].join("\n")
+    let lines: Vec<&str> = text.trim_end().lines().collect();
+    let joined = lines[lines.len().saturating_sub(n)..].join("\n");
+    let mut start = joined.len().saturating_sub(TAIL_BYTES);
+    while !joined.is_char_boundary(start) {
+        start += 1;
+    }
+    joined[start..].to_string()
 }
 
 impl Reagent for Trial {
@@ -47,8 +57,8 @@ impl Reagent for Trial {
         let r = repo(auth, args["repo"].as_str().unwrap_or(""))?;
         let cwd = checkout_path(cfg, r, args, auth.deadline)?;
         let words: Vec<&str> = r.test.as_deref().unwrap_or("").split_whitespace().collect();
-        match run_bounded(words[0], &words[1..], &cwd, auth.deadline) {
-            Ok((code, out, err)) => Ok(json!({"passed": code == 0, "code": code, "tail": tail(&format!("{out}{err}"), 30)})),
+        match run_bounded_merged(words[0], &words[1..], &cwd, auth.deadline) {
+            Ok((code, out)) => Ok(json!({"passed": code == 0, "code": code, "tail": tail(&out, 30)})),
             Err(Fail::Exhausted(_)) => Ok(json!({"passed": false, "code": null, "tail": "stopped: the tests ran past the time limit"})),
             Err(e) => Err(e),
         }
@@ -80,6 +90,24 @@ mod tests {
         let failed = run(&f, Some("false"), None).unwrap();
         assert_eq!(failed["passed"], false);
         assert_eq!(failed["code"], 1);
+    }
+
+    #[test]
+    fn trial_tail_keeps_output_order_and_stays_short() {
+        let f = fixture();
+        std::fs::write(f.main().join("loud.sh"), crate::core::repo_tests::LOUD_FAILURE).unwrap();
+        let out = run(&f, Some("sh loud.sh"), None).unwrap();
+        assert_eq!(out["code"], 101);
+        let tail = out["tail"].as_str().unwrap();
+        assert!(tail.ends_with("test widget::spins ... FAILED"), "{tail}");
+        assert!(tail.len() <= TAIL_BYTES, "{} bytes", tail.len());
+    }
+
+    #[test]
+    fn tail_cuts_on_a_character_boundary() {
+        let text = "é".repeat(TAIL_BYTES);
+        let t = tail(&text, 30);
+        assert!(t.len() <= TAIL_BYTES && t.chars().all(|c| c == 'é'));
     }
 
     #[test]
