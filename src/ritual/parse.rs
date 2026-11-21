@@ -312,6 +312,11 @@ fn normalize_steps(
                 *sc = resolve_ritual_schema(sc.clone(), defs)
                     .map_err(|e| format!("steps.{step_label}.model.schema: {e}"))?;
             }
+            match &mut m.images {
+                Some(Images::One(r)) => normalize_template_str(r),
+                Some(Images::Many(rs)) => rs.iter_mut().for_each(normalize_template_str),
+                None => {}
+            }
             if let Some(ab) = &mut m.abstain_if {
                 *ab = normalize_expr_refs(ab)?;
             }

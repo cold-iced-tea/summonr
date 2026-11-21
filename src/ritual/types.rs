@@ -41,6 +41,20 @@ pub(super) fn closed_obj<const N: usize>(entries: [(&str, Ty); N]) -> Ty {
     }
 }
 
+/// The handle `sight.read_image` returns.
+pub(super) fn image_handle_type() -> Ty {
+    closed_obj([
+        ("kind", Ty::Str),
+        ("root", Ty::Str),
+        ("path", Ty::Str),
+        ("sha256", Ty::Str),
+        ("mime", Ty::Str),
+        ("bytes", Ty::Int),
+        ("width", Ty::Int),
+        ("height", Ty::Int),
+    ])
+}
+
 pub(super) fn nullable(ty: Ty) -> Ty {
     match ty {
         Ty::Any | Ty::Null | Ty::Nullable(_) => ty,
@@ -169,6 +183,7 @@ pub(super) fn operation_output_type(
     arg_types: &BTreeMap<String, Ty>,
 ) -> Ty {
     match op {
+        "sight.read_image" => image_handle_type(),
         "data.arithmetic" | "data.count" | "data.sum_integers" | "data.clamp" | "data.abs" => Ty::Int,
         "data.compare"
         | "data.all"

@@ -467,6 +467,17 @@ pub struct ModelStep {
     pub schema: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub abstain_if: Option<String>,
+    /// Image handles shown to the model: references only, never literals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<Images>,
+}
+
+/// One reference (possibly to a list of handles) or a list of references.
+#[derive(Deserialize, Serialize, Clone, Debug)]
+#[serde(untagged)]
+pub enum Images {
+    One(String),
+    Many(Vec<String>),
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]

@@ -483,6 +483,23 @@
               "type": "null"
             }
           ]
+        },
+        "images": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 8
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [

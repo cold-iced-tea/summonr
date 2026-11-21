@@ -1,7 +1,7 @@
 use super::*;
 use super::template::{scan_template, single_template_ref, TemplatePart};
 use super::inputs::coerce;
-use super::types::{closed_obj, nullable, operation_output_type};
+use super::types::{closed_obj, image_handle_type, nullable, operation_output_type};
 
 type ToolMetaLookup<'a> = &'a dyn Fn(&str, &str) -> Option<crate::reagent::ToolMeta>;
 
@@ -719,6 +719,59 @@ impl V<'_> {
         operation_output_type(op, s.arguments.as_ref(), &arg_types)
     }
 
+    fn check_images(&mut self, images: &Images, at: &str) {
+        const MAX_IMAGES: usize = 8;
+        let (refs, many): (Vec<&String>, bool) = match images {
+            Images::One(r) => (vec![r], false),
+            Images::Many(rs) => (rs.iter().collect(), true),
+        };
+        if refs.len() > MAX_IMAGES {
+            self.errors.push(format!(
+                "step {at}: images lists {} entries; at most {MAX_IMAGES} are allowed",
+                refs.len()
+            ));
+        }
+        let what = format!("step {at} images");
+        let handle = image_handle_type();
+        for r in refs {
+            let path = match scan_template(r) {
+                Ok(parts) => single_template_ref(&parts).map(<[String]>::to_vec),
+                Err(e) => {
+                    self.errors.push(format!("{what}: {e}"));
+                    continue;
+                }
+            };
+            let Some(path) = path else {
+                self.errors.push(format!(
+                    "step {at}: images must be references to image handles (`${{steps.x.output}}`), not literal text or objects"
+                ));
+                continue;
+            };
+            let ty = self.resolve_ref(&path, &what, None);
+            let mut inner = match ty {
+                Ty::Nullable(t) => *t,
+                t => t,
+            };
+            if !many {
+                if let Ty::List(elem) = inner {
+                    inner = *elem;
+                }
+            }
+            let ok = match &inner {
+                Ty::Any => true,
+                Ty::Obj { closed: false, .. } => true,
+                other => *other == handle,
+            };
+            if !ok {
+                self.errors.push(format!(
+                    "{what}: `{}` is {}, not an image handle (use the output of `sight.read_image`)",
+                    path.join("."),
+                    inner.label()
+                ));
+            }
+        }
+    }
+
     fn model(&mut self, s: &Step, at: &str) -> Ty {
         let m = s.model.as_ref().unwrap();
         let out_ty = match &m.schema {
@@ -754,6 +807,9 @@ impl V<'_> {
             &Value::String(m.prompt.clone()),
             &format!("step {at} prompt"),
         );
+        if let Some(images) = &m.images {
+            self.check_images(images, at);
+        }
         if let Some(a) = &m.abstain_if {
             self.check_cond(a, &format!("step {at} abstain_if"), Some(&out_ty));
         }

@@ -763,6 +763,140 @@ return:
         assert_eq!(content_hash(&parsed), content_hash(&direct));
     }
 
+    const IMAGES_HASH_RITUAL: &str = r#"
+ritual: canonical
+inputs:
+  text: {type: string}
+model: mock/m
+steps:
+  - id: s
+    model:
+      prompt: "hi ${inputs.text}"
+return:
+  out: "${steps.s.output}"
+"#;
+
+    #[test]
+    fn ritual_without_images_hash_unchanged() {
+        let parsed = parse_file(IMAGES_HASH_RITUAL).unwrap();
+        assert_eq!(content_hash(&parsed), "37b41b37668d5e7cd6ea75c7306647c43f8e38882342954a9ce4b3280f0c897c");
+    }
+
+    fn images_ritual(images: &str) -> String {
+        format!(
+            r#"
+ritual: img
+model: mock/m
+inputs:
+  p: {{type: string}}
+  hs: {{type: list}}
+reagents:
+  sight: {{select: [read_image]}}
+  data: {{select: [trim]}}
+requires:
+  - {{reagent: sight, action: read_image, on: {{root: /scans}}}}
+steps:
+  - id: page
+    operation: sight.read_image
+    arguments: {{root: /scans, path: "${{inputs.p}}"}}
+  - id: txt
+    operation: data.trim
+    arguments: {{text: "${{inputs.p}}"}}
+  - id: read
+    model:
+      prompt: "go"
+      images: {images}
+return:
+  out: "${{steps.read.output}}"
+"#
+        )
+    }
+
+    fn images_errors(images: &str) -> Result<(), Vec<String>> {
+        let def = parse_file(&images_ritual(images)).unwrap();
+        validate(&def, &|_, _| None, &crate::reagent::tool, 3).map(|_| ())
+    }
+
+    #[test]
+    fn model_images_shorthand_expands() {
+        let def = parse_file(&images_ritual("[$steps.page.output]")).unwrap();
+        let m = def.steps.iter().find(|s| s.id.as_deref() == Some("read")).unwrap();
+        match m.model.as_ref().unwrap().images.as_ref().unwrap() {
+            Images::Many(v) => assert_eq!(v, &vec!["${steps.page.output}".to_string()]),
+            other => panic!("{other:?}"),
+        }
+        images_errors("[$steps.page.output]").unwrap();
+    }
+
+    #[test]
+    fn model_images_single_reference_to_list() {
+        let def = parse_file(&images_ritual("\"${inputs.hs}\"")).unwrap();
+        let m = def.steps.iter().find(|s| s.id.as_deref() == Some("read")).unwrap();
+        assert!(matches!(
+            m.model.as_ref().unwrap().images,
+            Some(Images::One(ref r)) if r == "${inputs.hs}"
+        ));
+        images_errors("\"${inputs.hs}\"").unwrap();
+    }
+
+    #[test]
+    fn model_images_literal_rejected() {
+        let errs = images_errors("[\"hello\"]").unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("images must be references")), "{errs:?}");
+    }
+
+    #[test]
+    fn model_images_more_than_eight_rejected() {
+        let nine = format!("[{}]", ["$steps.page.output"; 9].join(", "));
+        let errs = images_errors(&nine).unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("at most 8")), "{errs:?}");
+        let eight = format!("[{}]", ["$steps.page.output"; 8].join(", "));
+        images_errors(&eight).unwrap();
+    }
+
+    #[test]
+    fn model_images_ref_to_non_image_rejected() {
+        let errs = images_errors("[$steps.txt.output]").unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("not an image handle")), "{errs:?}");
+        let errs = images_errors("[$inputs.p]").unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("not an image handle")), "{errs:?}");
+    }
+
+    #[test]
+    fn model_images_unknown_type_and_loop_var_pass() {
+        // input of object type is untyped beyond "object": must pass
+        let raw = r#"
+ritual: img2
+model: mock/m
+inputs:
+  h: {type: object}
+  hs: {type: list}
+reagents:
+  sight: {select: [read_image]}
+requires:
+  - {reagent: sight, action: read_image, on: {root: /scans}}
+steps:
+  - id: page
+    operation: sight.read_image
+    arguments: {root: /scans, path: "x"}
+  - id: loop
+    each: img in ["${steps.page.output}"]
+    steps:
+      - id: read
+        model:
+          prompt: "go"
+          images: [$img]
+  - id: read2
+    model:
+      prompt: "go"
+      images: [$inputs.h]
+return:
+  out: "${steps.read2.output}"
+"#;
+        let def = parse_file(raw).unwrap();
+        validate(&def, &|_, _| None, &crate::reagent::tool, 3).unwrap();
+    }
+
     #[test]
     fn did_you_mean_hints_on_input_step_and_field_typos() {
         let def = parse_file(
