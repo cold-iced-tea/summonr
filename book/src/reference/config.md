@@ -51,6 +51,7 @@ style: keyword
 | `git`, `gh` | on PATH | The `git` and `gh` programs those reagents run |
 | `openssl` | on PATH | The `openssl` program used for RFC 3161 timestamps |
 | `max_depth` | `3` | How deeply rituals may call rituals |
+| `sight` | `{max_bytes: 10485760, max_per_step: 8}` | Limits for images sent to model steps: bytes per image and images per step. Values may only lower the defaults; a higher value is a load error. |
 | `style` | `keyword` | `keyword` or `flag`: the spelling used in help and suggestions |
 | `egress` | none | HTTP egress policy (`allow_hosts`, `deny_hosts`, `block_private_ips`) |
 | `http_auth` | none | Named authenticated HTTP credential bindings (`NAME: {origin, header, prefix, token_env}`) |

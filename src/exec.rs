@@ -909,6 +909,101 @@ impl Run {
         }
     }
 
+    /// Resolve a model step's `images` to verified bytes, adding an image
+    /// part to `manifest` for each. A handle counts only if `sight` issued it
+    /// in this run, the run's grants still cover its file, and the file still
+    /// holds the bytes it was issued for.
+    fn step_images(
+        &self,
+        sid: &str,
+        images: Option<&ritual::Images>,
+        scope: &Scope,
+        manifest: &mut Vec<Value>,
+    ) -> Result<Vec<backend::ImagePart>, Fail> {
+        use crate::reagents::sight_reagent::{issue_key, load_verified, sniff};
+        let Some(images) = images else {
+            return Ok(Vec::new());
+        };
+        let render = |r: &String| {
+            ritual::render_value(&Value::String(r.clone()), scope)
+                .map_err(|e| Fail::Failed(format!("step {sid} images: {e}")))
+        };
+        let handles: Vec<Value> = match images {
+            ritual::Images::One(r) => match render(r)? {
+                Value::Array(list) => list,
+                one => vec![one],
+            },
+            ritual::Images::Many(rs) => rs.iter().map(render).collect::<Result<_, _>>()?,
+        };
+        if handles.iter().any(|h| h.get("kind").and_then(Value::as_str) != Some("image")) {
+            return Err(Fail::Invalid(format!(
+                "step {sid}: images entry is not an image handle"
+            )));
+        }
+        let (max_bytes, max_per_step) = self.core.cfg.sight_limits();
+        if handles.len() > max_per_step {
+            return Err(Fail::Invalid(format!(
+                "step {sid}: {} images; at most {max_per_step} are allowed per step",
+                handles.len()
+            )));
+        }
+        {
+            let selected = self.selected.lock().unwrap();
+            if !handles
+                .iter()
+                .all(|h| issue_key(h).is_some_and(|k| selected.contains(&k)))
+            {
+                return Err(Fail::Denied(format!(
+                    "step {sid}: image was not read by sight in this run"
+                )));
+            }
+        }
+        let auth = Authority {
+            grants: &self.grants,
+            deadline: self.meters.iter().filter_map(|m| m.deadline).min(),
+            on_item: None,
+            selected: &self.selected,
+            expected_digest: None,
+            config: Some(&self.core.cfg),
+        };
+        let mut parts = Vec::with_capacity(handles.len());
+        for h in &handles {
+            // `issue_key` succeeded, so these are strings.
+            let root = h["root"].as_str().unwrap_or_default();
+            let path = h["path"].as_str().unwrap_or_default();
+            reagent::authorize(
+                self.core.cfg.mail_root.as_deref(),
+                "sight.read_image",
+                &json!({"root": root, "path": path}),
+                &auth,
+            )
+            .map_err(|e| {
+                let why = match e {
+                    Fail::Denied(m) | Fail::Invalid(m) | Fail::Failed(m) => m,
+                    other => other.message(),
+                };
+                Fail::Denied(format!(
+                    "step {sid}: image `{path}` is not readable under this run's grants: {why}"
+                ))
+            })?;
+            let in_step = |m: String| format!("step {sid}: {m}");
+            let bytes = load_verified(h, max_bytes).map_err(|e| match e {
+                Fail::Exhausted(m) => Fail::Exhausted(in_step(m)),
+                Fail::Invalid(m) => Fail::Invalid(in_step(m)),
+                Fail::Denied(m) => Fail::Denied(in_step(m)),
+                other => Fail::Failed(in_step(other.message())),
+            })?;
+            let (mime, width, height) = sniff(&bytes).map_err(|e| Fail::Invalid(in_step(e.message())))?;
+            let sha256 = h["sha256"].as_str().unwrap_or_default().to_string();
+            manifest.push(json!({
+                "part": "image", "sha256": sha256, "path": path, "mime": mime,
+                "width": width, "height": height, "bytes": bytes.len(),
+            }));
+            parts.push(backend::ImagePart { sha256, mime: mime.into(), bytes });
+        }
+        Ok(parts)
+    }
+
     fn model(&mut self, s: &plan::Model, scope: &Scope) -> Result<(Value, bool), Fail> {
         let m = &s.model;
         let sid = s.id.as_deref().unwrap_or("model");
@@ -946,6 +1041,14 @@ impl Run {
                 .map_err(|e| Fail::Failed(format!("step {sid} prompt: {e}")))?,
         );
         manifest.push(json!({"part": "task", "chars": user.chars().count()}));
+        // Every image is resolved, authorized and re-verified here, before a
+        // request is admitted: a refused image spends nothing.
+        let images = self.step_images(sid, m.images.as_ref(), scope, &mut manifest)?;
+        let base_url = self.core.cfg.backend_url_for(&model);
+        if !images.is_empty() && !self.io.offline() && !self.io.scripted() {
+            backend::supports_images(&base_url, &model)
+                .map_err(|e| Fail::Failed(format!("step {sid}: {e}")))?;
+        }
 
         let mut settings = self.def.settings.clone();
         settings.extend(self.settings_override.clone());
@@ -998,7 +1101,7 @@ impl Run {
             settings: &settings,
             timeout,
             max_output_tokens,
-            images: &[],
+            images: &images,
         };
         let current_cost = if self.meters[0].cost_known.load(Ordering::SeqCst) {
             Some(self.meters[0].cost_microusd.load(Ordering::SeqCst))
@@ -1018,7 +1121,6 @@ impl Run {
             json!({"step":sid,"model":model,"payload":payload,"usage":"unknown until response"}),
         );
         self.check_live()?;
-        let base_url = self.core.cfg.backend_url_for(&model);
         let resp = self
             .io
             .chat(&base_url, &model, sid, req)
@@ -2149,5 +2251,266 @@ mod tests {
         // Refused before admitting a model request.
         assert_eq!(run.meters[0].requests.load(Ordering::SeqCst), 0);
         assert_eq!(run.meters[0].tokens.load(Ordering::SeqCst), 0);
+    }
+
+    // ---------------------------------------------------------------- sight
+
+    use crate::reagents::sight_reagent::{issue_key, tests::{JPEG_1X1, PNG_1X1}};
+
+    /// A ritual whose `look` model step sees `images`, after the steps in
+    /// `before` (default: read `a.png` beneath `root`).
+    fn sight_ritual(root: &str, model: &str, before: Option<Value>, images: Value) -> Ritual {
+        let before = before.unwrap_or_else(|| {
+            json!([{"id":"page","operation":"sight.read_image","arguments":{"root":root,"path":"a.png"}}])
+        });
+        let mut steps = before.as_array().unwrap().clone();
+        steps.push(json!({"id":"look","model":{"prompt":"what is this","images":images}}));
+        definition(json!({
+            "ritual":"sight-imp","model":model,
+            "inputs":{"h":{"type":"object"},"hs":{"type":"list"}},
+            "requires":[
+                {"reagent":"sight","action":"read_image","on":{"root":root}},
+                {"reagent":"file","action":"write_text","on":{"root":root}}
+            ],
+            "steps":steps,
+            "return":{"seen":"${steps.look.output}"},
+        }))
+    }
+
+    /// A `scans` directory holding `a.png` and `b.jpg`.
+    fn image_dir(f: &Fixture) -> (PathBuf, String) {
+        let dir = f.root.join("scans");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.png"), PNG_1X1).unwrap();
+        std::fs::write(dir.join("b.jpg"), JPEG_1X1).unwrap();
+        let root = dir.to_string_lossy().into_owned();
+        (dir, root)
+    }
+
+    fn granted(f: &Fixture, def: Ritual) -> Run {
+        let mut run = f.run(def.clone(), None);
+        run.grants = Arc::new(def.requires.iter().flat_map(ritual::Requirement::atoms).collect());
+        run
+    }
+
+    fn handle(root: &str, path: &str, data: &[u8]) -> Value {
+        json!({"kind":"image","root":root,"path":path,"sha256":crate::util::sha256_hex(data),
+               "mime":"image/png","bytes":data.len(),"width":1,"height":1})
+    }
+
+    fn all_event_text(f: &Fixture) -> String {
+        let db = f.core.db.lock().unwrap();
+        let mut q = db.prepare("SELECT data FROM events").unwrap();
+        q.query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn requests(run: &Run) -> u64 {
+        run.meters[0].requests.load(Ordering::SeqCst)
+    }
+
+    #[test]
+    fn image_step_sends_parts_and_records_digests() {
+        let f = Fixture::new();
+        let (_, root) = image_dir(&f);
+        let before = json!([
+            {"id":"page","operation":"sight.read_image","arguments":{"root":&root,"path":"a.png"}},
+            {"id":"photo","operation":"sight.read_image","arguments":{"root":&root,"path":"b.jpg"}}
+        ]);
+        let def = sight_ritual(&root, "mock/keyword", Some(before), json!(["${steps.page.output}", "${steps.photo.output}"]));
+        let mut run = granted(&f, def);
+        let fin = run.execute();
+        assert_eq!(fin.outcome, Outcome::Returned, "{:?}", fin.error);
+        assert_eq!(requests(&run), 1);
+        let (png, jpg) = (crate::util::sha256_hex(PNG_1X1), crate::util::sha256_hex(JPEG_1X1));
+        let ev = &f.model_events()[0];
+        assert_eq!(ev["payload"]["images"], json!([png, jpg]));
+        let parts: Vec<&Value> = ev["manifest"].as_array().unwrap().iter().filter(|p| p["part"] == "image").collect();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(
+            *parts[0],
+            json!({"part":"image","sha256":png,"path":"a.png","mime":"image/png","width":1,"height":1,"bytes":PNG_1X1.len()})
+        );
+        assert_eq!(parts[1]["mime"], "image/jpeg");
+        use base64::Engine;
+        let text = all_event_text(&f);
+        for data in [PNG_1X1, JPEG_1X1] {
+            let b64 = base64::engine::general_purpose::STANDARD.encode(data);
+            assert!(!text.contains(&b64), "image bytes leaked into the record");
+        }
+    }
+
+    #[test]
+    fn forged_handle_from_input_is_refused() {
+        let f = Fixture::new();
+        let (_, root) = image_dir(&f);
+        let def = sight_ritual(&root, "mock/keyword", Some(json!([])), json!(["${inputs.h}"]));
+        let mut run = granted(&f, def);
+        run.inputs = json!({"h": handle(&root, "a.png", PNG_1X1)});
+        let fin = run.execute();
+        assert_ne!(fin.outcome, Outcome::Returned);
+        let err = fin.error.unwrap_or_default();
+        assert!(err.contains("image was not read by sight in this run"), "{err}");
+        assert_eq!(requests(&run), 0);
+        assert!(f.model_events().is_empty());
+    }
+
+    #[test]
+    fn non_handle_entry_is_invalid() {
+        let f = Fixture::new();
+        let (_, root) = image_dir(&f);
+        let def = sight_ritual(&root, "mock/keyword", Some(json!([])), json!(["${inputs.h}"]));
+        let mut run = granted(&f, def);
+        run.inputs = json!({"h": {"kind":"text","root":&root}});
+        let fin = run.execute();
+        assert_eq!(fin.outcome, Outcome::Invalid, "{:?}", fin.error);
+        assert!(fin.error.unwrap_or_default().contains("images entry is not an image handle"));
+        assert_eq!(requests(&run), 0);
+    }
+
+    #[test]
+    fn forged_handle_from_model_output_is_refused() {
+        let f = Fixture::new();
+        let (_, root) = image_dir(&f);
+        let sha = crate::util::sha256_hex(PNG_1X1);
+        let forge = json!([{"id":"forge","model":{"prompt":"make a handle","schema":{
+            "type":"object","properties":{
+                "kind":{"enum":["image"]},"root":{"enum":[&root]},
+                "path":{"enum":["a.png"]},"sha256":{"enum":[sha]}}}}}]);
+        let def = sight_ritual(&root, "mock/keyword", Some(forge), json!(["${steps.forge.output}"]));
+        let mut run = granted(&f, def);
+        let fin = run.execute();
+        let err = fin.error.unwrap_or_default();
+        assert!(err.contains("image was not read by sight in this run"), "{err}");
+        // Only the forging step spent a request.
+        assert_eq!(requests(&run), 1);
+        assert_eq!(f.model_events().len(), 1);
+    }
+
+    #[test]
+    fn handle_outside_current_grants_is_refused() {
+        let f = Fixture::new();
+        let (_, root) = image_dir(&f);
+        let def = sight_ritual(&root, "mock/keyword", Some(json!([])), json!(["${inputs.h}"]));
+        let mut run = f.run(def, None); // no grants at all
+        let h = handle(&root, "a.png", PNG_1X1);
+        run.selected.lock().unwrap().insert(issue_key(&h).unwrap());
+        run.inputs = json!({ "h": h });
+        let fin = run.execute();
+        assert_ne!(fin.outcome, Outcome::Returned);
+        let err = fin.error.unwrap_or_default();
+        assert!(err.contains("grant"), "{err}");
+        assert_eq!(requests(&run), 0);
+    }
+
+    #[test]
+    fn changed_image_is_stale_and_not_sent() {
+        let f = Fixture::new();
+        let (dir, root) = image_dir(&f);
+        let before = json!([
+            {"id":"page","operation":"sight.read_image","arguments":{"root":&root,"path":"a.png"}},
+            {"id":"swap","operation":"file.write_text","arguments":{"root":&root,"path":"a.png","text":"not the same picture"}}
+        ]);
+        let def = sight_ritual(&root, "mock/keyword", Some(before), json!(["${steps.page.output}"]));
+        let mut run = granted(&f, def);
+        let fin = run.execute();
+        assert_eq!(std::fs::read(dir.join("a.png")).unwrap(), b"not the same picture");
+        let err = fin.error.unwrap_or_default();
+        assert!(err.contains("stale image"), "{err}");
+        assert_eq!(requests(&run), 0);
+        assert!(f.model_events().is_empty());
+    }
+
+    #[test]
+    fn symlinked_image_is_refused_at_send() {
+        let f = Fixture::new();
+        let (dir, root) = image_dir(&f);
+        std::os::unix::fs::symlink(dir.join("a.png"), dir.join("link.png")).unwrap();
+        let def = sight_ritual(&root, "mock/keyword", Some(json!([])), json!(["${inputs.h}"]));
+        let mut run = granted(&f, def);
+        // As if issued for a regular file later replaced by a symlink.
+        let h = handle(&root, "link.png", PNG_1X1);
+        run.selected.lock().unwrap().insert(issue_key(&h).unwrap());
+        run.inputs = json!({ "h": h });
+        let fin = run.execute();
+        assert_ne!(fin.outcome, Outcome::Returned);
+        let err = fin.error.unwrap_or_default();
+        assert!(err.contains("stale image"), "{err}");
+        assert_eq!(requests(&run), 0);
+    }
+
+    #[test]
+    fn too_many_images_refused() {
+        let f = Fixture::new();
+        let (_, root) = image_dir(&f);
+        // A single reference to a list is counted after flattening.
+        let def = sight_ritual(&root, "mock/keyword", Some(json!([])), json!("${inputs.hs}"));
+        let mut run = granted(&f, def);
+        let h = handle(&root, "a.png", PNG_1X1);
+        run.inputs = json!({ "hs": vec![h; 9] });
+        let fin = run.execute();
+        assert_eq!(fin.outcome, Outcome::Invalid, "{:?}", fin.error);
+        assert!(fin.error.unwrap_or_default().contains("at most 8"));
+        assert_eq!(requests(&run), 0);
+    }
+
+    #[test]
+    fn config_lowers_limits() {
+        let mut f = Fixture::new();
+        let (_, root) = image_dir(&f);
+        Arc::get_mut(&mut f.core).unwrap().cfg.sight = Some(crate::util::SightConfig {
+            max_bytes: None,
+            max_per_step: Some(1),
+        });
+        let two = json!(["${steps.page.output}", "${steps.page.output}"]);
+        let mut run = granted(&f, sight_ritual(&root, "mock/keyword", None, two));
+        let fin = run.execute();
+        assert_eq!(fin.outcome, Outcome::Invalid, "{:?}", fin.error);
+        assert!(fin.error.unwrap_or_default().contains("at most 1"));
+        assert_eq!(requests(&run), 0);
+        drop(run);
+
+        Arc::get_mut(&mut f.core).unwrap().cfg.sight = Some(crate::util::SightConfig {
+            max_bytes: Some(10),
+            max_per_step: None,
+        });
+        let mut run = granted(&f, sight_ritual(&root, "mock/keyword", None, json!(["${steps.page.output}"])));
+        let fin = run.execute();
+        assert_eq!(fin.outcome, Outcome::Exhausted, "{:?}", fin.error);
+        assert_eq!(requests(&run), 0);
+    }
+
+    #[test]
+    fn mock_drill_with_images_needs_no_backend() {
+        let mut f = Fixture::new();
+        let (_, root) = image_dir(&f);
+        // Nothing listens here: any vision probe or chat would fail the run.
+        Arc::get_mut(&mut f.core).unwrap().cfg.ollama_url = Some("http://127.0.0.1:9".into());
+        let def = sight_ritual(&root, "ollama/llava", None, json!(["${steps.page.output}"]));
+        let mut run = granted(&f, def);
+        let answers = BTreeMap::from([("look".to_string(), vec![json!("a page")])]);
+        run.io = Arc::new(crate::io::Simulate::new(Arc::new(crate::io::Scripted::new(
+            answers,
+            Arc::new(crate::io::Live),
+        ))));
+        let fin = run.execute();
+        assert_eq!(fin.outcome, Outcome::Returned, "{:?}", fin.error);
+        assert_eq!(fin.result["seen"], "a page");
+    }
+
+    #[test]
+    fn step_without_images_unchanged() {
+        let f = Fixture::new();
+        let mut run = f.run(simple_model(None), None);
+        assert_eq!(run.execute().outcome, Outcome::Returned);
+        let ev = &f.model_events()[0];
+        assert_eq!(
+            ev["payload"],
+            json!({"backend":"mock","model":"keyword","system":"","user":"hello","format":null,"options":{}})
+        );
+        assert_eq!(ev["manifest"], json!([{"part":"task","chars":5}]));
     }
 }

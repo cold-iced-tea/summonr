@@ -260,8 +260,7 @@ pub fn payload(model_id: &str, req: &ChatReq) -> Result<Value, String> {
     }
 }
 
-/// Whether `model_id`'s backend can take images.
-#[allow(dead_code)] // first caller arrives with model-step images Ollama is asked once per
+/// Whether `model_id`'s backend can take images. Ollama is asked once per
 /// `(url, model)` and must list the `vision` capability.
 pub fn supports_images(base_url: &str, model_id: &str) -> Result<(), String> {
     let (backend, model) = split_model(model_id)?;

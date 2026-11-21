@@ -364,6 +364,16 @@ pub struct Config {
     /// The `git` and `gh` programs (default: the ones on PATH).
     pub git: Option<String>,
     pub gh: Option<String>,
+    /// Lowered limits for images sent to model steps (`max_bytes`, `max_per_step`).
+    pub sight: Option<SightConfig>,
+}
+
+/// Owner limits for `sight` images. They may only lower the defaults.
+#[derive(Deserialize, Default, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SightConfig {
+    pub max_bytes: Option<u64>,
+    pub max_per_step: Option<usize>,
 }
 
 /// Owner-configured API pricing for a model or `<provider>/*` wildcard.
@@ -609,8 +619,29 @@ impl Config {
                     .map_err(|e| format!("{}: invalid mcp_auth.public_key: {e}", p.display()))?;
             }
         }
+        if let Some(sight) = &cfg.sight {
+            use crate::reagents::sight_reagent::{DEFAULT_MAX_BYTES, DEFAULT_MAX_PER_STEP};
+            if sight.max_bytes.is_some_and(|b| b > DEFAULT_MAX_BYTES)
+                || sight.max_per_step.is_some_and(|n| n > DEFAULT_MAX_PER_STEP)
+            {
+                return Err(format!(
+                    "{}: sight limits can only be lowered (max_bytes ≤ {DEFAULT_MAX_BYTES}, max_per_step ≤ {DEFAULT_MAX_PER_STEP})",
+                    p.display()
+                ));
+            }
+        }
         crate::backend::register_providers(&cfg.providers);
         Ok(cfg)
+    }
+
+    /// `(max_bytes, max_per_step)` for images sent to a model step.
+    pub fn sight_limits(&self) -> (u64, usize) {
+        use crate::reagents::sight_reagent::{DEFAULT_MAX_BYTES, DEFAULT_MAX_PER_STEP};
+        let s = self.sight.clone().unwrap_or_default();
+        (
+            s.max_bytes.map_or(DEFAULT_MAX_BYTES, |b| b.min(DEFAULT_MAX_BYTES)),
+            s.max_per_step.map_or(DEFAULT_MAX_PER_STEP, |n| n.min(DEFAULT_MAX_PER_STEP)),
+        )
     }
 
     pub fn ollama_url(&self) -> String {
@@ -745,6 +776,35 @@ mod tests {
         assert!(parse_duration("5 parsecs").is_err());
         assert!(parse_duration("18446744073709551615h").is_err());
         assert_eq!(new_id("s").len(), 34);
+    }
+
+    fn load_yaml(yaml: &str) -> Result<Config, String> {
+        let dir = std::env::temp_dir().join(new_id("summonr-cfg"));
+        let paths = Paths { runtime: dir.join("run"), state: dir.join("state"), config: dir.join("config") };
+        std::fs::create_dir_all(&paths.config).unwrap();
+        std::fs::write(paths.config.join("config.yaml"), yaml).unwrap();
+        let r = Config::load(&paths);
+        let _ = std::fs::remove_dir_all(&dir);
+        r
+    }
+
+    #[test]
+    fn config_lowers_limits() {
+        use crate::reagents::sight_reagent::{DEFAULT_MAX_BYTES, DEFAULT_MAX_PER_STEP};
+        assert_eq!(Config::default().sight_limits(), (DEFAULT_MAX_BYTES, DEFAULT_MAX_PER_STEP));
+        let cfg = load_yaml("sight: {max_bytes: 4194304, max_per_step: 4}\n").unwrap();
+        assert_eq!(cfg.sight_limits(), (4_194_304, 4));
+        let cfg = load_yaml("sight: {max_per_step: 2}\n").unwrap();
+        assert_eq!(cfg.sight_limits(), (DEFAULT_MAX_BYTES, 2));
+    }
+
+    #[test]
+    fn config_cannot_raise_limits() {
+        for yaml in ["sight: {max_bytes: 10485761}\n", "sight: {max_per_step: 9}\n"] {
+            let e = load_yaml(yaml).unwrap_err();
+            assert!(e.contains("sight limits can only be lowered"), "{e}");
+        }
+        load_yaml("sight: {max_bytes: 10485760, max_per_step: 8}\n").unwrap();
     }
 
     #[test]
