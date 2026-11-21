@@ -84,7 +84,7 @@ impl Reagent for Trial {
         let r = repo(auth, args["repo"].as_str().unwrap_or(""))?;
         let cwd = checkout_path(cfg, r, args, auth.deadline)?;
         let words: Vec<&str> = r.test.as_deref().unwrap_or("").split_whitespace().collect();
-        match run_bounded_kept(words[0], &words[1..], &cwd, auth.deadline, KEEP_BYTES) {
+        match run_bounded_kept(words[0], &words[1..], &cwd, auth.deadline, KEEP_BYTES, Some(cfg)) {
             Ok((code, out, err)) => Ok(json!({"passed": code == 0, "code": code, "tail": report(&out, &err)})),
             Err(Fail::Exhausted(_)) => Ok(json!({"passed": false, "code": null, "tail": "stopped: the tests ran past the time limit"})),
             Err(e) => Err(e),

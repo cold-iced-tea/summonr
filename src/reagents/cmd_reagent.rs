@@ -261,7 +261,7 @@ pub fn target_digest(
     let dargs = json!({"command": dname, "params": Value::Object(dparams)});
     let (_, dcfg, rendered) = prepare_command(cfg, "read", &dargs)?;
     let arg_refs: Vec<&str> = rendered.iter().map(String::as_str).collect();
-    let (code, out, err) = run_bounded_kept(&dcfg.program, &arg_refs, Path::new(&dcfg.cwd), deadline, KEEP_BYTES)?;
+    let (code, out, err) = run_bounded_kept(&dcfg.program, &arg_refs, Path::new(&dcfg.cwd), deadline, KEEP_BYTES, Some(cfg))?;
     if code != 0 && !dcfg.allow_nonzero {
         let last = err
             .lines()
@@ -375,6 +375,7 @@ impl Reagent for Cmd {
                     Path::new(&cmd_cfg.cwd),
                     auth.deadline,
                     KEEP_BYTES,
+                    Some(cfg),
                 ) {
                     Ok((code, out, err)) => {
                         if code != 0 && !cmd_cfg.allow_nonzero {

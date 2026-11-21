@@ -69,42 +69,99 @@ fn request_url(args: &Value) -> Result<url::Url, Fail> {
     parse_url(text).map_err(Fail::Invalid)
 }
 fn host_matches(pattern: &str, host: &str) -> bool {
-    let p = pattern.trim().to_ascii_lowercase();
+    let p = pattern.trim().trim_end_matches('.').to_ascii_lowercase();
+    let h = host.trim().trim_end_matches('.').to_ascii_lowercase();
     if let Some(suffix) = p.strip_prefix("*.") {
-        host == suffix || host.ends_with(&format!(".{suffix}"))
+        h == suffix || h.ends_with(&format!(".{suffix}"))
     } else {
-        host == p
+        h == p
     }
 }
 
 fn is_non_public_ip(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
             v4.is_loopback()
                 || v4.is_private()
                 || v4.is_link_local()
                 || v4.is_unspecified()
                 || v4.is_multicast()
                 || v4.is_broadcast()
-                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0b1100_0000) == 64)
+                || o[0] == 0
+                || (o[0] == 100 && (o[1] & 0b1100_0000) == 64)
+                || (o[0] == 192 && o[1] == 0 && o[2] == 0)
+                || (o[0] == 198 && (o[1] == 18 || o[1] == 19))
+                || o[0] >= 240
         }
         std::net::IpAddr::V6(v6) => {
             if let Some(v4) = v6.to_ipv4_mapped() {
                 return is_non_public_ip(std::net::IpAddr::V4(v4));
             }
-            let seg0 = v6.segments()[0];
+            let s = v6.segments();
+            // IPv4-compatible (::a.b.c.d)
+            if s[0..6] == [0, 0, 0, 0, 0, 0] && !v6.is_unspecified() && !v6.is_loopback() {
+                let v4 = std::net::Ipv4Addr::new(
+                    (s[6] >> 8) as u8,
+                    s[6] as u8,
+                    (s[7] >> 8) as u8,
+                    s[7] as u8,
+                );
+                return is_non_public_ip(std::net::IpAddr::V4(v4));
+            }
+            // NAT64 well-known prefix (64:ff9b::/96)
+            if s[0] == 0x0064 && s[1] == 0xff9b && s[2..6] == [0, 0, 0, 0] {
+                let v4 = std::net::Ipv4Addr::new(
+                    (s[6] >> 8) as u8,
+                    s[6] as u8,
+                    (s[7] >> 8) as u8,
+                    s[7] as u8,
+                );
+                return is_non_public_ip(std::net::IpAddr::V4(v4));
+            }
+            // NAT64 local-use prefix (64:ff9b:1::/48)
+            if s[0] == 0x0064 && s[1] == 0xff9b && s[2] == 0x0001 {
+                return true;
+            }
+            // 6to4 (2002::/16) embeds an IPv4 address in segments 1 and 2
+            if s[0] == 0x2002 {
+                let v4 = std::net::Ipv4Addr::new(
+                    (s[1] >> 8) as u8,
+                    s[1] as u8,
+                    (s[2] >> 8) as u8,
+                    s[2] as u8,
+                );
+                return is_non_public_ip(std::net::IpAddr::V4(v4));
+            }
+            let seg0 = s[0];
             v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()
                 || (seg0 & 0xfe00) == 0xfc00
                 || (seg0 & 0xffc0) == 0xfe80
+                || (seg0 & 0xffc0) == 0xfec0
         }
     }
 }
 
-pub fn check_egress(cfg: Option<&crate::util::Config>, u: &url::Url) -> Result<(), Fail> {
+struct PinnedResolver(Vec<std::net::SocketAddr>);
+
+impl ureq::Resolver for PinnedResolver {
+    fn resolve(&self, _netloc: &str) -> std::io::Result<Vec<std::net::SocketAddr>> {
+        Ok(self.0.clone())
+    }
+}
+
+fn resolve_egress_with<F>(
+    cfg: Option<&crate::util::Config>,
+    u: &url::Url,
+    lookup: F,
+) -> Result<Option<Vec<std::net::SocketAddr>>, Fail>
+where
+    F: FnOnce(&str, u16) -> std::io::Result<Vec<std::net::SocketAddr>>,
+{
     let Some(egress) = cfg.map(|c| &c.egress) else {
-        return Ok(());
+        return Ok(None);
     };
     let raw_host = u
         .host_str()
@@ -112,6 +169,7 @@ pub fn check_egress(cfg: Option<&crate::util::Config>, u: &url::Url) -> Result<(
     let host = raw_host
         .trim_start_matches('[')
         .trim_end_matches(']')
+        .trim_end_matches('.')
         .to_ascii_lowercase();
     if egress.deny_hosts.iter().any(|p| host_matches(p, &host)) {
         return Err(Fail::Denied(format!(
@@ -130,26 +188,63 @@ pub fn check_egress(cfg: Option<&crate::util::Config>, u: &url::Url) -> Result<(
                 "egress policy blocks loopback host `{host}`"
             )));
         }
+        let port = u
+            .port_or_known_default()
+            .ok_or_else(|| Fail::Invalid("URL has no known port".into()))?;
         if let Ok(ip) = host.parse::<std::net::IpAddr>() {
             if is_non_public_ip(ip) {
                 return Err(Fail::Denied(format!(
                     "egress policy blocks non-public IP `{ip}`"
                 )));
             }
-        } else if let Some(port) = u.port_or_known_default() {
-            if let Ok(addrs) = std::net::ToSocketAddrs::to_socket_addrs(&(host.as_str(), port)) {
-                for addr in addrs {
-                    if is_non_public_ip(addr.ip()) {
-                        return Err(Fail::Denied(format!(
-                            "egress policy blocks host `{host}` resolving to non-public IP `{}`",
-                            addr.ip()
-                        )));
-                    }
-                }
+            return Ok(Some(vec![std::net::SocketAddr::new(ip, port)]));
+        }
+        let addrs = lookup(&host, port).map_err(|e| {
+            Fail::Denied(format!(
+                "egress policy blocks host `{host}`: DNS resolution failed ({e})"
+            ))
+        })?;
+        if addrs.is_empty() {
+            return Err(Fail::Denied(format!(
+                "egress policy blocks host `{host}`: DNS returned no addresses"
+            )));
+        }
+        for addr in &addrs {
+            if is_non_public_ip(addr.ip()) {
+                return Err(Fail::Denied(format!(
+                    "egress policy blocks host `{host}` resolving to non-public IP `{}`",
+                    addr.ip()
+                )));
             }
         }
+        return Ok(Some(addrs));
     }
-    Ok(())
+    Ok(None)
+}
+
+fn resolve_egress(
+    cfg: Option<&crate::util::Config>,
+    u: &url::Url,
+) -> Result<Option<Vec<std::net::SocketAddr>>, Fail> {
+    resolve_egress_with(cfg, u, |host, port| {
+        std::net::ToSocketAddrs::to_socket_addrs(&(host, port)).map(Iterator::collect)
+    })
+}
+
+pub fn check_egress(cfg: Option<&crate::util::Config>, u: &url::Url) -> Result<(), Fail> {
+    resolve_egress(cfg, u).map(|_| ())
+}
+
+fn is_forbidden_header(name: &str, auth_header: Option<&str>) -> bool {
+    let lower = name.trim().to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "host" | "authorization" | "cookie" | "content-length" | "transfer-encoding"
+    ) || lower.starts_with("proxy-")
+    {
+        return true;
+    }
+    auth_header.is_some_and(|h| lower == h.trim().to_ascii_lowercase())
 }
 
 pub fn validate_origin(text: &str) -> Result<(), String> {
@@ -212,6 +307,7 @@ impl Reagent for Http {
                 "HTTP access requires an explicit origin grant".into(),
             ));
         }
+        let mut auth_header: Option<&str> = None;
         if let Some(auth_name) = args.get("auth").and_then(Value::as_str) {
             let cfg = auth
                 .config
@@ -232,11 +328,17 @@ impl Reagent for Http {
                     entry.token_env
                 )));
             }
+            auth_header = Some(entry.header.as_str());
         }
         if let Some(hdrs) = args.get("headers").and_then(Value::as_object) {
             for (k, v) in hdrs {
                 if !v.is_string() || k.contains('\r') || k.contains('\n') {
                     return Err(Fail::Invalid(format!("invalid HTTP header `{k}`")));
+                }
+                if is_forbidden_header(k, auth_header) {
+                    return Err(Fail::Denied(format!(
+                        "HTTP header `{k}` cannot be set by a ritual"
+                    )));
                 }
             }
         }
@@ -252,6 +354,7 @@ impl Reagent for Http {
         self.authorize(mail_root, name, args, auth)?;
         // The same parse `authorize` just accepted; the request uses it.
         let u = request_url(args)?;
+        let pinned_addrs = resolve_egress(auth.config, &u)?;
         let mut timeout = Duration::from_millis(args["timeout_ms"].as_u64().unwrap_or(5000));
         if let Some(d) = auth.deadline {
             timeout = timeout.min(d.saturating_duration_since(Instant::now()));
@@ -260,11 +363,14 @@ impl Reagent for Http {
             return Err(Fail::Exhausted("HTTP deadline".into()));
         }
         let deadline = Instant::now() + timeout;
-        let agent = ureq::AgentBuilder::new()
+        let mut builder = ureq::AgentBuilder::new()
             .try_proxy_from_env(false)
             .redirects(0)
-            .timeout(timeout)
-            .build();
+            .timeout(timeout);
+        if let Some(addrs) = pinned_addrs {
+            builder = builder.resolver(PinnedResolver(addrs));
+        }
+        let agent = builder.build();
         let is_write = matches!(name, "post" | "put" | "patch" | "delete");
         if is_write {
             if let Some(want) = auth.expected_digest {
@@ -372,12 +478,15 @@ impl Reagent for Http {
 
 pub fn target_digest(cfg: Option<&crate::util::Config>, args: &Value) -> Result<Option<String>, Fail> {
     let u = request_url(args)?;
-    check_egress(cfg, &u)?;
-    let agent = ureq::AgentBuilder::new()
+    let pinned_addrs = resolve_egress(cfg, &u)?;
+    let mut builder = ureq::AgentBuilder::new()
         .try_proxy_from_env(false)
         .redirects(0)
-        .timeout(Duration::from_millis(args["timeout_ms"].as_u64().unwrap_or(5000)))
-        .build();
+        .timeout(Duration::from_millis(args["timeout_ms"].as_u64().unwrap_or(5000)));
+    if let Some(addrs) = pinned_addrs {
+        builder = builder.resolver(PinnedResolver(addrs));
+    }
+    let agent = builder.build();
     let mut req = agent.get(u.as_str());
     if let Some(auth_name) = args.get("auth").and_then(Value::as_str) {
         if let Some(entry) = cfg.and_then(|c| c.http_auth.get(auth_name)) {
@@ -438,18 +547,103 @@ mod tests {
     fn egress_policy_blocks_denied_unlisted_and_private_ips() {
         let cfg = crate::util::Config {
             egress: crate::util::EgressConfig {
-                allow_hosts: vec!["*.example.com".into(), "169.254.169.254".into()],
+                allow_hosts: vec!["*.example.com".into(), "169.254.169.254".into(), "93.184.216.34".into()],
                 deny_hosts: vec!["bad.example.com".into()],
                 block_private_ips: true,
             },
             ..Default::default()
         };
-        assert!(check_egress(Some(&cfg), &parse_url("https://api.example.com/v1").unwrap()).is_ok());
+        let pub_addr: std::net::SocketAddr = "93.184.216.34:443".parse().unwrap();
+        assert_eq!(
+            resolve_egress_with(Some(&cfg), &parse_url("https://api.example.com/v1").unwrap(), |_, _| Ok(vec![pub_addr])).unwrap(),
+            Some(vec![pub_addr])
+        );
+        // Trailing dot cannot bypass deny_hosts.
+        assert!(check_egress(Some(&cfg), &parse_url("https://bad.example.com./v1").unwrap()).is_err());
         assert!(check_egress(Some(&cfg), &parse_url("https://bad.example.com/v1").unwrap()).is_err());
         assert!(check_egress(Some(&cfg), &parse_url("https://other.org/v1").unwrap()).is_err());
         assert!(check_egress(Some(&cfg), &parse_url("http://169.254.169.254/latest").unwrap()).is_err());
         assert!(check_egress(Some(&cfg), &parse_url("http://127.0.0.1:8080/").unwrap()).is_err());
         assert!(check_egress(Some(&cfg), &parse_url("http://localhost:8080/").unwrap()).is_err());
+        assert!(check_egress(Some(&cfg), &parse_url("https://93.184.216.34/v1").unwrap()).is_ok());
+
+        // DNS failure fails closed when block_private_ips is on.
+        let dns_err = resolve_egress_with(
+            Some(&cfg),
+            &parse_url("https://api.example.com/v1").unwrap(),
+            |_, _| Err(std::io::Error::new(std::io::ErrorKind::NotFound, "nxdomain")),
+        );
+        assert!(matches!(dns_err, Err(Fail::Denied(_))), "{dns_err:?}");
+
+        // DNS returning any private IP is blocked.
+        let rebind = resolve_egress_with(
+            Some(&cfg),
+            &parse_url("https://api.example.com/v1").unwrap(),
+            |_, _| Ok(vec![pub_addr, "127.0.0.1:443".parse().unwrap()]),
+        );
+        assert!(matches!(rebind, Err(Fail::Denied(_))), "{rebind:?}");
+    }
+
+    #[test]
+    fn non_public_ip_covers_reserved_and_embedded_ipv6_ranges() {
+        for addr in [
+            "0.1.2.3",
+            "192.0.0.1",
+            "198.18.0.1",
+            "198.19.255.254",
+            "240.0.0.1",
+            "64:ff9b::127.0.0.1",
+            "64:ff9b::169.254.169.254",
+            "64:ff9b:1::1",
+            "2002:7f00:0001::1",
+            "2002:a9fe:a9fe::1",
+            "::127.0.0.1",
+            "fec0::1",
+        ] {
+            let ip: std::net::IpAddr = addr.parse().unwrap();
+            assert!(is_non_public_ip(ip), "{addr} should be non-public");
+        }
+        for addr in ["93.184.216.34", "1.1.1.1", "64:ff9b::93.184.216.34", "2002:5db8:d822::1"] {
+            let ip: std::net::IpAddr = addr.parse().unwrap();
+            assert!(!is_non_public_ip(ip), "{addr} should be public");
+        }
+    }
+
+    #[test]
+    fn ritual_headers_cannot_override_host_or_auth() {
+        let origin = "http://127.0.0.1:18431";
+        let url = format!("{origin}/x");
+        std::env::set_var("SUMMONR_TEST_HDR_TOK", "tok");
+        let mut cfg = crate::util::Config::default();
+        cfg.http_auth.insert(
+            "api".into(),
+            crate::util::HttpAuthConfig {
+                origin: origin.into(),
+                header: "X-Api-Key".into(),
+                prefix: "".into(),
+                token_env: "SUMMONR_TEST_HDR_TOK".into(),
+            },
+        );
+        let grants = vec![reagent::need("http", "post", &[("origin", origin)], &[])];
+        let selected = std::sync::Mutex::new(std::collections::HashSet::new());
+        let auth = Authority {
+            grants: &grants,
+            deadline: None,
+            on_item: None,
+            selected: &selected,
+            expected_digest: None,
+            config: Some(&cfg),
+        };
+        for bad in ["Host", "host", "Authorization", "Cookie", "Proxy-Authorization", "Content-Length", "Transfer-Encoding", "X-Api-Key", "x-api-key"] {
+            let r = Http.authorize(
+                None,
+                "post",
+                &json!({"url": url, "auth": "api", "headers": {bad: "evil"}}),
+                &auth,
+            );
+            assert!(matches!(r, Err(Fail::Denied(_))), "{bad} should be denied: {r:?}");
+        }
+        assert!(Http.authorize(None, "post", &json!({"url": url, "auth": "api", "headers": {"X-Trace": "ok"}}), &auth).is_ok());
     }
 
     #[test]

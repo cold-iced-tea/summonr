@@ -88,6 +88,7 @@ pub fn call_tool(
     tool_name: &str,
     args: &Value,
     timeout: Option<Duration>,
+    root_cfg: Option<&crate::util::Config>,
 ) -> Result<Value, String> {
     let deadline = Instant::now() + timeout.unwrap_or(DEFAULT_TIMEOUT);
     let (prog, rest) = cfg
@@ -95,6 +96,7 @@ pub fn call_tool(
         .split_first()
         .ok_or_else(|| "mcp reagent `command` must not be empty".to_string())?;
     let mut cmd = Command::new(prog);
+    crate::git_reagent::strip_sensitive_env(&mut cmd, root_cfg);
     cmd.args(rest)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -349,7 +351,7 @@ return:
             env: BTreeMap::new(),
             tools,
         };
-        let err = call_tool(&srv, "hang", &json!({}), Some(Duration::from_millis(120))).unwrap_err();
+        let err = call_tool(&srv, "hang", &json!({}), Some(Duration::from_millis(120)), None).unwrap_err();
         assert!(err.contains("timed out") || err.contains("closed stdout"), "{err}");
     }
 }

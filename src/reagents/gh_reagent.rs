@@ -15,8 +15,9 @@ const TOOLS: &[ToolSpec] = &[
 ];
 
 fn gh(auth: &Authority, cwd: &Path, args: &[&str]) -> Result<String, Fail> {
-    let prog = config(auth)?.gh.clone().unwrap_or_else(|| "gh".into());
-    let (code, out, err) = run_bounded_kept(&prog, args, cwd, auth.deadline, 1 << 20)?;
+    let cfg = config(auth)?;
+    let prog = cfg.gh.clone().unwrap_or_else(|| "gh".into());
+    let (code, out, err) = run_bounded_kept(&prog, args, cwd, auth.deadline, 1 << 20, Some(cfg))?;
     if code != 0 {
         let last = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();
         return Err(Fail::Failed(format!("gh {}: {last}", args.first().unwrap_or(&""))));

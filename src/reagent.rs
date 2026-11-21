@@ -914,7 +914,7 @@ pub fn call(
     let timeout = auth
         .deadline
         .map(|d| d.saturating_duration_since(std::time::Instant::now()));
-    crate::mcp_reagent::call_tool(mcp_cfg, tool, args, timeout).map_err(Fail::Failed)
+    crate::mcp_reagent::call_tool(mcp_cfg, tool, args, timeout, auth.config).map_err(Fail::Failed)
 }
 
 /// Run every check a live `call` of `operation` would make before its

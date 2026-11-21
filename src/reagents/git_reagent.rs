@@ -67,14 +67,57 @@ pub(crate) fn config<'a>(auth: &'a Authority) -> Result<&'a Config, Fail> {
     auth.config.ok_or_else(|| Fail::Denied("no repositories are configured".into()))
 }
 
+/// Strip credentials and git/gh redirection variables from a child process.
+pub(crate) fn strip_sensitive_env(c: &mut Command, cfg: Option<&Config>) {
+    for var in [
+        "SUMMONR_OPENAI_API_KEY",
+        "OPENAI_API_KEY",
+        "SUMMONR_ANTHROPIC_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "SUMMONR_KEY_PASSPHRASE",
+        "GH_REPO",
+        "GH_HOST",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_GLOBAL",
+    ] {
+        c.env_remove(var);
+    }
+    for (k, _) in std::env::vars_os() {
+        if let Some(name) = k.to_str() {
+            if name.starts_with("GIT_CONFIG_KEY_") || name.starts_with("GIT_CONFIG_VALUE_") {
+                c.env_remove(name);
+            }
+        }
+    }
+    if let Some(cfg) = cfg {
+        for entry in cfg.http_auth.values() {
+            c.env_remove(&entry.token_env);
+        }
+        for provider in cfg.providers.values() {
+            if let Some(env_name) = &provider.api_key_env {
+                c.env_remove(env_name);
+            }
+        }
+        if let Some(env_name) = cfg
+            .mcp_auth
+            .as_ref()
+            .and_then(|a| a.hs256_secret_env.as_deref())
+        {
+            c.env_remove(env_name);
+        }
+    }
+}
+
 /// A command that cannot prompt, read input, or be redirected to another
 /// repository by inherited environment. `git` commands also get a fixed locale
 /// for parsing; other programs (the user's tests) keep theirs.
-pub(crate) fn command(prog: &str, git: bool) -> Command {
+pub(crate) fn command(prog: &str, git: bool, cfg: Option<&Config>) -> Command {
     let mut c = Command::new(prog);
     for var in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_PREFIX"] {
         c.env_remove(var);
     }
+    strip_sensitive_env(&mut c, cfg);
     c.env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_EDITOR", "true")
         .env("GH_PROMPT_DISABLED", "1")
@@ -94,14 +137,14 @@ pub(crate) fn command(prog: &str, git: bool) -> Command {
 /// program exits, anything it left running in its group is stopped too. A
 /// child that left the group (`setsid`) and still holds the output open is
 /// not waited for beyond a short grace period.
-pub(crate) fn run_bounded_as(prog: &str, args: &[&str], cwd: &Path, deadline: Option<Instant>, git: bool) -> Result<(i32, String, String), Fail> {
-    run_bounded_inner(prog, args, cwd, deadline, git, None)
+pub(crate) fn run_bounded_as(prog: &str, args: &[&str], cwd: &Path, deadline: Option<Instant>, git: bool, cfg: Option<&Config>) -> Result<(i32, String, String), Fail> {
+    run_bounded_inner(prog, args, cwd, deadline, git, None, cfg)
 }
 
 /// The same, keeping only the last `keep` bytes of stdout and of stderr, so a
 /// program that writes without end cannot fill memory.
-pub(crate) fn run_bounded_kept(prog: &str, args: &[&str], cwd: &Path, deadline: Option<Instant>, keep: usize) -> Result<(i32, String, String), Fail> {
-    run_bounded_inner(prog, args, cwd, deadline, false, Some(keep))
+pub(crate) fn run_bounded_kept(prog: &str, args: &[&str], cwd: &Path, deadline: Option<Instant>, keep: usize, cfg: Option<&Config>) -> Result<(i32, String, String), Fail> {
+    run_bounded_inner(prog, args, cwd, deadline, false, Some(keep), cfg)
 }
 
 /// How long to keep reading after the program ended, for output a child
@@ -149,9 +192,9 @@ impl Drain {
     }
 }
 
-fn run_bounded_inner(prog: &str, args: &[&str], cwd: &Path, deadline: Option<Instant>, git: bool, keep: Option<usize>) -> Result<(i32, String, String), Fail> {
+fn run_bounded_inner(prog: &str, args: &[&str], cwd: &Path, deadline: Option<Instant>, git: bool, keep: Option<usize>, cfg: Option<&Config>) -> Result<(i32, String, String), Fail> {
     use std::os::unix::process::CommandExt;
-    let mut child = command(prog, git)
+    let mut child = command(prog, git, cfg)
         .args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())
@@ -239,7 +282,7 @@ pub(crate) fn git(cfg: &Config, cwd: &Path, args: &[&str], deadline: Option<Inst
     let prog = cfg.git.as_deref().unwrap_or("git");
     let mut full = vec!["-c", "core.quotepath=false"];
     full.extend_from_slice(args);
-    let (code, out, err) = run_bounded_as(prog, &full, cwd, deadline, true)?;
+    let (code, out, err) = run_bounded_as(prog, &full, cwd, deadline, true, Some(cfg))?;
     if code != 0 {
         let last = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();
         return Err(Fail::Failed(format!("git {}: {last}", args.first().unwrap_or(&""))));
@@ -250,7 +293,7 @@ pub(crate) fn git(cfg: &Config, cwd: &Path, args: &[&str], deadline: Option<Inst
 /// git, but an exit code of 1 is an answer (`false`), not a failure.
 fn git_test(cfg: &Config, cwd: &Path, args: &[&str], deadline: Option<Instant>) -> Result<bool, Fail> {
     let prog = cfg.git.as_deref().unwrap_or("git");
-    let (code, _, err) = run_bounded_as(prog, args, cwd, deadline, true)?;
+    let (code, _, err) = run_bounded_as(prog, args, cwd, deadline, true, Some(cfg))?;
     match code {
         0 => Ok(true),
         1 => Ok(false),
@@ -298,7 +341,7 @@ pub(crate) fn list_worktrees(cfg: &Config, r: &RepoConfig, deadline: Option<Inst
 /// (branch or None when detached, changed paths) of a checkout.
 pub(crate) fn checkout_state(cfg: &Config, path: &Path, deadline: Option<Instant>) -> Result<(Option<String>, Vec<String>), Fail> {
     let prog = cfg.git.as_deref().unwrap_or("git");
-    let (code, out, _) = run_bounded_as(prog, &["symbolic-ref", "-q", "--short", "HEAD"], path, deadline, true)?;
+    let (code, out, _) = run_bounded_as(prog, &["symbolic-ref", "-q", "--short", "HEAD"], path, deadline, true, Some(cfg))?;
     let branch = (code == 0).then(|| out.trim().to_string());
     let changed = status_entries(cfg, path, deadline)?.into_iter().map(|e| e.path).collect();
     Ok((branch, changed))
@@ -1032,7 +1075,7 @@ mod tests {
     #[test]
     fn bounded_output_keeps_only_the_end() {
         let script = "head -c 4000000 /dev/zero | tr '\\0' x; printf 'the end'";
-        let (code, out, _) = run_bounded_kept("sh", &["-c", script], Path::new("/"), None, 4096).unwrap();
+        let (code, out, _) = run_bounded_kept("sh", &["-c", script], Path::new("/"), None, 4096, None).unwrap();
         assert_eq!(code, 0);
         assert!(out.len() <= 4096 && out.ends_with("the end"), "{} bytes", out.len());
     }
@@ -1050,13 +1093,47 @@ mod tests {
 
     #[test]
     fn git_commands_drop_inherited_location_variables() {
-        let cmd = command("git", true);
+        let mut cfg = Config::default();
+        cfg.http_auth.insert(
+            "api".into(),
+            crate::util::HttpAuthConfig {
+                origin: "https://api.example.com".into(),
+                header: "Authorization".into(),
+                prefix: "Bearer ".into(),
+                token_env: "MY_CUSTOM_HTTP_TOKEN".into(),
+            },
+        );
+        cfg.providers.insert(
+            "p".into(),
+            crate::util::ProviderConfig {
+                kind: "openai".into(),
+                url: "https://llm.example.com".into(),
+                api_key_env: Some("MY_CUSTOM_LLM_KEY".into()),
+            },
+        );
+        let cmd = command("git", true, Some(&cfg));
         let envs: std::collections::HashMap<_, _> = cmd.get_envs().map(|(k, v)| (k.to_string_lossy().into_owned(), v.map(|v| v.to_string_lossy().into_owned()))).collect();
-        for var in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY"] {
+        for var in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_COMMON_DIR",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_CONFIG_PARAMETERS",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_GLOBAL",
+            "GH_REPO",
+            "GH_HOST",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "SUMMONR_KEY_PASSPHRASE",
+            "MY_CUSTOM_HTTP_TOKEN",
+            "MY_CUSTOM_LLM_KEY",
+        ] {
             assert_eq!(envs.get(var), Some(&None), "{var} is removed");
         }
         assert_eq!(envs.get("SSH_ASKPASS_REQUIRE"), Some(&Some("never".into())));
-        let plain = command("cargo", false);
+        let plain = command("cargo", false, None);
         assert!(!plain.get_envs().any(|(k, _)| k == "LC_ALL"), "the test command keeps the user's locale");
     }
 
@@ -1064,7 +1141,7 @@ mod tests {
     fn a_background_child_cannot_hang_the_run() {
         let start = Instant::now();
         let dir = std::env::temp_dir();
-        let (code, out, _) = run_bounded_as("sh", &["-c", "sleep 31.7 & echo started"], &dir, Some(Instant::now() + Duration::from_secs(20)), false).unwrap();
+        let (code, out, _) = run_bounded_as("sh", &["-c", "sleep 31.7 & echo started"], &dir, Some(Instant::now() + Duration::from_secs(20)), false, None).unwrap();
         assert_eq!(code, 0);
         assert_eq!(out.trim(), "started");
         assert!(start.elapsed() < Duration::from_secs(5), "took {:?}", start.elapsed());
@@ -1076,7 +1153,7 @@ mod tests {
     #[test]
     fn a_timeout_stops_the_whole_process_group() {
         let dir = std::env::temp_dir();
-        let r = run_bounded_as("sh", &["-c", "sleep 32.3; true"], &dir, Some(Instant::now() + Duration::from_millis(500)), false);
+        let r = run_bounded_as("sh", &["-c", "sleep 32.3; true"], &dir, Some(Instant::now() + Duration::from_millis(500)), false, None);
         assert!(matches!(r, Err(Fail::Exhausted(_))), "{r:?}");
         std::thread::sleep(Duration::from_millis(200));
         let left = Command::new("pgrep").args(["-f", "sleep 32.3"]).output().unwrap();
