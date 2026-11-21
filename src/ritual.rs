@@ -3593,6 +3593,25 @@ return:
         assert_eq!(out_schema["properties"]["review"]["properties"]["verdict"]["type"], "string");
     }
 
+    #[test]
+    fn filter_predicate_refuses_text_substitution() {
+        // A `${}` inside a quoted literal would be substituted as text and
+        // then parsed, letting an input rewrite the predicate.
+        let yaml = |pred: &str| {
+            format!(
+                "ritual: r\ninputs: {{team: string}}\nrequires: [{{reagent: data, action: filter}}]\nsteps:\n  - id: visible\n    operation: data.filter\n    arguments:\n      values: [{{team: red}}]\n      predicate: {pred:?}\nreturn: {{v: \"${{steps.visible.output}}\"}}\n"
+            )
+        };
+        let check = |pred: &str| {
+            let mut def = parse_file(&yaml(pred)).unwrap();
+            prepare(&mut def, std::path::Path::new("."), &|_, _| None)?;
+            validate(&def, &|_, _| None, &crate::reagent::tool, 3).map_err(|e| e.join("; "))
+        };
+        let e = check("item.team == '${inputs.team}'").unwrap_err();
+        assert!(e.contains("predicate"), "{e}");
+        assert!(check("item.team == 'red'").is_ok());
+    }
+
     const CHILD: &str = r#"
 ritual: child
 inputs: {text: {type: string}}

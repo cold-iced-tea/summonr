@@ -551,14 +551,17 @@ impl Run {
             ritual::render_value(&v, scope).map_err(|e| Fail::Failed(format!("{op}: {e}")))
         };
         let mut raw_args = object(&s.arguments);
-        let body = if matches!(op, "data.map" | "data.fold") {
-            raw_args.as_object_mut().unwrap().remove("arguments")
-        } else {
-            None
+        // A collection's body (map/fold arguments, filter predicate) is
+        // evaluated per item, never rendered as text from the outer scope.
+        let body_key = match op {
+            "data.map" | "data.fold" => Some("arguments"),
+            "data.filter" => Some("predicate"),
+            _ => None,
         };
+        let body = body_key.and_then(|k| raw_args.as_object_mut().unwrap().remove(k));
         let mut args = render(raw_args, scope)?;
-        if let Some(body) = body {
-            args["arguments"] = body;
+        if let (Some(k), Some(body)) = (body_key, body) {
+            args[k] = body;
         }
         let effect = reagent::tool_meta(Some(&self.core.cfg), reagent, tool)
             .map(|t| t.effect)

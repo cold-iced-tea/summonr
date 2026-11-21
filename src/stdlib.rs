@@ -490,6 +490,15 @@ pub fn validate_collection(op: &str, args: &Value) -> Result<(), String> {
             .get("predicate")
             .and_then(Value::as_str)
             .ok_or("filter needs a literal predicate")?;
+        // A `${}` left after normalization sits inside a quoted literal: it
+        // would be substituted as text and then parsed, so a value could
+        // rewrite the predicate. Predicates see only item and index.
+        if p.contains("${") {
+            return Err("a filter predicate cannot contain `${...}`: values would be pasted \
+                        into it as source text; compare item fields with literals, or prepare \
+                        the values in an earlier step"
+                .into());
+        }
         let expr = ritual::parse_expr(p)?;
         let mut paths = Vec::new();
         ritual::expr_refs(&expr, &mut paths);
@@ -645,6 +654,11 @@ mod tests {
         assert!(
             validate_collection("data.filter", &json!({"predicate":"inputs.secret == 1"})).is_err()
         );
+        assert!(validate_collection(
+            "data.filter",
+            &json!({"predicate":"item.team == '${inputs.team}'"})
+        )
+        .is_err());
     }
     #[test]
     fn extended_stdlib_logic_math_objects_and_hashing() {

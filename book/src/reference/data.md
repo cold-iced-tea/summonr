@@ -100,7 +100,9 @@ steps:
 Body templates have their own scope: `item`, zero-based `index`, and, for fold,
 `acc`. They do not capture outer `inputs` or `steps`; supply literal constants or
 include necessary data in each item. Filter predicates can use `item` and `index`
-with the [condition language](expressions.md). Body operations must be literal
+with the [condition language](expressions.md), and cannot contain `${...}` at
+all, even inside a quoted string: a value pasted into a predicate's text could
+change what it means. Body operations must be literal
 `data.*` primitive names and must also be selected under `reagents.data.select`.
 Nested collection operators, I/O, model calls, and child rituals are refused.
 
