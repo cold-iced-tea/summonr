@@ -35,6 +35,10 @@ pub struct StepRecord {
     pub output: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub counts: Option<BatchCounts>,
+    /// The output came straight from the step's own operation, never from a
+    /// fallback; only such an output may be re-adopted on revive.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub direct: bool,
 }
 impl StepRecord {
     pub fn new(status: StepStatus, kind: StepKind, output: Value) -> Self {
@@ -43,6 +47,7 @@ impl StepRecord {
             kind,
             output,
             counts: None,
+            direct: false,
         }
     }
 }

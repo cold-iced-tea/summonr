@@ -482,9 +482,10 @@ impl Run {
             if top_level && !id.is_empty() && scope.frames[0].steps.contains_key(&id) {
                 // A restored read happened in an earlier run, so this run's
                 // issue key for its handle is re-issued; only a step that
-                // is statically a sight read earns one, never a model output.
+                // is statically a sight read and whose output came from that live
+                // read (never a fallback, which may be a model's) earns one.
                 if let Step::Operation(op) = s {
-                    if op.operation == "sight.read_image" {
+                    if op.operation == "sight.read_image" && scope.frames[0].steps[&id].direct {
                         let auth = Authority {
                             grants: &self.grants,
                             deadline: None,
@@ -500,12 +501,17 @@ impl Run {
             }
             match s {
                 Step::Operation(s) => {
+                    let mut direct = false;
                     let (out, abstained) = self.run_with_recovery(
                         &id,
                         s.retry,
                         &s.fallback,
                         scope,
-                        |this, sc| this.operation(s, step_idx, sc).map(|v| (v, false)),
+                        |this, sc| {
+                            let v = this.operation(s, step_idx, sc)?;
+                            direct = true;
+                            Ok((v, false))
+                        },
                     )?;
                     let kind = if s.operation.starts_with("data.") {
                         StepKind::Pure
@@ -514,9 +520,9 @@ impl Run {
                     };
                     let frame = scope.frames.last_mut().unwrap();
                     frame.abstained |= abstained;
-                    frame
-                        .steps
-                        .insert(id, StepRecord::new(StepStatus::Returned, kind, out));
+                    let mut rec = StepRecord::new(StepStatus::Returned, kind, out);
+                    rec.direct = direct;
+                    frame.steps.insert(id, rec);
                 }
                 Step::Model(s) => {
                     let (out, abstained) = self.run_with_recovery(

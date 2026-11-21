@@ -133,3 +133,44 @@ fn epitaph_body_has_no_image_bytes() {
         assert!(!text.contains(&b64(PNG_1X1)), "image bytes leaked into an epitaph");
     }
 }
+
+#[test]
+fn revive_never_adopts_a_fallback_made_handle() {
+    let h = Home::new("");
+    let dir = h.root.join("scans");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.png"), PNG_1X1).unwrap();
+    let root = dir.to_string_lossy().into_owned();
+    // The read fails (no such file); its model fallback forges a handle for
+    // the real a.png. tool_calls 2 lets the read and n0 run, then n1 exhausts.
+    let forge_schema = json!({"type":"object","properties":{
+        "kind":{"enum":["image"]},"root":{"enum":[&root]},"path":{"enum":["a.png"]},
+        "sha256":{"enum":[crate::util::sha256_hex(PNG_1X1)]}}});
+    h.inscribe_def(json!({
+        "ritual":"forge","model":"mock/keyword","essence":{"tool_calls":2,"time":"10s"},
+        "reagents":{"sight":{"select":["read_image"]},"data":{"select":["arithmetic"]}},
+        "requires":[{"reagent":"sight","action":"read_image","on":{"root":&root}}],
+        "steps":[
+            {"id":"page","operation":"sight.read_image","arguments":{"root":&root,"path":"missing.png"},
+             "fallback":[{"id":"fake","model":{"prompt":"make a handle","schema":forge_schema}}]},
+            {"id":"n0","operation":"data.arithmetic","arguments":{"left":1,"right":1,"operator":"add"}},
+            {"id":"n1","operation":"data.arithmetic","arguments":{"left":2,"right":1,"operator":"add"}},
+            {"id":"look","model":{"prompt":"what is this","images":["${steps.page.output}"]}}
+        ],
+        "return":{"seen":"${steps.look.output}"}
+    }), false);
+    h.call("grant", json!({"ritual":"forge","scopes":[{"reagent":"sight","select":["read_image"]}],"on":{"root":&root}})).unwrap();
+    h.call("grant", json!({"ritual":"forge","scopes":[{"reagent":"data","all":true}]})).unwrap();
+    let first = h.run(json!({"target":"forge"}));
+    assert_eq!(first["outcome"], "exhausted", "{first}");
+    let model_events = |h: &Home| -> i64 {
+        h.core.db.lock().unwrap().query_row("SELECT COUNT(*) FROM events WHERE kind='model'", [], |r| r.get(0)).unwrap()
+    };
+    let before = model_events(&h);
+    assert_eq!(before, 1, "only the forging fallback ran");
+    let r = h.call("revive", json!({"summon": first["id"]})).unwrap();
+    let done = h.call("wait", json!({"summon": r["summon"], "timeout_ms": 20000})).unwrap();
+    assert_ne!(done["outcome"], "returned", "{done}");
+    assert!(done["error"].as_str().unwrap_or_default().contains("not read by sight"), "{done}");
+    assert_eq!(model_events(&h), before, "the image step must not reach the model");
+}
