@@ -35,6 +35,26 @@ fn b64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
+/// Error text for a request that carried images: no image base64 may
+/// survive (servers often echo the input) and the text stays bounded.
+fn scrub_error(err: String, images: &[ImagePart]) -> String {
+    if images.is_empty() {
+        return err;
+    }
+    let mut out = err;
+    for i in images {
+        out = out.replace(&b64(&i.bytes), &format!("[sight:{}]", i.sha256));
+    }
+    match out.char_indices().nth(2000) {
+        Some((at, _)) => {
+            out.truncate(at);
+            out.push_str("...[truncated]");
+            out
+        }
+        None => out,
+    }
+}
+
 fn placeholder(img: &ImagePart) -> Value {
     json!({"sight": {"sha256": img.sha256, "mime": img.mime, "bytes": img.bytes.len()}})
 }
@@ -286,7 +306,8 @@ fn ollama_chat(base: &str, model: &str, req: ChatReq) -> Result<ChatResp, String
         ollama_payload(model, &req, ImageMode::Placeholder)?
     };
     let started = Instant::now();
-    let r = http_with_timeout("POST", &format!("{base}/api/chat"), Some(&body), timeout)?;
+    let r = http_with_timeout("POST", &format!("{base}/api/chat"), Some(&body), timeout)
+        .map_err(|e| scrub_error(e, req.images))?;
     let ns = |k: &str| r.get(k).and_then(Value::as_u64).unwrap_or(0) / 1_000_000;
     let reported = r.get("prompt_eval_count").and_then(Value::as_u64).is_some()
         && r.get("eval_count").and_then(Value::as_u64).is_some();
@@ -345,7 +366,8 @@ fn openai_chat(
         headers.push(("Authorization", a.as_str()));
     }
     let url = v1_endpoint(base, "chat/completions");
-    let r = http_with_headers("POST", &url, Some(&body), &headers, timeout)?;
+    let r = http_with_headers("POST", &url, Some(&body), &headers, timeout)
+        .map_err(|e| scrub_error(e, req.images))?;
     let choice = r["choices"]
         .as_array()
         .and_then(|c| c.first())
@@ -394,7 +416,8 @@ fn anthropic_chat(
         headers.push(("x-api-key", k));
     }
     let url = v1_endpoint(base, "messages");
-    let r = http_with_headers("POST", &url, Some(&body), &headers, timeout)?;
+    let r = http_with_headers("POST", &url, Some(&body), &headers, timeout)
+        .map_err(|e| scrub_error(e, req.images))?;
     let content = r["content"]
         .as_array()
         .and_then(|blocks| {
@@ -1284,5 +1307,116 @@ mod tests {
         assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1, "cached");
         supports_images("http://127.0.0.1:1", "openai/x").unwrap();
         supports_images("http://127.0.0.1:1", "mock/keyword").unwrap();
+    }
+
+    /// Records each request body; answers `status` with `reply`, or echoes
+    /// the request body when `reply` is None.
+    fn recording_server(
+        status: &'static str,
+        reply: Option<&'static str>,
+    ) -> (String, std::sync::Arc<Mutex<Vec<String>>>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", server.local_addr().unwrap());
+        let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for mut s in server.incoming().flatten() {
+                let mut line = String::new();
+                let mut r = BufReader::new(s.try_clone().unwrap());
+                r.read_line(&mut line).unwrap();
+                let mut len = 0usize;
+                loop {
+                    let mut h = String::new();
+                    if r.read_line(&mut h).unwrap() <= 2 {
+                        break;
+                    }
+                    if let Some((k, v)) = h.split_once(':') {
+                        if k.trim().eq_ignore_ascii_case("content-length") {
+                            len = v.trim().parse().unwrap_or(0);
+                        }
+                    }
+                }
+                let mut body = vec![0u8; len];
+                let _ = r.read_exact(&mut body);
+                let body = String::from_utf8(body).unwrap();
+                let out = reply.map(String::from).unwrap_or_else(|| body.clone());
+                log.lock().unwrap().push(body);
+                let _ = write!(
+                    s,
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{out}",
+                    out.len()
+                );
+            }
+        });
+        (url, seen)
+    }
+
+    fn chat_with_images(url: &str, model: &str, images: &[ImagePart]) -> Result<ChatResp, String> {
+        let settings = BTreeMap::new();
+        chat(
+            url,
+            model,
+            ChatReq {
+                model: "m",
+                system: "sys",
+                user: "usr",
+                schema: None,
+                settings: &settings,
+                timeout: Some(Duration::from_secs(5)),
+                max_output_tokens: Some(50),
+                images,
+            },
+        )
+    }
+
+    #[test]
+    fn chat_sends_inline_bytes_but_returns_the_placeholder_payload() {
+        let images = [img(b"\x89PNG-bytes")];
+        let enc = b64(&images[0].bytes);
+        let cases = [
+            ("ollama/m", r#"{"message":{"content":"ok"}}"#),
+            ("openai/m", r#"{"choices":[{"message":{"content":"ok"}}]}"#),
+            ("anthropic/m", r#"{"content":[{"type":"text","text":"ok"}]}"#),
+        ];
+        for (model, reply) in cases {
+            let (url, seen) = recording_server("200 OK", Some(reply));
+            let resp = chat_with_images(&url, model, &images).unwrap();
+            let sent: Value = serde_json::from_str(&seen.lock().unwrap()[0]).unwrap();
+            assert!(sent.to_string().contains(&enc), "{model}: server must get the bytes");
+            let at = match model {
+                "ollama/m" => &sent["messages"][1]["images"][0],
+                "openai/m" => &sent["messages"][1]["content"][0]["image_url"]["url"],
+                _ => &sent["messages"][0]["content"][0]["source"]["data"],
+            };
+            assert!(at.as_str().unwrap().ends_with(&enc), "{model}: wrong position");
+            let recorded = resp.payload.to_string();
+            assert!(!recorded.contains(&enc), "{model}: base64 leaked: {recorded}");
+            assert!(recorded.contains(&images[0].sha256), "{model}");
+        }
+    }
+
+    #[test]
+    fn image_request_errors_are_scrubbed_and_bounded() {
+        // A large image so the echoed body far exceeds the bound.
+        let images = [img(&vec![7u8; 6000])];
+        let enc = b64(&images[0].bytes);
+        for model in ["ollama/m", "openai/m", "anthropic/m"] {
+            let (url, _) = recording_server("422 Unprocessable Entity", None);
+            let err = chat_with_images(&url, model, &images).err().unwrap();
+            assert!(!err.contains(&enc), "{model}: base64 in error");
+            assert!(!err.contains(&enc[..64]), "{model}: base64 fragment in error");
+            assert!(err.chars().count() <= 2000 + 64, "{model}: unbounded ({})", err.len());
+        }
+        // The marker shows when the echo is short enough to survive truncation.
+        let small = [img(b"tiny")];
+        let (url, _) = recording_server("422 Unprocessable Entity", None);
+        let err = chat_with_images(&url, "openai/m", &small).err().unwrap();
+        assert!(err.contains(&format!("[sight:{}]", small[0].sha256)), "{err}");
+        assert!(!err.contains(&b64(b"tiny")), "{err}");
+        // No images: error text is left alone.
+        let (url, _) = recording_server("422 Unprocessable Entity", Some("x".repeat(3000).leak()));
+        let err = chat_with_images(&url, "openai/m", &[]).err().unwrap();
+        assert!(err.len() > 3000);
     }
 }
