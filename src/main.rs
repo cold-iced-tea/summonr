@@ -68,7 +68,11 @@ fn main() {
         return;
     }
     let typed_flags = args.iter().any(|a| a.starts_with("--"));
-    let wants_json = args.iter().any(|a| a == "--json");
+    let wants_json = args.iter().any(|a| a == "--json")
+        || args.windows(2).any(|w| w[0] == "returning" && w[1] == "json")
+        || args
+            .windows(3)
+            .any(|w| w[0] == "then" && w[1] == "return" && w[2] == "json");
     let op = match grammar::parse(&args) {
         Ok(op) => op,
         Err(e) => {
@@ -245,8 +249,13 @@ fn ledger(events: &Value, started: i64) {
 fn validate_file(op: &Op, paths: &Paths) -> Result<Value, RpcErr> {
     let file = target(op, "ritual file")?;
     let path = std::path::Path::new(&file);
-    let text =
-        std::fs::read_to_string(path).map_err(|e| RpcErr::invalid(format!("{file}: {e}")))?;
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            RpcErr::not_found(format!("{file}: {e}"))
+        } else {
+            RpcErr::invalid(format!("{file}: {e}"))
+        }
+    })?;
     let mut def = ritual::parse_definition(path, &text).map_err(RpcErr::invalid)?;
     let db = if paths.db().exists() {
         Some(
@@ -343,12 +352,30 @@ fn run(op: Op, paths: &Paths, style: Style) -> i32 {
     }
     match op.verb.as_str() {
         "help" => {
+            if json_out {
+                let verbs: Vec<Value> = grammar::VERBS
+                    .iter()
+                    .map(|(r, p, _, m)| json!({"ritual": r, "plain": p, "meaning": m}))
+                    .collect();
+                let clauses: Vec<Value> = grammar::CLAUSES
+                    .iter()
+                    .map(|(k, f, m)| json!({"keyword": k, "flag": f, "meaning": m}))
+                    .collect();
+                return finish(
+                    Ok(json!({"version": env!("CARGO_PKG_VERSION"), "commands": verbs, "clauses": clauses})),
+                    true,
+                    |_| {},
+                );
+            }
             help(style);
             return 0;
         }
         "version" => {
-            println!("summonr {}", env!("CARGO_PKG_VERSION"));
-            return 0;
+            return finish(
+                Ok(json!({"name": "summonr", "version": env!("CARGO_PKG_VERSION")})),
+                json_out,
+                |_| println!("summonr {}", env!("CARGO_PKG_VERSION")),
+            );
         }
         "validate" => return finish(validate_file(&op, paths), json_out, |v| println!("{}", v)),
         "core" => return core_command(&op, paths),
@@ -516,8 +543,8 @@ fn run(op: Op, paths: &Paths, style: Style) -> i32 {
                 }
                 for r in rows {
                     println!(
-                        "{:<22} {} {}",
-                        bold(Ink::Bone, s(&r, "ritual")),
+                        "{} {} {}",
+                        bold(Ink::Bone, &format!("{:<22}", s(&r, "ritual"))),
                         paint(Ink::Gold, &format!("v{}", r["version"])),
                         paint(
                             Ink::Dim,
@@ -805,8 +832,8 @@ fn run(op: Op, paths: &Paths, style: Style) -> i32 {
         "satchel" => finish(client.call("tools", json!({})), json_out, |d| {
             for t in d.as_array().into_iter().flatten() {
                 println!(
-                    "{:<14} {} {}",
-                    bold(Ink::Bone, &format!("{}.{}", s(t, "reagent"), s(t, "tool"))),
+                    "{} {} {}",
+                    bold(Ink::Bone, &format!("{:<18}", format!("{}.{}", s(t, "reagent"), s(t, "tool")))),
                     paint(Ink::Ember, &format!("{:<17}", s(t, "effect"))),
                     paint(
                         Ink::Dim,
@@ -1721,9 +1748,9 @@ fn help(style: Style) {
             (*ritual, *plain)
         };
         println!(
-            "  {:<10} {:<9} {meaning}",
-            bold(Ink::Bone, lead),
-            paint(Ink::Dim, other)
+            "  {} {} {meaning}",
+            bold(Ink::Bone, &format!("{lead:<12}")),
+            paint(Ink::Dim, &format!("{other:<12}"))
         );
     }
     println!();
@@ -1734,7 +1761,11 @@ fn help(style: Style) {
         } else {
             (*kw, *flag)
         };
-        println!("  {:<20} {:<18} {meaning}", lead, paint(Ink::Dim, other));
+        println!(
+            "  {:<20} {} {meaning}",
+            lead,
+            paint(Ink::Dim, &format!("{other:<18}"))
+        );
     }
     println!();
     rubric("EXAMPLE");
@@ -1891,8 +1922,16 @@ fn witness_command(op: &Op, client: &mut Client) -> i32 {
             } else {
                 json!({"peers": peers, "live": op.live})
             };
-            finish(client.call("witness_compare", args), op.json, |d| {
-                if d["ok"] == true {
+            let res = client.call("witness_compare", args);
+            let ok = res.as_ref().map(|d| d["ok"] == true).unwrap_or(false);
+            let no_witnesses = res
+                .as_ref()
+                .map(|d| d["witnesses"].as_u64() == Some(0))
+                .unwrap_or(false);
+            let code = finish(res, op.json, |d| {
+                if d["witnesses"].as_u64() == Some(0) {
+                    println!("{} no witnesses to compare", paint(Ink::Gold, "?"));
+                } else if d["ok"] == true {
                     println!("{} witnesses agree (no split views detected)", paint(Ink::Verdigris, "✓"));
                 } else {
                     println!("{} witness comparison failed (split_view={}, invalid={})", paint(Ink::Rubric, "✕"), d["split_view"], d["invalid"]);
@@ -1900,13 +1939,22 @@ fn witness_command(op: &Op, client: &mut Client) -> i32 {
                         println!("  #{} {} ({}) vs {} ({})", c["seq"], c["a"], c["hash_a"], c["b"], c["hash_b"]);
                     }
                 }
-            })
+            });
+            if code != 0 {
+                code
+            } else if no_witnesses {
+                13
+            } else if ok {
+                0
+            } else {
+                15
+            }
         }
         (Some(peer), 1) => finish(client.call("witness_to", json!({"peer": peer})), op.json, |d| {
             println!("{} {} witnessed head #{}", paint(Ink::Verdigris, "✓"), s(d, "peer"), d["seq"])
         }),
         _ => finish(
-            Err::<Value, _>(RpcErr::invalid("use: witness PEER | witness accept NAME key K | witness list | witness drop NAME | witness tsa URL")),
+            Err::<Value, _>(RpcErr::invalid("use: witness PEER | witness accept NAME key K | witness list | witness drop NAME | witness tsa URL | witness compare [PEER...] [--live]")),
             op.json,
             |_| {},
         ),
@@ -1960,6 +2008,9 @@ fn verify_command(op: &Op, client: &mut Client) -> i32 {
             }
             for w in d["witnesses"].as_array().into_iter().flatten() {
                 println!("  witness {}: last countersigned #{} {}", s(w, "peer"), w["seq"], fmt_ago(w["time"].as_i64().unwrap_or(0)));
+                if w["valid"] == false {
+                    println!("    {} countersignature does not verify under the pinned witness key", paint(Ink::Rubric, "✕"));
+                }
                 if w["matches"] == false {
                     println!("    {} it countersigned a different epitaph #{}: this history was rewritten after it was witnessed", paint(Ink::Rubric, "✕"), w["seq"]);
                 }

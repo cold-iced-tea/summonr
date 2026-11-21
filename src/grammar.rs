@@ -629,8 +629,12 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
         Some(f) => f,
         None => return Err(cur.err(0, "no command given", "summonr help")),
     };
-    let verb =
-        canonical_verb(first).ok_or_else(|| cur.err(0, "unknown command", "summonr help"))?;
+    let verb = match first {
+        "--help" | "-h" => "help",
+        "--version" | "-V" => "version",
+        other => canonical_verb(other)
+            .ok_or_else(|| cur.err(0, "unknown command", "summonr help"))?,
+    };
     op.verb = verb.to_string();
     if verb == "rehearse" {
         op.verb = "invoke".into();
@@ -671,6 +675,15 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
         // Normalize flag names onto the keyword they spell.
         let clause = if is_flag {
             match name {
+                "json" | "wait" | "dry-run" | "replace" | "simulate" | "baseline" | "live" | "all"
+                    if attached.is_some() =>
+                {
+                    return Err(cur.err(
+                        pos,
+                        format!("flag `--{name}` does not take a value"),
+                        format!("--{name}"),
+                    ));
+                }
                 "model" => "through",
                 "set" => "at",
                 "arg" => "given",

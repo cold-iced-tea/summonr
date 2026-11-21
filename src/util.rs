@@ -282,6 +282,9 @@ pub struct Config {
     pub tls: Option<TlsConfig>,
     /// Optional OAuth 2.1 Bearer JWT authentication for `summonr mcp http`.
     pub mcp_auth: Option<McpAuthConfig>,
+    /// Additional allowed `Host` header values (host or host:port) for `summonr mcp http`.
+    #[serde(default)]
+    pub mcp_allowed_hosts: Vec<String>,
     /// The `git` and `gh` programs (default: the ones on PATH).
     pub git: Option<String>,
     pub gh: Option<String>,

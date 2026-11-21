@@ -229,11 +229,24 @@ fn projected_ritual_tool(entry: &Value) -> Option<Value> {
             properties.insert(name.clone(), prop);
         }
     }
-    let output_schema = entry
+    let result_schema = entry
         .get("output_schema")
         .filter(|s| s.is_object())
         .cloned()
         .unwrap_or_else(|| json!({"type": "object"}));
+    let output_schema = json!({
+        "type": "object",
+        "properties": {
+            "run_id": {"type": "string"},
+            "ritual": {"type": "string"},
+            "version": {"type": "integer"},
+            "hash": {"type": "string"},
+            "state": {"type": "string"},
+            "result": result_schema,
+        },
+        "required": ["run_id", "ritual", "state"],
+        "additionalProperties": true,
+    });
     Some(json!({
         "name": tool_name,
         "description": desc,
@@ -804,10 +817,20 @@ pub fn serve_lines<R: BufRead>(link: &LinkFactory, input: R, out: Shared) -> i32
 /// The secret path segment that stands in for a credential. Clients that can
 /// only be given a URL (no custom headers) can still be kept out.
 pub fn token(paths: &Paths) -> Result<String, String> {
+    use std::os::unix::fs::PermissionsExt;
     let file = paths.config.join("mcp_token");
-    if let Ok(t) = std::fs::read_to_string(&file) {
-        if t.trim().len() >= 32 {
-            return Ok(t.trim().to_string());
+    if let Ok(meta) = std::fs::metadata(&file) {
+        if meta.permissions().mode() & 0o077 != 0 {
+            return Err(format!(
+                "MCP token file {} is readable by other users; run `chmod 600 {}`",
+                file.display(),
+                file.display()
+            ));
+        }
+        if let Ok(t) = std::fs::read_to_string(&file) {
+            if t.trim().len() >= 32 {
+                return Ok(t.trim().to_string());
+            }
         }
     }
     let mut bytes = [0u8; 16];
@@ -983,6 +1006,51 @@ fn verify_bearer_jwt(
     Ok(())
 }
 
+fn host_allowed(
+    host: &str,
+    local: Option<std::net::SocketAddr>,
+    auth: Option<&crate::util::McpAuthConfig>,
+    allowed_hosts: &[String],
+) -> bool {
+    let h = host.trim().to_ascii_lowercase();
+    if h.is_empty() {
+        return false;
+    }
+    let strip_port = |s: &str| -> String {
+        if let Some(rest) = s.strip_prefix('[') {
+            rest.split(']').next().unwrap_or(s).to_string()
+        } else {
+            s.split(':').next().unwrap_or(s).to_string()
+        }
+    };
+    let h_bare = strip_port(&h);
+    if let Some(a) = local {
+        if h == a.to_string().to_ascii_lowercase() || h_bare == a.ip().to_string().to_ascii_lowercase() {
+            return true;
+        }
+        if a.ip().is_loopback()
+            && matches!(h_bare.as_str(), "localhost" | "127.0.0.1" | "::1")
+        {
+            return true;
+        }
+    }
+    if let Some(cfg) = auth {
+        if let Ok(u) = url::Url::parse(&cfg.audience) {
+            if let Some(aud_host) = u.host_str() {
+                let aud_bare = aud_host.trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
+                if h_bare == aud_bare {
+                    return true;
+                }
+            }
+        }
+    }
+    allowed_hosts.iter().any(|entry| {
+        let e = entry.trim().to_ascii_lowercase();
+        !e.is_empty() && (h == e || h_bare == strip_port(&e))
+    })
+}
+
+#[cfg(test)]
 fn serve_connection(
     stream: crate::tls::NetStream,
     local: Option<std::net::SocketAddr>,
@@ -990,22 +1058,44 @@ fn serve_connection(
     path: String,
     auth: Option<std::sync::Arc<crate::util::McpAuthConfig>>,
 ) {
-    serve_connection_with_deadline(
+    serve_connection_with_hosts(
         stream,
         local,
         link,
         path,
         auth,
+        std::sync::Arc::new(Vec::new()),
         crate::listen::REQUEST_DEADLINE,
     );
 }
 
+#[cfg(test)]
 fn serve_connection_with_deadline(
     stream: crate::tls::NetStream,
     local: Option<std::net::SocketAddr>,
     link: LinkFactory,
     path: String,
     auth: Option<std::sync::Arc<crate::util::McpAuthConfig>>,
+    request_deadline: Duration,
+) {
+    serve_connection_with_hosts(
+        stream,
+        local,
+        link,
+        path,
+        auth,
+        std::sync::Arc::new(Vec::new()),
+        request_deadline,
+    );
+}
+
+fn serve_connection_with_hosts(
+    stream: crate::tls::NetStream,
+    local: Option<std::net::SocketAddr>,
+    link: LinkFactory,
+    path: String,
+    auth: Option<std::sync::Arc<crate::util::McpAuthConfig>>,
+    allowed_hosts: std::sync::Arc<Vec<String>>,
     request_deadline: Duration,
 ) {
     let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
@@ -1065,13 +1155,7 @@ fn serve_connection_with_deadline(
                     }
                     "transfer-encoding" => invalid = true,
                     "host" => {
-                        let host = v.trim();
-                        host_ok = local.is_some_and(|a| {
-                            host == a.to_string()
-                                || (a.ip().is_loopback()
-                                    && (host == format!("localhost:{}", a.port())
-                                        || host == format!("127.0.0.1:{}", a.port())))
-                        });
+                        host_ok = host_allowed(v, local, auth.as_deref(), &allowed_hosts);
                     }
                     // Refuse browser-origin requests. Absence of Origin is not authentication.
                     "origin" => browser = true,
@@ -1086,10 +1170,15 @@ fn serve_connection_with_deadline(
             }
         }
         if invalid || !host_ok {
+            let body = if !host_ok {
+                b"{\"error\":\"invalid Host header\"}" as &[u8]
+            } else {
+                b"{\"error\":\"bad request\"}"
+            };
             let _ = respond(
                 &mut reader.get_mut().stream,
                 "400 Bad Request",
-                b"{}",
+                body,
                 "Connection: close\r\n",
             );
             return;
@@ -1238,6 +1327,7 @@ pub fn http(paths: &Paths, addr: &str) -> i32 {
         }
     };
     let auth = cfg.mcp_auth.map(std::sync::Arc::new);
+    let allowed_hosts = std::sync::Arc::new(cfg.mcp_allowed_hosts);
     let tls = match cfg.tls {
         Some(ref t) => match crate::tls::load_server_config(&t.cert, &t.key) {
             Ok(sc) => Some(sc),
@@ -1285,10 +1375,11 @@ pub fn http(paths: &Paths, addr: &str) -> i32 {
         let Some(permit) = limiter.try_acquire(peer.ip()) else {
             continue;
         };
-        let (link, path, auth, tls) = (
+        let (link, path, auth, allowed_hosts, tls) = (
             crate::link::factory(paths, None, None).expect("an unsigned link always builds"),
             path.clone(),
             auth.clone(),
+            allowed_hosts.clone(),
             tls.clone(),
         );
         std::thread::spawn(move || {
@@ -1297,7 +1388,15 @@ pub fn http(paths: &Paths, addr: &str) -> i32 {
             let _ = stream.set_write_timeout(Some(crate::listen::REQUEST_DEADLINE));
             let local = stream.local_addr().ok();
             if let Ok(net) = crate::tls::NetStream::wrap(stream, tls.as_ref()) {
-                serve_connection(net, local, link, path, auth);
+                serve_connection_with_hosts(
+                    net,
+                    local,
+                    link,
+                    path,
+                    auth,
+                    allowed_hosts,
+                    crate::listen::REQUEST_DEADLINE,
+                );
             }
         });
     }
@@ -1321,6 +1420,19 @@ mod tests {
 
     #[test]
     fn projected_tool_maps_object() {
+        let entry = json!({"ritual": "check-quote", "description": "", "input_decls": {"delivery": {"type": "object"}}, "output_schema": {"type": "object", "required": ["ok"], "properties": {"ok": {"type": "boolean"}}}});
+        let tool = projected_ritual_tool(&entry).unwrap();
+        assert_eq!(tool["outputSchema"]["properties"]["result"]["required"], json!(["ok"]));
+        assert_eq!(tool["outputSchema"]["required"], json!(["run_id", "ritual", "state"]));
+
+        let local: std::net::SocketAddr = "127.0.0.1:7733".parse().unwrap();
+        assert!(host_allowed("localhost", Some(local), None, &[]));
+        assert!(host_allowed("lab.local:7733", Some(local), None, &["lab.local".into()]));
+        assert!(!host_allowed("evil.example", Some(local), None, &["lab.local".into()]));
+    }
+
+    #[test]
+    fn projected_tool_maps_object_input_schema() {
         let entry = json!({"ritual": "check-quote", "description": "", "input_decls": {"delivery": {"type": "object"}}});
         let tool = projected_ritual_tool(&entry).unwrap();
         assert_eq!(tool["inputSchema"]["properties"]["delivery"]["type"], "object");

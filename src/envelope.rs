@@ -163,9 +163,10 @@ pub fn open_request(
     if p.audience != audience {
         return Err(Refusal::WrongAudience);
     }
-    let by_ms = now_ms - p.ts;
-    if by_ms.abs() > WINDOW_MS {
-        return Err(Refusal::ClockSkew { by_ms });
+    if now_ms.abs_diff(p.ts) > WINDOW_MS as u64 {
+        return Err(Refusal::ClockSkew {
+            by_ms: now_ms.saturating_sub(p.ts),
+        });
     }
     if p.nonce.len() != 32 || !p.nonce.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(Refusal::Malformed);

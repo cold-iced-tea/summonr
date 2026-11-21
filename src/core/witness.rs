@@ -613,8 +613,10 @@ pub fn compare_witness_records(records: &[WitnessRecord]) -> Value {
         }
     }
 
+    let peer_observations = records.iter().filter(|r| r.label != "local").count();
     json!({
-        "ok": conflicts.is_empty() && invalid == 0,
+        "ok": peer_observations > 0 && conflicts.is_empty() && invalid == 0,
+        "witnesses": peer_observations,
         "split_view": !conflicts.is_empty(),
         "invalid": invalid,
         "conflicts": conflicts,

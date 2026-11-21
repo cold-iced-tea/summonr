@@ -225,6 +225,11 @@ impl Core {
                     "the touchstone could not answer {touchstone_errors} case(s); their correctness is unknown"
                 ));
                 "inconclusive"
+            } else if failed > 0 {
+                reasons.push(format!(
+                    "{failed} of {n} case(s) failed to run; check backend availability"
+                ));
+                "inconclusive"
             } else if base["fingerprint"].get("sites").is_none() {
                 reasons.push(
                     "the baseline predates fingerprints that cover every model site; re-record it"
