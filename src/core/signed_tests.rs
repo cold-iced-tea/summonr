@@ -181,7 +181,7 @@ fn refusal_is_generic_and_logged() {
     let h = home();
     let stranger = Agent { key: crate::keys::generate() };
     let e = signed(&h, &stranger, "rituals", json!({})).unwrap_err();
-    assert_eq!((e.code.as_str(), e.message.as_str(), e.exit), ("not_authenticated", "request not authenticated", 4));
+    assert_eq!((e.code.as_str(), e.message.as_str(), e.exit), ("not_authenticated", crate::envelope::UNBOUND_REFUSAL, 4));
     assert!(h.core.last_refusal().unwrap().contains("unknown"), "{:?}", h.core.last_refusal());
 }
 
@@ -425,4 +425,25 @@ fn a_familiar_compile_sees_only_its_allowed_rituals() {
     );
     // The owner still compiles against the whole grimoire.
     assert!(h.call("compile", calling("hidden")).is_ok());
+}
+
+#[test]
+fn a_refusal_never_claims_to_answer_an_unverified_request() {
+    // A replayed copy of a frame that ran is refused. The refusal must not be
+    // bound to that frame's nonce, or anyone on the path could hand the
+    // sender an authentic "not authenticated" for a request that ran.
+    let h = home();
+    let a = agent(&h, "alpha", &["total-receipt"]);
+    let nonce = new_nonce();
+    let frame = seal_request(&a.key, &h.core.key.public().id(), "rituals", &json!({}), now_ms(), &nonce);
+    assert!(open_reply(&h.core.handle_signed(&frame), &h.core.key.public(), &nonce).unwrap().is_ok());
+    let refusal = h.core.handle_signed(&frame);
+    let payload: Value = serde_json::from_slice(
+        &base64::Engine::decode(&base64::engine::general_purpose::STANDARD, refusal["signed"]["payload"].as_str().unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert_ne!(payload["in_reply_to"], json!(nonce), "{payload}");
+    let e = open_reply(&refusal, &h.core.key.public(), &nonce).unwrap().unwrap_err();
+    assert_eq!(e.code, "not_authenticated");
+    assert!(e.message.contains("cannot say"), "{}", e.message);
 }

@@ -134,15 +134,6 @@ fn frame_of(frame: &Value) -> Option<(Frame, Vec<u8>, Vec<u8>)> {
     Some((f, payload, sig))
 }
 
-/// The nonce a frame claims, read WITHOUT verification, only so a refusal's
-/// reply can name the request it answers.
-pub fn claimed_nonce(frame: &Value) -> String {
-    frame_of(frame)
-        .and_then(|(_, payload, _)| serde_json::from_slice::<Value>(&payload).ok())
-        .and_then(|v| v["nonce"].as_str().map(String::from))
-        .unwrap_or_default()
-}
-
 /// The key id a frame claims, read WITHOUT verification, for the owner's log.
 pub fn claimed_key(frame: &Value) -> String {
     frame["signed"]["key"].as_str().unwrap_or("").chars().take(64).collect()
@@ -194,6 +185,21 @@ pub fn seal_reply(core: &Keypair, in_reply_to: &str, outcome: &Result<Value, Rpc
     wrap(core, REPLY_DOMAIN, &serde_json::to_vec(&payload).expect("JSON values serialize"))
 }
 
+/// The core's answer to a frame it could not verify. It names no request:
+/// the frame's nonce is unverified, and a copy of a frame that already ran is
+/// refused too, so a refusal bound to that nonce would let anyone on the path
+/// tell the sender "not authenticated" about a request that ran.
+pub fn seal_refusal(core: &Keypair) -> Value {
+    let generic = RpcErr::new("not_authenticated", 4, "request not authenticated");
+    seal_reply(core, "", &Err(generic))
+}
+
+/// What a sender learns from a refusal: some frame was refused, not
+/// necessarily this one.
+pub const UNBOUND_REFUSAL: &str = "the core refused a request it could not verify (unknown or revoked key, \
+clock skew, bad signature or a replayed copy); it cannot say which request, so if this one may have \
+run, check its history before retrying";
+
 /// Verify a reply against the pinned core key and the request's nonce. The
 /// outer `Err` means the reply itself cannot be trusted.
 pub fn open_reply(frame: &Value, core: &PublicKey, expected_nonce: &str) -> Result<Result<Value, RpcErr>, String> {
@@ -204,6 +210,9 @@ pub fn open_reply(frame: &Value, core: &PublicKey, expected_nonce: &str) -> Resu
     let p: ReplyPayload = serde_json::from_slice(&payload).map_err(|_| "malformed reply payload")?;
     if p.purpose != REPLY_PURPOSE || p.core != core.id() {
         return Err("reply has the wrong purpose or core".into());
+    }
+    if p.in_reply_to.is_empty() && p.result.is_none() && p.error.is_some() {
+        return Ok(Err(RpcErr::new("not_authenticated", 4, UNBOUND_REFUSAL)));
     }
     if p.in_reply_to != expected_nonce {
         return Err("reply answers a different request".into());
@@ -366,14 +375,6 @@ mod tests {
         let mut used = vec![];
         open(&w, &frame, NOW, &mut used).unwrap();
         assert_eq!(open(&w, &frame, NOW + 1, &mut used).unwrap_err(), Refusal::Replayed);
-    }
-
-    #[test]
-    fn claimed_nonce_is_read_without_trusting_it() {
-        let w = world();
-        let n = new_nonce();
-        assert_eq!(claimed_nonce(&request(&w, NOW, &n)), n);
-        assert_eq!(claimed_nonce(&json!({"signed": {}})), "");
     }
 
     #[test]

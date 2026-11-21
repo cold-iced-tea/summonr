@@ -87,8 +87,9 @@ impl Core {
             Err(refusal) => refusal,
         };
         self.refused(&outcome, &envelope::claimed_key(frame));
-        let generic = RpcErr::new("not_authenticated", 4, "request not authenticated");
-        envelope::seal_reply(&self.key, &envelope::claimed_nonce(frame), &Err(generic))
+        // Bound to no request: the nonce was not verified, and a copy of a
+        // frame that already ran is refused too.
+        envelope::seal_refusal(&self.key)
     }
 
     fn refused(&self, r: &Refusal, claimed: &str) {
