@@ -182,7 +182,7 @@ impl Core {
                 }
                 self.dispatch(method, params)
             }
-            "compile" => self.dispatch(method, params),
+            "compile" => self.compile_as(params, Some(allowed)),
             "fence_list" => {
                 let all = self.dispatch("fence_list", params)?;
                 Ok(self.filter_owned_by_summon(caller, all))
@@ -192,7 +192,7 @@ impl Core {
                 if !allowed.contains(&name) {
                     return Err(unknown_ritual(&name));
                 }
-                self.dispatch(method, params)
+                self.drill_inline_as(params, Some((caller, allowed)))
             }
             "rehearse" | "invoke" => {
                 let target = params["target"].as_str().unwrap_or("").to_string();

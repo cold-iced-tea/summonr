@@ -351,3 +351,78 @@ fn signed_fence_list_isolates_familiars() {
     let alpha_cross = signed(&h, &alpha, "fence_list", json!({"summon": b_id})).unwrap();
     assert_eq!(alpha_cross.as_array().unwrap().len(), 0, "{alpha_cross}");
 }
+
+/// `guarded` (allowed) echoes a user-only input; `hidden` (not allowed)
+/// returns a secret, and is fit to be a touchstone for `guarded`.
+fn drill_home() -> (Home, Agent) {
+    let h = home();
+    h.inscribe_def(
+        json!({"ritual": "guarded",
+               "inputs": {"scope": {"type": "string", "default": "public", "user_only": true}},
+               "steps": [{"id": "s", "operation": "data.trim", "arguments": {"text": "${inputs.scope}"}}],
+               "reagents": {"data": {"select": ["trim"]}},
+               "return": {"scope": "${steps.s.output}"}}),
+        false,
+    );
+    h.inscribe_def(
+        json!({"ritual": "hidden",
+               "inputs": {"scope": {"type": "string"}},
+               "steps": [{"id": "s", "operation": "data.trim", "arguments": {"text": "owner-secret-42"}}],
+               "reagents": {"data": {"select": ["trim"]}},
+               "return": {"scope": "${steps.s.output}"}}),
+        false,
+    );
+    let a = agent(&h, "alpha", &["guarded"]);
+    (h, a)
+}
+
+fn drill_case(inputs: Value) -> Value {
+    json!({"drill": "d", "ritual": "guarded",
+           "cases": [{"id": "c1", "inputs": inputs, "expect": {"outcome": "returned"}}]})
+}
+
+#[test]
+fn a_familiar_drill_is_its_own_run_and_keeps_user_only_inputs() {
+    let (h, a) = drill_home();
+    let e = signed(&h, &a, "drill_inline", json!({"ritual": "guarded", "cases": drill_case(json!({"scope": "private"}))}));
+    let msg = format!("{e:?}");
+    assert!(msg.contains("only the user can change"), "{msg}");
+    let ok = signed(&h, &a, "drill_inline", json!({"ritual": "guarded", "cases": drill_case(json!({}))})).unwrap();
+    assert_eq!(ok["passed"], 1, "{ok}");
+    // The drill's run is the familiar's, not the owner's.
+    let owner: Option<String> = h.core.db.lock().unwrap()
+        .query_row("SELECT familiar FROM summons ORDER BY rowid DESC LIMIT 1", [], |r| r.get(0)).unwrap();
+    assert_eq!(owner.as_deref(), Some("familiar:alpha"));
+}
+
+#[test]
+fn a_familiar_drill_cannot_pick_a_version_or_a_hidden_touchstone() {
+    let (h, a) = drill_home();
+    let e = signed(&h, &a, "drill_inline", json!({"ritual": "guarded", "version": 1, "cases": drill_case(json!({}))})).unwrap_err();
+    assert_eq!(e.code, "not_authorized", "{}", e.message);
+    let mut cases = drill_case(json!({}));
+    cases["touchstone"] = json!("hidden");
+    cases["cases"][0]["expect"] = json!({"outcome": "returned"});
+    let e = signed(&h, &a, "drill_inline", json!({"ritual": "guarded", "cases": cases})).unwrap_err();
+    assert_eq!(e.code, "not_found", "{}", e.message);
+    assert!(!e.message.contains("owner-secret"), "{}", e.message);
+}
+
+#[test]
+fn a_familiar_compile_sees_only_its_allowed_rituals() {
+    let (h, a) = drill_home();
+    let calling = |name: &str| {
+        json!({"definition": {"ritual": "probe",
+            "steps": [{"id": "x", "ritual": name, "arguments": {"scope": "a"}}],
+            "return": {"v": "${steps.x.output}"}}})
+    };
+    let hidden = signed(&h, &a, "compile", calling("hidden")).unwrap_err();
+    let missing = signed(&h, &a, "compile", calling("nosuch")).unwrap_err();
+    assert_eq!(
+        hidden.message.replace("hidden", "NAME"),
+        missing.message.replace("nosuch", "NAME"),
+        "a hidden ritual answers like a missing one"
+    );
+    // The owner still compiles against the whole grimoire.
+    assert!(h.call("compile", calling("hidden")).is_ok());
+}

@@ -640,7 +640,18 @@ impl Core {
     }
 
     fn compile(&self, p: Value) -> Result<Value, RpcErr> {
+        self.compile_as(p, None)
+    }
+
+    /// Compile an inline definition. With `visible`, `ritual:` steps resolve
+    /// only against those rituals, and any other name answers as missing.
+    pub(crate) fn compile_as(&self, p: Value, visible: Option<&[String]>) -> Result<Value, RpcErr> {
         let p: requests::Compile = decode(p)?;
+        let all = self.resolver();
+        let resolver = |n: &str, v: Option<u32>| match visible {
+            Some(names) if !names.iter().any(|a| a == n) => None,
+            _ => all(n, v),
+        };
         let mut def: Ritual = match p.definition {
             Value::String(s) => ritual::parse_file(&s).map_err(RpcErr::invalid)?,
             other => serde_json::from_value(other).map_err(|e| RpcErr::invalid(e.to_string()))?,
@@ -650,10 +661,10 @@ impl Core {
                 "inline compile_ritual cannot read host binding files; use `summonr compile FILE` locally",
             ));
         }
-        ritual::prepare(&mut def, Path::new("."), &self.resolver()).map_err(RpcErr::invalid)?;
+        ritual::prepare(&mut def, Path::new("."), &resolver).map_err(RpcErr::invalid)?;
         let (effects, return_types) = ritual::validate_with_return_types_cfg(
             &def,
-            &self.resolver(),
+            &resolver,
             &self.cfg,
             self.cfg.max_depth(),
         )

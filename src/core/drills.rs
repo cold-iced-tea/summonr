@@ -19,11 +19,29 @@ impl Core {
         let file =
             drill::parse(&text).map_err(|e| RpcErr::invalid(format!("{}: {e}", path.display())))?;
         let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
-        self.run_drill_file(&p.ritual, version, &file, &path.display().to_string(), Some(&dir))
+        self.run_drill_file(&p.ritual, version, &file, &path.display().to_string(), Some(&dir), None)
     }
 
     pub(super) fn drill_inline(self: &Arc<Self>, p: Value) -> Result<Value, RpcErr> {
+        self.drill_inline_as(p, None)
+    }
+
+    /// An inline drill. A familiar's (`who` = its caller and allowed
+    /// rituals) runs as that familiar: user-only inputs stay the owner's, the
+    /// version is the current one, and a touchstone must be allowed too.
+    pub(super) fn drill_inline_as(
+        self: &Arc<Self>,
+        p: Value,
+        who: Option<(&str, &[String])>,
+    ) -> Result<Value, RpcErr> {
         let p: requests::DrillInline = decode(p)?;
+        if who.is_some() && p.version.is_some() {
+            return Err(RpcErr::new(
+                "not_authorized",
+                4,
+                "the ritual version is chosen by the owner of this core, not by a calling agent",
+            ));
+        }
         let (version, _, _) = self.load_ritual(&p.ritual, p.version)?.ok_or_else(|| {
             RpcErr::not_found(format!(
                 "no ritual `{}` in the grimoire; drills run against saved rituals",
@@ -40,7 +58,7 @@ impl Core {
                 c.id
             )));
         }
-        self.run_drill_file(&p.ritual, version, &file, "inline drill", None)
+        self.run_drill_file(&p.ritual, version, &file, "inline drill", None, who)
     }
 
     fn run_drill_file(
@@ -50,6 +68,7 @@ impl Core {
         file: &drill::DrillFile,
         label: &str,
         dir: Option<&Path>,
+        who: Option<(&str, &[String])>,
     ) -> Result<Value, RpcErr> {
         if file.ritual != name {
             return Err(RpcErr::invalid(format!(
@@ -58,6 +77,10 @@ impl Core {
             )));
         }
         let touchstone = match &file.touchstone {
+            Some(t) if who.is_some_and(|(_, allowed)| !allowed.contains(t)) => {
+                // The same answer as for a ritual that does not exist.
+                return Err(RpcErr::not_found(format!("no touchstone `{t}` in the grimoire")));
+            }
             Some(t) => {
                 if let Some(c) = file.cases.iter().find(|c| c.expect.result.is_some()) {
                     return Err(RpcErr::invalid(format!(
@@ -79,6 +102,7 @@ impl Core {
                 version: Some(version),
                 args: case.inputs.clone(),
                 scripted: true,
+                caller: who.map(|(c, _)| c.to_string()).unwrap_or_default(),
                 ..Default::default()
             };
             let mut r = self.resolve(&spec).map_err(|mut e| {
