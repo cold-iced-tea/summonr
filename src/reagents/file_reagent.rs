@@ -61,7 +61,7 @@ const TOOLS: &[ToolSpec] = &[
         description: "Delete one regular file beneath a granted directory; no symlinks",
     },
 ];
-pub fn validate_root(root: &str) -> Result<(), String> {
+pub(crate) fn validate_root(root: &str) -> Result<(), String> {
     if !Path::new(root).is_absolute()
         || root.contains('\0')
         || root.split('/').any(|x| x == ".." || x == ".")
@@ -70,7 +70,7 @@ pub fn validate_root(root: &str) -> Result<(), String> {
     }
     Ok(())
 }
-fn segments(path: &str) -> Result<Vec<&str>, Fail> {
+pub(crate) fn segments(path: &str) -> Result<Vec<&str>, Fail> {
     if path.contains('\0')
         || Path::new(path).is_absolute()
         || path.split('/').any(|x| x == ".." || x == ".")
@@ -81,7 +81,7 @@ fn segments(path: &str) -> Result<Vec<&str>, Fail> {
     }
     Ok(path.split('/').filter(|s| !s.is_empty()).collect())
 }
-fn open_at(parent: &File, name: &str, directory: bool) -> Result<File, Fail> {
+pub(crate) fn open_at(parent: &File, name: &str, directory: bool) -> Result<File, Fail> {
     let name = CString::new(name).map_err(|_| Fail::Invalid("NUL in path".into()))?;
     let flags = libc::O_RDONLY
         | libc::O_CLOEXEC
@@ -112,7 +112,7 @@ fn open_root_dir(root: &str) -> Result<File, Fail> {
     }
     Ok(fd)
 }
-fn open_parent_and_leaf<'a>(root: &str, path: &'a str) -> Result<(File, &'a str), Fail> {
+pub(crate) fn open_parent_and_leaf<'a>(root: &str, path: &'a str) -> Result<(File, &'a str), Fail> {
     let mut fd = open_root_dir(root)?;
     let parts = segments(path)?;
     let (&leaf, parents) = parts
@@ -134,7 +134,7 @@ fn open(root: &str, path: &str, directory: bool) -> Result<File, Fail> {
     }
     Ok(fd)
 }
-fn read_bounded_bytes(file: &mut File, max: usize, auth: Option<&Authority>) -> Result<Vec<u8>, Fail> {
+pub(crate) fn read_bounded_bytes(file: &mut File, max: usize, auth: Option<&Authority>) -> Result<Vec<u8>, Fail> {
     if !file
         .metadata()
         .map_err(|e| Fail::Failed(e.to_string()))?
@@ -219,7 +219,7 @@ pub fn target_digest(args: &Value) -> Result<Option<String>, Fail> {
     }
 }
 
-fn fstat_fd(f: &File, leaf: &str) -> Result<libc::stat, Fail> {
+pub(crate) fn fstat_fd(f: &File, leaf: &str) -> Result<libc::stat, Fail> {
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
     if unsafe { libc::fstat(f.as_raw_fd(), &mut st) } < 0 {
         return Err(Fail::Failed(format!(

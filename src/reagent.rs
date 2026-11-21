@@ -480,6 +480,7 @@ static REAGENTS: &[&dyn Reagent] = &[
     &crate::trial_reagent::Trial,
     &crate::cmd_reagent::Cmd,
     &crate::http_reagent::Http,
+    &crate::sight_reagent::Sight,
 ];
 fn reagent(name: &str) -> Option<&'static dyn Reagent> {
     REAGENTS.iter().copied().find(|r| r.name() == name)
@@ -1253,7 +1254,7 @@ pub fn validate_grant_scope(
     into: &BTreeMap<String, String>,
 ) -> Result<(), String> {
     let key = match reagent {
-        "file" => "root",
+        "file" | "sight" => "root",
         "http" => "origin",
         _ if self::reagent(reagent).is_none() => {
             // An MCP reagent: nothing maps a scope key to its arguments.
@@ -1273,7 +1274,7 @@ pub fn validate_grant_scope(
         ));
     }
     match reagent {
-        "file" => crate::file_reagent::validate_root(&on[key]),
+        "file" | "sight" => crate::file_reagent::validate_root(&on[key]),
         _ => crate::http_reagent::validate_origin(&on[key]),
     }
 }
@@ -1647,4 +1648,16 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+
+    #[test]
+    fn reagent_grant_scope_for_sight_is_root() {
+        let m = |k: &str, v: &str| BTreeMap::from([(k.to_string(), v.to_string())]);
+        let none = BTreeMap::new();
+        assert!(validate_grant_scope("sight", &none, &none).is_err());
+        assert!(validate_grant_scope("sight", &m("root", "pictures"), &none).is_err());
+        assert!(validate_grant_scope("sight", &m("root", "/a/../b"), &none).is_err());
+        assert!(validate_grant_scope("sight", &m("origin", "/a"), &none).is_err());
+        assert!(validate_grant_scope("sight", &m("root", "/a"), &m("root", "/b")).is_err());
+        assert!(validate_grant_scope("sight", &m("root", "/home/u/pics"), &none).is_ok());
+    }
 }

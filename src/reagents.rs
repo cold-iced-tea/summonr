@@ -4,4 +4,5 @@ pub(crate) mod gh_reagent;
 pub(crate) mod git_reagent;
 pub(crate) mod http_reagent;
 pub(crate) mod mcp_reagent;
+pub(crate) mod sight_reagent;
 pub(crate) mod trial_reagent;
