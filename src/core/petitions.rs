@@ -136,60 +136,68 @@ impl Core {
         }
         let mut waiting = Vec::new();
         let mut ready = Vec::new();
-        let mut to_mark_part = Vec::new();
-        for (pet, part) in chosen.into_iter().zip(parts) {
-            let Some(part) = part else {
-                ready.push(pet);
-                continue;
-            };
-            let column = if by_caller { "caller_decision" } else { "callee_decision" };
-            to_mark_part.push((pet.id.clone(), column));
-            let other_permitted = if by_caller { !part.needs_callee || part.callee_decision.as_deref() == Some("permit") } else { !part.needs_caller || part.caller_decision.as_deref() == Some("permit") };
-            if permit && !other_permitted {
-                waiting.push(pet.id.clone());
-            } else {
-                ready.push(pet);
-            }
-        }
-        // A caller-side record of a held action under a pact: deciding it
-        // signs the decision and sends it to the callee.
-        let (relayed, chosen): (Vec<Petition>, Vec<Petition>) = ready.into_iter().partition(|pet| pet.operation == "pact.decide" || pet.operation == "pact.accept");
-        // Atomically record part decisions and claim local petitions as
-        // `executing` before performing any relayed or local side effects.
+        let mut relayed = Vec::new();
+        // Atomically record part decisions, re-read the other party's decision
+        // inside the same transaction (eliminating the concurrent double-permit
+        // race), and claim ready local petitions as `executing`.
         {
             let mut db = self.db.lock().unwrap();
             let tx = db
                 .transaction()
                 .map_err(|e| RpcErr::new("storage_failed", 11, e.to_string()))?;
-            for (pid, column) in &to_mark_part {
-                let n = tx
-                    .execute(
-                        &format!("UPDATE petitions SET {column}=?2 WHERE id=?1 AND status='pending'"),
-                        params![pid, if permit { "permit" } else { "deny" }],
-                    )
-                    .map_err(|e| RpcErr::new("storage_failed", 11, e.to_string()))?;
-                if n != 1 {
-                    return Err(RpcErr::conflict(
-                        "petition already claimed; nothing was decided",
-                    ));
+            for (pet, part) in chosen.into_iter().zip(parts) {
+                let is_relayed = pet.operation == "pact.decide" || pet.operation == "pact.accept";
+                if let Some(_part) = part {
+                    let column = if by_caller { "caller_decision" } else { "callee_decision" };
+                    let n = tx
+                        .execute(
+                            &format!("UPDATE petitions SET {column}=?2 WHERE id=?1 AND status='pending'"),
+                            params![pet.id.as_str(), if permit { "permit" } else { "deny" }],
+                        )
+                        .map_err(|e| RpcErr::new("storage_failed", 11, e.to_string()))?;
+                    if n != 1 {
+                        return Err(RpcErr::conflict(
+                            "petition already claimed; nothing was decided",
+                        ));
+                    }
+                    let (needs_callee, needs_caller, callee_dec, caller_dec): (i64, i64, Option<String>, Option<String>) = tx
+                        .query_row(
+                            "SELECT needs_callee, needs_caller, callee_decision, caller_decision FROM petitions WHERE id=?1",
+                            params![pet.id.as_str()],
+                            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                        )
+                        .map_err(|e| RpcErr::new("storage_failed", 11, e.to_string()))?;
+                    let other_permitted = if by_caller {
+                        needs_callee == 0 || callee_dec.as_deref() == Some("permit")
+                    } else {
+                        needs_caller == 0 || caller_dec.as_deref() == Some("permit")
+                    };
+                    if permit && !other_permitted {
+                        waiting.push(pet.id.clone());
+                        continue;
+                    }
                 }
-            }
-            for pet in &chosen {
-                let n = tx
-                    .execute(
-                        "UPDATE petitions SET status='executing' WHERE id=?1 AND status='pending'",
-                        params![pet.id.as_str()],
-                    )
-                    .map_err(|e| RpcErr::new("storage_failed", 11, e.to_string()))?;
-                if n != 1 {
-                    return Err(RpcErr::conflict(
-                        "petition already claimed; nothing was decided",
-                    ));
+                if is_relayed {
+                    relayed.push(pet);
+                } else {
+                    let n = tx
+                        .execute(
+                            "UPDATE petitions SET status='executing' WHERE id=?1 AND status='pending'",
+                            params![pet.id.as_str()],
+                        )
+                        .map_err(|e| RpcErr::new("storage_failed", 11, e.to_string()))?;
+                    if n != 1 {
+                        return Err(RpcErr::conflict(
+                            "petition already claimed; nothing was decided",
+                        ));
+                    }
+                    ready.push(pet);
                 }
             }
             tx.commit()
                 .map_err(|e| RpcErr::new("storage_failed", 11, e.to_string()))?;
         }
+        let chosen = ready;
         let mut decided = Vec::new();
         for pet in relayed {
             decided.push(if pet.operation == "pact.accept" {

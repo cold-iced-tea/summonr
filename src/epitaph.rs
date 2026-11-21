@@ -85,9 +85,13 @@ pub fn merkle_root(link_hashes: &[String]) -> String {
     while layer.len() > 1 {
         let mut next = Vec::with_capacity(layer.len().div_ceil(2));
         for pair in layer.chunks(2) {
-            let l = &pair[0];
-            let r = pair.get(1).unwrap_or(l);
-            next.push(merkle_node(l, r));
+            if pair.len() == 2 {
+                next.push(merkle_node(&pair[0], &pair[1]));
+            } else {
+                // Promote an unpaired trailing node rather than duplicating it,
+                // so [a, b, c] and [a, b, c, c] never share a root.
+                next.push(pair[0].clone());
+            }
         }
         layer = next;
     }
@@ -101,21 +105,26 @@ pub fn merkle_proof(link_hashes: &[String], mut idx: usize) -> Option<Vec<Merkle
     let mut layer: Vec<String> = link_hashes.iter().map(|h| merkle_leaf(h)).collect();
     let mut proof = Vec::new();
     while layer.len() > 1 {
-        let sib_idx = if idx.is_multiple_of(2) {
-            (idx + 1).min(layer.len() - 1)
+        if idx.is_multiple_of(2) {
+            if idx + 1 < layer.len() {
+                proof.push(MerkleStep {
+                    side: "right".into(),
+                    hash: layer[idx + 1].clone(),
+                });
+            }
         } else {
-            idx - 1
-        };
-        let side = if idx.is_multiple_of(2) { "right" } else { "left" };
-        proof.push(MerkleStep {
-            side: side.into(),
-            hash: layer[sib_idx].clone(),
-        });
+            proof.push(MerkleStep {
+                side: "left".into(),
+                hash: layer[idx - 1].clone(),
+            });
+        }
         let mut next = Vec::with_capacity(layer.len().div_ceil(2));
         for pair in layer.chunks(2) {
-            let l = &pair[0];
-            let r = pair.get(1).unwrap_or(l);
-            next.push(merkle_node(l, r));
+            if pair.len() == 2 {
+                next.push(merkle_node(&pair[0], &pair[1]));
+            } else {
+                next.push(pair[0].clone());
+            }
         }
         layer = next;
         idx /= 2;

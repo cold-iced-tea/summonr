@@ -165,12 +165,23 @@ impl Core {
             RpcErr::conflict(format!("offered history does not extend the witnessed head (#{held_seq}): {why}"))
         };
         let stored = |h: &(i64, String, i64, String)| json!({"seq": h.0, "hash": h.1, "time": h.2, "sig": h.3});
+        // First verify every offered link's signature under the ward key.
+        // Unsigned or malformed links are not evidence of equivocation and
+        // must never be recorded as forks.
+        let mut parsed_links = Vec::with_capacity(s.links.len());
+        for l in &s.links {
+            let link = epitaph::check_link(&l.link, &l.sig, key).map_err(RpcErr::invalid)?;
+            parsed_links.push((l, link));
+        }
         if held.is_none() {
             // First visit: the witness vouches from the head it is first shown.
             if s.links.len() != 1 {
                 return Err(RpcErr::invalid("a first visit sends only the current head"));
             }
         } else if s.from.seq > held_seq || (s.from.seq == held_seq && s.from.hash != held_hash) {
+            if parsed_links.is_empty() {
+                return Err(RpcErr::invalid("the stated starting point is not part of the witnessed history"));
+            }
             return Err(fork("the stated starting point is not part of the witnessed history"));
         }
         // Check the offered links in order from the stated starting point.
@@ -179,11 +190,10 @@ impl Core {
             Some(_) => (s.from.seq, Some(s.from.hash.clone())),
         };
         let mut passed_held = held.is_none() || s.from.seq == held_seq;
-        for l in &s.links {
-            let link = epitaph::check_link(&l.link, &l.sig, key).map_err(|e| fork(&e))?;
+        for (l, link) in parsed_links {
             let seq = link["seq"].as_i64().unwrap_or(-1);
             if seq != prev_seq + 1 || seq != l.seq {
-                return Err(fork(&format!("epitaph {} is missing or out of order", prev_seq + 1)));
+                return Err(RpcErr::invalid(format!("epitaph {} is missing or out of order", prev_seq + 1)));
             }
             if let Some(h) = &prev_hash {
                 if link["prev"].as_str() != Some(h.as_str()) {
@@ -201,7 +211,7 @@ impl Core {
             }
         }
         if !passed_held {
-            return Err(fork("the offered links stop before the witnessed head"));
+            return Err(RpcErr::invalid("the offered links stop before the witnessed head"));
         }
         // Nothing beyond what is already witnessed: repeat its countersignature.
         if let Some(h) = &held {

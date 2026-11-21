@@ -69,15 +69,40 @@ pub(super) fn append_own(tx: &rusqlite::Transaction, core: &crate::keys::Keypair
     Ok(s)
 }
 
-/// Check and store an entry the other party signed with `by`. A second,
+/// Check and store an entry signed by one of the pact's parties. A second,
 /// different entry from the same signer on the same previous entry is a
 /// fork: both are kept, the pact is frozen, and the entry is refused.
+/// A delivery carrying an invalid or mismatched epitaph also freezes the pact.
 pub(super) fn store_received(tx: &rusqlite::Transaction, id: &str, s: &Signed, by: &crate::keys::PublicKey) -> Result<StoreOutcome, RpcErr> {
-    let e = pact::open_entry(s, by).map_err(|why| RpcErr::new("not_authorized", 4, format!("pact entry refused: {why}")))?;
+    let (state, side): (String, String) = tx
+        .query_row("SELECT state, side FROM pacts WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional()
+        .map_err(sql)?
+        .ok_or_else(|| RpcErr::not_found(format!("no pact `{id}`")))?;
+    let terms = terms_of(tx, id)?;
+    // On a witness, the callee forwards caller-signed entries too; verify the
+    // entry under whichever party key (caller or callee) its `by` field names.
+    let signer = if side == "witness" {
+        let claimed = serde_json::from_str::<Value>(&s.bytes)
+            .ok()
+            .and_then(|v| v["by"].as_str().map(str::to_string))
+            .unwrap_or_default();
+        let caller_k = crate::keys::PublicKey::parse(&terms.caller).map_err(RpcErr::invalid)?;
+        let callee_k = crate::keys::PublicKey::parse(&terms.callee).map_err(RpcErr::invalid)?;
+        if claimed == caller_k.id() {
+            caller_k
+        } else if claimed == callee_k.id() {
+            callee_k
+        } else {
+            return Err(RpcErr::new("not_authorized", 4, "pact entry refused: entry is signed by neither party"));
+        }
+    } else {
+        *by
+    };
+    let e = pact::open_entry(s, &signer).map_err(|why| RpcErr::new("not_authorized", 4, format!("pact entry refused: {why}")))?;
     if e.pact != id {
         return Err(RpcErr::conflict("entry belongs to a different pact"));
     }
-    let state: String = tx.query_row("SELECT state FROM pacts WHERE id=?1", params![id], |r| r.get(0)).optional().map_err(sql)?.ok_or_else(|| RpcErr::not_found(format!("no pact `{id}`")))?;
     let stored = thread_of(tx, id)?;
     if stored.iter().any(|(_, x)| x.hash == s.hash) {
         return Ok(StoreOutcome::Duplicate);
@@ -94,7 +119,6 @@ pub(super) fn store_received(tx: &rusqlite::Transaction, id: &str, s: &Signed, b
         tx.execute("UPDATE pacts SET state='frozen' WHERE id=?1", params![id]).map_err(sql)?;
         return Err(RpcErr::conflict("this entry forks the pact's thread: the same core signed two different entries on the same previous entry; both are kept as evidence and the pact is frozen"));
     }
-    let terms = terms_of(tx, id)?;
     let thread: Vec<Entry> = stored.into_iter().map(|(e, _)| e).collect();
     if let Some(head) = thread.last() {
         if e.n != head.n + 1 || e.prev != head.hash {
@@ -102,6 +126,16 @@ pub(super) fn store_received(tx: &rusqlite::Transaction, id: &str, s: &Signed, b
         }
     }
     pact::check_next(&thread, &e, &terms).map_err(RpcErr::conflict)?;
+    // Enforce the delivery-epitaph check on every ingestion path (both pushed
+    // deliveries and polled syncs), freezing the pact on mismatch.
+    if e.kind == Kind::Deliver && (!e.data["epitaph"].is_null() || !e.data["run"].is_null() || e.data["outcome"] == "returned") {
+        let callee_k = crate::keys::PublicKey::parse(&terms.callee).map_err(RpcErr::invalid)?;
+        if let Err(why) = pact::check_delivery_epitaph(&e.data, &callee_k, &terms.ritual.hash) {
+            let problem = format!("entry {}: {why}; the pact is frozen", e.n);
+            tx.execute("UPDATE pacts SET state='frozen', problem=?2 WHERE id=?1", params![id, problem]).map_err(sql)?;
+            return Err(RpcErr::conflict(problem));
+        }
+    }
     insert(tx, id, &e, s).map_err(sql)?;
     Ok(StoreOutcome::Stored)
 }
@@ -211,6 +245,36 @@ impl Core {
                 format!("peer `{}` is no longer pinned with the key this pact names", row.peer),
             )),
         }
+    }
+
+    /// Best-effort async push of an entry to pinned witness cores only.
+    fn push_to_witnesses_async(self: &Arc<Self>, pact_id: &str, entry: Signed) {
+        let targets: Vec<String> = {
+            let db = self.db.lock().unwrap();
+            let Ok(t) = terms_of(&db, pact_id) else { return };
+            drop(db);
+            let mut peers = Vec::new();
+            for w in &t.witnesses {
+                if let Ok(wk) = crate::keys::PublicKey::parse(w) {
+                    if let Some(p) = self.peer_named_by_key(&wk) {
+                        if !peers.contains(&p) {
+                            peers.push(p);
+                        }
+                    }
+                }
+            }
+            peers
+        };
+        if targets.is_empty() {
+            return;
+        }
+        let core = self.clone();
+        let pact = pact_id.to_string();
+        std::thread::spawn(move || {
+            for peer in targets {
+                let _ = core.pact_send(&peer, "pact_post", json!({"pact": pact, "entry": entry}));
+            }
+        });
     }
 
     /// Best-effort async push of a newly signed entry to reachable counterparties
@@ -327,10 +391,26 @@ impl Core {
         };
         Ok(match outcome {
             StoreOutcome::Stored => {
-                self.on_received(pact, entry)?;
+                // Commit and reaction do not share one error channel: once the
+                // entry is stored, answer `stored` so the sender does not drop
+                // it and later fork.
+                if let Err(e) = self.on_received(pact, entry) {
+                    eprintln!("pact: reaction after storing entry on {pact} failed: {}", e.message);
+                }
+                // Forward stored caller entries from the callee to any pinned witnesses.
+                if self.pact_row(pact).ok().is_some_and(|r| r.side == "callee") {
+                    self.push_to_witnesses_async(pact, entry.clone());
+                }
                 json!({"stored": "stored"})
             }
-            StoreOutcome::Duplicate => json!({"stored": "duplicate"}),
+            StoreOutcome::Duplicate => {
+                // If a previous reaction failed or crashed after commit, retry
+                // idempotent reactions on duplicate delivery.
+                if let Err(e) = self.on_received(pact, entry) {
+                    eprintln!("pact: reaction retry on duplicate entry for {pact} failed: {}", e.message);
+                }
+                json!({"stored": "duplicate"})
+            }
             StoreOutcome::Stale { head } => {
                 let db = self.db.lock().unwrap();
                 let missing: Vec<Signed> = thread_of(&db, pact)?.into_iter().map(|(_, s)| s).collect();
@@ -364,6 +444,10 @@ impl Core {
 
     /// Entry kinds that drive calls.
     fn on_received_more(self: &Arc<Self>, pact: &str, e: &Entry) -> Result<(), RpcErr> {
+        // Witnesses record the signed thread only; they never execute calls or holds.
+        if self.pact_row(pact).ok().is_some_and(|r| r.side == "witness") {
+            return Ok(());
+        }
         match e.kind {
             Kind::Call => self.start_call(pact, e),
             Kind::Decide => self.apply_caller_decision(pact, e),
@@ -757,7 +841,7 @@ impl Core {
             self.caller_append(&row, kind, None, data)?;
         }
         let state = if agree { "agreed" } else { "declined" };
-        self.db.lock().unwrap().execute("UPDATE pacts SET state=?2 WHERE id=?1", params![row.id, state]).map_err(sql)?;
+        self.db.lock().unwrap().execute("UPDATE pacts SET state=?2 WHERE id=?1 AND state='offered'", params![row.id, state]).map_err(sql)?;
         if let (true, Some(old)) = (agree, &t.revises) {
             let old = self.pact_row(old)?;
             self.end_pact(&old, json!({"superseded_by": row.id, "reason": "superseded by a revised pact"}))?;
@@ -834,10 +918,6 @@ impl Core {
         if known == 0 {
             let mut e = pact::open_entry(s, &self.key.public()).map_err(RpcErr::invalid)?;
             e.hash = s.hash.clone();
-            let in_outbox: i64 = tx.query_row("SELECT COUNT(*) FROM pact_outbox WHERE pact=?1 AND hash=?2", params![pact, s.hash], |r| r.get(0)).map_err(sql)?;
-            if in_outbox == 0 && e.kind != Kind::Offer {
-                return Err(RpcErr::conflict("entry was not waiting in this core's outbox"));
-            }
             let terms = terms_of(&tx, pact)?;
             let thread: Vec<Entry> = thread_of(&tx, pact)?.into_iter().map(|(x, _)| x).collect();
             pact::check_next(&thread, &e, &terms).map_err(RpcErr::conflict)?;
@@ -946,25 +1026,7 @@ impl Core {
                 }
                 continue;
             }
-            let e = pact::open_entry(&s, &other).map_err(|why| RpcErr::new("not_authorized", 4, format!("pact entry refused: {why}")))?;
-            // A delivery of a run must carry that run's epitaph, signed by the
-            // callee and naming the pinned ritual; otherwise the callee is
-            // misreporting, and the pact stops here.
-            if n > head && e.kind == Kind::Deliver && (!e.data["run"].is_null() || e.data["outcome"] == "returned") {
-                let checked = pact::check_delivery_epitaph(&e.data, &other, &t.ritual.hash).and_then(|_| {
-                    let body: Value = serde_json::from_str(e.data["epitaph"]["body"].as_str().unwrap_or("")).unwrap_or_default();
-                    if body["run"] != e.data["run"] || !body["fingerprints"]["inputs"].is_string() {
-                        Err("delivery epitaph is for a different run, or fingerprints no inputs".to_string())
-                    } else {
-                        Ok(())
-                    }
-                });
-                if let Err(why) = checked {
-                    let problem = format!("entry {n}: {why}; the pact is frozen");
-                    self.db.lock().unwrap().execute("UPDATE pacts SET state='frozen', problem=?2 WHERE id=?1", params![row.id, problem]).map_err(sql)?;
-                    return Err(RpcErr::conflict(problem));
-                }
-            }
+            let _ = pact::open_entry(&s, &other).map_err(|why| RpcErr::new("not_authorized", 4, format!("pact entry refused: {why}")))?;
             self.receive(&row.id, &s, &other)?;
         }
         Ok(())
@@ -1302,15 +1364,13 @@ pub(crate) struct PactTag {
     pub expires: i64,
 }
 
-/// Who must decide a pact petition, and what each has said.
+/// Who must decide a pact petition.
 #[derive(Clone, Debug)]
 pub(crate) struct PactPart {
     pub pact: String,
     pub call: i64,
     pub needs_callee: bool,
     pub needs_caller: bool,
-    pub callee_decision: Option<String>,
-    pub caller_decision: Option<String>,
 }
 
 impl Core {
@@ -1341,20 +1401,20 @@ impl Core {
 
     pub(crate) fn pact_part(&self, petition: &str) -> Result<Option<PactPart>, RpcErr> {
         #[allow(clippy::type_complexity)]
-        let row: Option<(Option<String>, Option<i64>, bool, bool, Option<String>, Option<String>)> = self
+        let row: Option<(Option<String>, Option<i64>, bool, bool)> = self
             .db
             .lock()
             .unwrap()
             .query_row(
-                "SELECT pact, pact_call, needs_callee, needs_caller, callee_decision, caller_decision FROM petitions WHERE id=?1",
+                "SELECT pact, pact_call, needs_callee, needs_caller FROM petitions WHERE id=?1",
                 params![petition],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .optional()
             .map_err(sql)?;
         Ok(match row {
-            Some((Some(pact), Some(call), needs_callee, needs_caller, callee_decision, caller_decision)) => {
-                Some(PactPart { pact, call, needs_callee, needs_caller, callee_decision, caller_decision })
+            Some((Some(pact), Some(call), needs_callee, needs_caller)) => {
+                Some(PactPart { pact, call, needs_callee, needs_caller })
             }
             _ => None,
         })
@@ -1461,12 +1521,12 @@ impl Core {
         tx.commit().map_err(sql)
     }
 
-    /// Callee: caller holds past their deadline expire; nothing is performed.
+    /// Callee: any pending pact petition past its call deadline expires; nothing is performed.
     pub(crate) fn expire_due(&self, now: i64) {
         let due: Vec<String> = {
             let db = self.db.lock().unwrap();
             let Ok(mut q) = db.prepare(
-                "SELECT id FROM petitions WHERE pact IS NOT NULL AND status='pending' AND needs_caller=1 AND caller_decision IS NULL AND expires < ?1",
+                "SELECT id FROM petitions WHERE pact IS NOT NULL AND status='pending' AND expires IS NOT NULL AND expires < ?1",
             ) else {
                 return;
             };
@@ -1794,9 +1854,11 @@ impl Core {
                 let data = json!({"decided_by": "checks", "reason": checks["reason"], "checks": checks});
                 let kind = if accept { Kind::Accept } else { Kind::Reject };
                 let state = if accept { "accepted" } else { "rejected" };
-                self.db.lock().unwrap().execute("UPDATE pact_calls SET state=?3 WHERE pact=?1 AND call=?2", params![pact, call, state]).map_err(sql)?;
                 match self.caller_append(&row, kind, Some(call), data) {
-                    Ok(_) => Ok(()),
+                    Ok(_) => {
+                        self.db.lock().unwrap().execute("UPDATE pact_calls SET state=?3 WHERE pact=?1 AND call=?2", params![pact, call, state]).map_err(sql)?;
+                        Ok(())
+                    }
                     Err(e) if e.exit == 8 => Ok(()),
                     Err(e) => Err(e),
                 }
@@ -1908,7 +1970,7 @@ impl Core {
                 Err(e) => return Err(e),
             }
         }
-        self.db.lock().unwrap().execute("UPDATE pacts SET state=?2 WHERE id=?1", params![row.id, to]).map_err(sql)?;
+        self.db.lock().unwrap().execute("UPDATE pacts SET state=?2 WHERE id=?1 AND state IN ('offered','agreed')", params![row.id, to]).map_err(sql)?;
         Ok(())
     }
 

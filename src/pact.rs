@@ -354,18 +354,107 @@ pub fn check_next(thread: &[Entry], next: &Entry, t: &Terms) -> Result<(), Strin
     let state = if state == Some(Kind::End) && was_agreed { Some(Kind::Agree) } else { state };
     let need = |want: Side, what: &str| if side == want { Ok(()) } else { Err(format!("only the {what} may sign `{:?}`", next.kind).to_lowercase()) };
     match (state, next.kind) {
-        (None, Kind::Offer) => Ok(()),
-        (None, _) => Err("a thread starts with an offer".into()),
-        (Some(Kind::End | Kind::Decline), _) => Err("the pact has ended; nothing may follow".into()),
+        (None, Kind::Offer) => return Ok(()),
+        (None, _) => return Err("a thread starts with an offer".into()),
+        (Some(Kind::End | Kind::Decline), _) => return Err("the pact has ended; nothing may follow".into()),
         (Some(Kind::Offer), Kind::Agree | Kind::Decline) => {
-            if Some(side) == offerer { Err("the other party must agree to an offer".into()) } else { Ok(()) }
+            return if Some(side) == offerer {
+                Err("the other party must agree to an offer".into())
+            } else {
+                Ok(())
+            };
         }
-        (Some(Kind::Offer), _) => Err("nothing but agree or decline may follow an offer".into()),
-        (Some(_), Kind::Offer | Kind::Agree | Kind::Decline) => Err("the pact is already agreed".into()),
-        (Some(_), Kind::Call | Kind::Decide | Kind::Accept | Kind::Reject) => need(Side::Caller, "caller"),
-        (Some(_), Kind::Deliver | Kind::Settle) => need(Side::Callee, "callee"),
-        (Some(_), Kind::End) => Ok(()),
+        (Some(Kind::Offer), Kind::End) => return Ok(()),
+        (Some(Kind::Offer), _) => return Err("nothing but agree, decline, or end may follow an offer".into()),
+        (Some(_), Kind::Offer | Kind::Agree | Kind::Decline) => return Err("the pact is already agreed".into()),
+        (Some(_), Kind::Call | Kind::Decide | Kind::Accept | Kind::Reject) => need(Side::Caller, "caller")?,
+        (Some(_), Kind::Deliver | Kind::Settle) => need(Side::Callee, "callee")?,
+        (Some(_), Kind::End) => return Ok(()),
     }
+
+    // Per-call lifecycle rules (shared by live ingestion and offline verify).
+    let max_call = thread
+        .iter()
+        .filter(|e| e.kind == Kind::Call)
+        .filter_map(|e| e.call)
+        .max()
+        .unwrap_or(0);
+    let c = next.call.ok_or_else(|| format!("`{:?}` requires a call number", next.kind).to_lowercase())?;
+    let delivered_for = |call_n: i64| thread.iter().find(|e| e.kind == Kind::Deliver && e.call == Some(call_n));
+    let held_for = |d: &Entry| -> Vec<String> {
+        d.data["held"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|h| h["petition"].as_str().or_else(|| h.as_str()).map(str::to_string))
+            .collect()
+    };
+    match next.kind {
+        Kind::Call => {
+            if c != max_call + 1 {
+                return Err(format!("call {c} is out of order; expected {}", max_call + 1));
+            }
+        }
+        Kind::Deliver => {
+            if !thread.iter().any(|e| e.kind == Kind::Call && e.call == Some(c)) {
+                return Err(format!("deliver for unknown call {c}"));
+            }
+            if delivered_for(c).is_some() {
+                return Err(format!("call {c} was already delivered"));
+            }
+        }
+        Kind::Decide => {
+            let Some(d) = delivered_for(c) else {
+                return Err(format!("decide for call {c} before delivery"));
+            };
+            if let Some(pid) = next.data["petition"].as_str() {
+                let held = held_for(d);
+                if !held.is_empty() && !held.iter().any(|h| h == pid) {
+                    return Err(format!("decide names petition `{pid}` not held by call {c}"));
+                }
+            }
+        }
+        Kind::Settle => {
+            let Some(d) = delivered_for(c) else {
+                return Err(format!("settle for call {c} before delivery"));
+            };
+            let pid = next.data["petition"]
+                .as_str()
+                .ok_or_else(|| format!("settle for call {c} names no petition"))?;
+            let held = held_for(d);
+            if !held.iter().any(|h| h == pid) {
+                return Err(format!("settle names petition `{pid}` not held by call {c}"));
+            }
+            if thread
+                .iter()
+                .any(|e| e.kind == Kind::Settle && e.call == Some(c) && e.data["petition"].as_str() == Some(pid))
+            {
+                return Err(format!("petition `{pid}` of call {c} was already settled"));
+            }
+        }
+        Kind::Accept | Kind::Reject => {
+            let Some(d) = delivered_for(c) else {
+                return Err(format!("cannot accept or reject call {c} before delivery"));
+            };
+            if thread
+                .iter()
+                .any(|e| e.call == Some(c) && matches!(e.kind, Kind::Accept | Kind::Reject))
+            {
+                return Err(format!("call {c} was already accepted or rejected"));
+            }
+            let held = held_for(d);
+            for pid in held {
+                let settled = thread.iter().any(|e| {
+                    e.kind == Kind::Settle && e.call == Some(c) && e.data["petition"].as_str() == Some(pid.as_str())
+                });
+                if !settled {
+                    return Err(format!("cannot accept or reject call {c} while petition `{pid}` is unsettled"));
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Two different entries by the same signer naming the same previous entry.
@@ -441,8 +530,8 @@ pub fn verify_thread(export: &Value, caller: &PublicKey, callee: &PublicKey) -> 
     Ok(report)
 }
 
-/// A delivery's epitaph must be signed by the callee's core and name the
-/// pinned ritual.
+/// A delivery's epitaph must be signed by the callee's core, name the pinned
+/// ritual, and match the delivered run and outcome when present.
 pub fn check_delivery_epitaph(data: &Value, callee: &PublicKey, pinned_hash: &str) -> Result<(), String> {
     let ep = &data["epitaph"];
     let link = crate::epitaph::check_link(ep["link"].as_str().unwrap_or(""), ep["sig"].as_str().unwrap_or(""), callee)
@@ -450,6 +539,17 @@ pub fn check_delivery_epitaph(data: &Value, callee: &PublicKey, pinned_hash: &st
     let body = crate::epitaph::check_body(&link, ep["body"].as_str().unwrap_or("")).map_err(|e| format!("delivery epitaph: {e}"))?;
     if body["ritual"]["hash"].as_str() != Some(pinned_hash) {
         return Err("delivery epitaph names a different ritual than the pact pins".into());
+    }
+    if !data["run"].is_null() && body["run"] != data["run"] {
+        return Err("delivery epitaph is for a different run".into());
+    }
+    if !data["run"].is_null() && !body["fingerprints"]["inputs"].is_string() {
+        return Err("delivery epitaph fingerprints no inputs".into());
+    }
+    if let (Some(d_out), Some(b_out)) = (data["outcome"].as_str(), body["outcome"].as_str()) {
+        if d_out != b_out {
+            return Err("delivery epitaph outcome differs from delivered outcome".into());
+        }
     }
     Ok(())
 }

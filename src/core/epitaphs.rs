@@ -255,12 +255,13 @@ struct Row {
     link: String,
     body: String,
     sig: String,
+    hash: String,
 }
 
 fn rows(db: &rusqlite::Connection, filter: &str, args: &[&dyn rusqlite::ToSql]) -> Result<Vec<Row>, RpcErr> {
-    let mut q = db.prepare(&format!("SELECT seq, run, link, body, sig FROM epitaphs {filter} ORDER BY seq")).map_err(sql)?;
+    let mut q = db.prepare(&format!("SELECT seq, run, link, body, sig, hash FROM epitaphs {filter} ORDER BY seq")).map_err(sql)?;
     let out = q
-        .query_map(args, |r| Ok(Row { seq: r.get(0)?, run: r.get(1)?, link: r.get(2)?, body: r.get(3)?, sig: r.get(4)? }))
+        .query_map(args, |r| Ok(Row { seq: r.get(0)?, run: r.get(1)?, link: r.get(2)?, body: r.get(3)?, sig: r.get(4)?, hash: r.get(5)? }))
         .map_err(sql)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(sql);
@@ -503,6 +504,10 @@ impl Core {
                 Err(()) => unchecked.push(r.run.clone()),
             }
             prev = epitaph::hash(&r.link);
+            if r.hash != prev {
+                problem = fail(r.seq, "the stored hash column differs from the signed link".into());
+                break;
+            }
             hashes.insert(r.seq, prev.clone());
             expected += 1;
         }
@@ -512,10 +517,22 @@ impl Core {
             "problem": problem.map(|(seq, reason)| json!({"seq": seq, "reason": reason})),
             "witnesses": self.witness_status(), "timestamps": self.timestamp_status(args.tsa_ca.as_deref()),
         });
-        // Countersignatures or timestamps for heads this chain no longer has
-        // mean the history was rewritten after they were made.
-        let disagree = out["witnesses"].as_array().into_iter().chain(out["timestamps"].as_array()).flatten().any(|x| x["matches"] == false);
-        if disagree {
+        // Countersignatures or timestamps for heads this chain no longer has,
+        // invalid countersignatures, or failed timestamp checks mean verification failed.
+        let witness_bad = out["witnesses"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|x| x["matches"] == false || x["valid"] == false);
+        let ts_bad = out["timestamps"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|x| {
+                x["matches"] == false
+                    || x["verdict"].as_str().is_some_and(|v| v.starts_with("failed"))
+            });
+        if witness_bad || ts_bad {
             out["ok"] = json!(false);
             out["disagreements"] = json!(true);
         }

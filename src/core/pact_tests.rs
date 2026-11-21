@@ -109,7 +109,12 @@ fn stale_received_reports_head() {
     let offer = own(&h, &id, Kind::Offer, serde_json::to_value(&t).unwrap());
     let agree = pact::seal_entry(&other, &id, 2, &offer.hash, Kind::Agree, None, 2, json!({}));
     received(&h, &id, &agree, &other.public()).unwrap();
-    own(&h, &id, Kind::Call, json!({"inputs": {}}));
+    {
+        let mut db = h.core.db.lock().unwrap();
+        let tx = db.transaction().unwrap();
+        append_own(&tx, &h.core.key, &id, Kind::Call, Some(1), json!({"inputs": {}})).unwrap();
+        tx.commit().unwrap();
+    }
     // The other side signs on top of the agree while this side's call is
     // already there: a different signer, so stale, not a fork.
     let late = pact::seal_entry(&other, &id, 3, &agree.hash, Kind::Deliver, Some(1), 3, json!({}));
@@ -738,10 +743,15 @@ fn bad_epitaph_signature_rejected_by_caller() {
     held_call(&a, &b, 10);
     let id = a.call("pact_show", json!({"pact": "order-parts"})).unwrap()["id"].as_str().unwrap().to_string();
     let forged = crate::epitaph::seal(&crate::keys::generate(), 1, crate::epitaph::ZEROS, &json!({"v": 1}));
+    // Place call 2 on the thread so a Deliver for call 2 is lifecycle-valid,
+    // then attach a forged epitaph to it.
+    let head = entries(&b, "order-parts").pop().unwrap();
+    let call2 = pact::seal_entry(&a.core.key, &id, head.n + 1, &head.hash, Kind::Call, Some(2), now_ms(), json!({"inputs": {"amount": 10}}));
+    received(&b, &id, &call2, &a.core.key.public()).unwrap();
     {
         let mut db = b.core.db.lock().unwrap();
         let tx = db.transaction().unwrap();
-        append_own(&tx, &b.core.key, &id, Kind::Deliver, Some(1), json!({"outcome": "returned", "run": "s-x", "held": [],
+        append_own(&tx, &b.core.key, &id, Kind::Deliver, Some(2), json!({"outcome": "returned", "run": "s-x", "held": [],
             "epitaph": {"link": forged.link, "body": forged.body, "sig": forged.sig}})).unwrap();
         tx.commit().unwrap();
     }
@@ -759,6 +769,9 @@ fn interrupted_pact_run_delivered_failed_after_restart() {
     let (a, b) = agreed("");
     let id = b.call("pact_show", json!({"pact": "order-parts"})).unwrap()["id"].as_str().unwrap().to_string();
     let hash = move_one_hash(&b);
+    let head = entries(&b, "order-parts").pop().unwrap();
+    let call1 = pact::seal_entry(&a.core.key, &id, head.n + 1, &head.hash, Kind::Call, Some(1), now_ms(), json!({"inputs": {"amount": 10}}));
+    received(&b, &id, &call1, &a.core.key.public()).unwrap();
     {
         let db = b.core.db.lock().unwrap();
         db.execute("INSERT INTO summons (id, ritual, version, hash, status, started, inputs, familiar) VALUES ('s-lost', 'move-one', 1, ?1, 'running', ?2, '{}', 'pact:order-parts')", params![hash, now_ms()]).unwrap();
@@ -907,6 +920,9 @@ fn failed_delivery_skips_acceptance() {
 fn returned_delivery_without_epitaph_freezes() {
     let (a, b) = agreed("");
     let id = a.call("pact_show", json!({"pact": "order-parts"})).unwrap()["id"].as_str().unwrap().to_string();
+    let head = entries(&b, "order-parts").pop().unwrap();
+    let call1 = pact::seal_entry(&a.core.key, &id, head.n + 1, &head.hash, Kind::Call, Some(1), now_ms(), json!({"inputs": {"amount": 1}}));
+    received(&b, &id, &call1, &a.core.key.public()).unwrap();
     {
         let mut db = b.core.db.lock().unwrap();
         let tx = db.transaction().unwrap();
@@ -1128,5 +1144,145 @@ fn multiparty_pact_with_witness_and_callee_push() {
     }
     assert_eq!(state(&a, "order-parts"), "agreed");
     assert_eq!(state(&w, "order-parts"), "agreed");
+
+    // C4: a full caller call + callee delivery must propagate to the witness too.
+    a.call("pact_call", json!({"pact": "order-parts", "args": {"amount": 10}})).unwrap();
+    callee_run(&b, 1);
+    for _ in 0..80 {
+        a.call("pact_poll", json!({})).unwrap();
+        if entries(&w, "order-parts").len() >= 4 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(entries(&w, "order-parts").len() >= 4, "witness got {} entries", entries(&w, "order-parts").len());
     stop(&[&a, &b, &w]);
+}
+
+#[test]
+fn callee_reaction_error_does_not_wedge_or_fork_caller() {
+    let (a, b) = agreed("");
+    b.core.db.lock().unwrap().execute_batch("ALTER TABLE pact_calls RENAME TO pact_calls_x").unwrap();
+    // Storing succeeds even though the callee's reaction fails.
+    a.call("pact_call", json!({"pact": "order-parts", "args": {"amount": 10}})).unwrap();
+    b.core.db.lock().unwrap().execute_batch("ALTER TABLE pact_calls_x RENAME TO pact_calls").unwrap();
+    let polled = a.call("pact_poll", json!({})).unwrap();
+    assert!(polled["errors"].as_array().unwrap().is_empty(), "{polled}");
+    // A second call succeeds cleanly with no fork.
+    a.call("pact_call", json!({"pact": "order-parts", "args": {"amount": 11}})).unwrap();
+    assert_eq!(state(&a, "order-parts"), "agreed");
+    assert_eq!(state(&b, "order-parts"), "agreed");
+    stop(&[&a, &b]);
+}
+
+#[test]
+fn pushed_delivery_enforces_epitaph_check_and_freezes_on_forgery() {
+    let (a, b) = agreed("");
+    a.call("pact_admit", json!({"name": "b", "key": b.core.key.public().text()})).unwrap();
+    let ua = serve(&a);
+    b.call("peer_remove", json!({"name": "a"})).unwrap();
+    b.call("peer_add", json!({"name": "a", "url": ua, "key": a.core.key.public().text()})).unwrap();
+    a.call("pact_call", json!({"pact": "order-parts", "args": {"amount": 10}})).unwrap();
+    callee_run(&b, 1);
+    a.call("pact_poll", json!({})).unwrap();
+    let id = a.call("pact_show", json!({"pact": "order-parts"})).unwrap()["id"].as_str().unwrap().to_string();
+    let forged = crate::epitaph::seal(&crate::keys::generate(), 1, crate::epitaph::ZEROS, &json!({"v": 1}));
+    // Place Call 2 on both cores without executing a real run, then push a
+    // forged Deliver for Call 2 from `b` to `a`.
+    let head = entries(&a, "order-parts").pop().unwrap();
+    let call2 = pact::seal_entry(&a.core.key, &id, head.n + 1, &head.hash, Kind::Call, Some(2), now_ms(), json!({"inputs": {"amount": 11}}));
+    received(&b, &id, &call2, &a.core.key.public()).unwrap();
+    {
+        let mut db = a.core.db.lock().unwrap();
+        let tx = db.transaction().unwrap();
+        let mut e = pact::open_entry(&call2, &a.core.key.public()).unwrap();
+        e.hash = call2.hash.clone();
+        tx.execute("INSERT INTO pact_entries (pact, n, bytes, sig, hash, by) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, e.n, call2.bytes, call2.sig, call2.hash, e.by]).unwrap();
+        tx.commit().unwrap();
+    }
+    let s = {
+        let mut db = b.core.db.lock().unwrap();
+        let tx = db.transaction().unwrap();
+        let s = append_own(&tx, &b.core.key, &id, Kind::Deliver, Some(2), json!({
+            "outcome": "returned", "run": "s-x", "held": [], "result": {"amount": 11},
+            "epitaph": {"link": forged.link, "body": forged.body, "sig": forged.sig},
+        })).unwrap();
+        tx.commit().unwrap();
+        s
+    };
+    let pushed = b.core.pact_send("a", "pact_post", json!({"pact": id, "entry": s}));
+    assert!(pushed.is_err(), "forged pushed delivery must be rejected");
+    assert_eq!(state(&a, "order-parts"), "frozen");
+    assert!(!entries(&a, "order-parts").iter().any(|e| e.kind == Kind::Deliver && e.data["run"] == "s-x"));
+    stop(&[&a, &b]);
+}
+
+#[test]
+fn verify_thread_rejects_illegal_call_lifecycle() {
+    let ck = crate::keys::Keypair::from_secret(&[1; 32]);
+    let bk = crate::keys::Keypair::from_secret(&[2; 32]);
+    let yaml = format!(
+        "pact: p\ncaller: {}\ncallee: {}\nritual: {{name: r, hash: {}}}\nceilings: {{deadline: 1h}}\nexpires: 2099-01-01\n",
+        ck.public().text(), bk.public().text(), "a".repeat(64));
+    let t = pact::parse_terms(&yaml).unwrap();
+    let id = pact::pact_id(&t);
+    let mut list = vec![pact::seal_entry(&ck, &id, 1, crate::epitaph::ZEROS, Kind::Offer, None, 1, serde_json::to_value(&t).unwrap())];
+    let prev = list.last().unwrap().hash.clone();
+    list.push(pact::seal_entry(&bk, &id, 2, &prev, Kind::Agree, None, 2, json!({})));
+    let prev = list.last().unwrap().hash.clone();
+    // Accept for call 9 which was never called must be rejected.
+    list.push(pact::seal_entry(&ck, &id, 3, &prev, Kind::Accept, Some(9), 3, json!({"decided_by": "owner"})));
+    let export = json!({"terms": t, "entries": list});
+    assert!(pact::verify_thread(&export, &ck.public(), &bk.public()).is_err());
+}
+
+#[test]
+fn chain_verify_catches_stale_hash_column_and_bad_countersignature_and_odd_merkle() {
+    // Odd Merkle root is not ambiguous.
+    let h = |c: &str| c.repeat(64);
+    let three = vec![h("a"), h("b"), h("c")];
+    let four = vec![h("a"), h("b"), h("c"), h("c")];
+    assert_ne!(crate::epitaph::merkle_root(&three), crate::epitaph::merkle_root(&four));
+    let proof = crate::epitaph::merkle_proof(&four, 3).unwrap();
+    assert!(!crate::epitaph::verify_merkle_proof(&h("c"), &crate::epitaph::merkle_root(&three), &proof));
+    // All 3 leaves in the odd tree still verify against the 3-leaf root.
+    let r3 = crate::epitaph::merkle_root(&three);
+    for (i, leaf) in three.iter().enumerate() {
+        let p = crate::epitaph::merkle_proof(&three, i).unwrap();
+        assert!(crate::epitaph::verify_merkle_proof(leaf, &r3, &p));
+    }
+
+    // Invalid countersignature fails chain_verify.
+    let b = Home::new("");
+    b.inscribe(&super::test_home::repo("tests/fixtures/rituals/total-receipt.yaml"), false);
+    b.run(json!({"target": "total-receipt", "args": {"text": "{\"amounts_minor\":[1]}"}}));
+    let wk = crate::keys::generate();
+    b.call("peer_add", json!({"name": "w", "url": "http://127.0.0.1:9", "key": wk.public().text()})).unwrap();
+    let head = b.call("chain_head", json!({})).unwrap();
+    b.core.db.lock().unwrap().execute(
+        "INSERT INTO witnessings (peer, seq, hash, time, sig) VALUES ('w', ?1, ?2, 1, 'AAAA')",
+        params![head["seq"].as_i64().unwrap(), head["hash"].as_str().unwrap()],
+    ).unwrap();
+    let v = b.call("chain_verify", json!({})).unwrap();
+    assert_eq!(v["ok"], false, "{v}");
+
+    // Rewritten head with stale `hash` column also fails chain_verify.
+    b.core.db.lock().unwrap().execute("DELETE FROM witnessings", []).unwrap();
+    {
+        let db = b.core.db.lock().unwrap();
+        let (seq, run, link, body): (i64, String, String, String) = db
+            .query_row("SELECT seq, run, link, body FROM epitaphs ORDER BY seq DESC LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap();
+        let l: Value = serde_json::from_str(&link).unwrap();
+        let mut bd: Value = serde_json::from_str(&body).unwrap();
+        let new_end = bd["ended"].as_i64().unwrap() + 1;
+        bd["ended"] = json!(new_end);
+        db.execute("UPDATE summons SET ended=?2 WHERE id=?1", params![run, new_end]).unwrap();
+        let s = crate::epitaph::seal(&b.core.key, seq, l["prev"].as_str().unwrap(), &bd);
+        db.execute("UPDATE epitaphs SET link=?2, body=?3, sig=?4 WHERE seq=?1", params![seq, s.link, s.body, s.sig]).unwrap();
+    }
+    let v2 = b.call("chain_verify", json!({})).unwrap();
+    assert_eq!(v2["ok"], false, "{v2}");
+    assert!(v2["problem"]["reason"].as_str().unwrap().contains("hash column"), "{v2}");
 }
