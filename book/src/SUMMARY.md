@@ -61,6 +61,7 @@
 - [The standard library](reference/standard-library.md)
 - [Pure `data` operations](reference/data.md)
 - [Scoped file operations](reference/file.md)
+- [The `sight` reagent](reference/sight.md)
 - [Scoped HTTP operations](reference/http.md)
 - [The `mail` reagent](reference/mail.md)
 - [The `git`, `gh`, and `trial` reagents](reference/git.md)

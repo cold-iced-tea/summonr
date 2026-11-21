@@ -15,6 +15,7 @@ Summonr borrows the names of an older craft, yet each word designates one exact 
 | **invoke** (`run`) | Begin a summon. |
 | **rehearse** (`run --dry-run`) | Resolve inputs and authority and print the effect plan without spending a request or touching state. |
 | **reagent** | A named capability provider (`mail`, `file`, `git`, `data`, or an owner-configured stdio MCP server). |
+| **sight** (`vision`) | Image input for model steps: `sight.read_image` returns a digest-only handle, and a model step's `images` list sends the checked bytes to a vision-capable model. |
 | **satchel** (`tools`) | The inventory of reagents and their tools. |
 | **grant** (`allow`) | Standing permission, given by the owner to one ritual, for one tool within an explicit scope. |
 | **revoke** (`disallow`) | Withdraw a grant. |

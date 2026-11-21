@@ -1,0 +1,38 @@
+language_version: 1
+ritual: describe-image
+description: Read an image beneath a granted root, check its size in code, then ask a vision model for a one-line caption.
+inputs:
+  path: {type: string}
+model: ollama/qwen2.5vl:7b
+settings: {temperature: 0}
+reagents:
+  sight: {select: [read_image]}
+requires:
+  - reagent: sight
+    action: read_image
+    on: {root: /absolute/path/to/summonr/examples/08-sight/fixtures}
+essence: {requests: 1, tokens: 8000, tool_calls: 1, time: 2m}
+steps:
+  - id: picture
+    operation: sight.read_image
+    arguments:
+      root: /absolute/path/to/summonr/examples/08-sight/fixtures
+      path: "${inputs.path}"
+  - if: steps.picture.output.width >= 1
+    then:
+      - id: described
+        model:
+          instructions: Describe the image in one short sentence. Answer with JSON only.
+          prompt: Give a caption for this image.
+          images: ["${steps.picture.output}"]
+          schema:
+            type: object
+            required: [caption]
+            additionalProperties: false
+            properties:
+              caption: {type: string, maxLength: 200}
+return:
+  width: "${steps.picture.output.width}"
+  height: "${steps.picture.output.height}"
+  mime: "${steps.picture.output.mime}"
+  caption: "${steps.described.output.caption}"

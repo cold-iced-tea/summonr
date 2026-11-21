@@ -118,6 +118,7 @@ A step is exactly one of five kinds, chosen by which key it has. Modifiers for a
     instructions: "You sort email..."  # system message
     bind: [rules]                      # bindings appended to the system message
     prompt: "${inputs.text}"           # required: the user message
+    images: ["${steps.page.output}"]   # optional: handles from sight.read_image
     schema: {type: object, ...}        # optional: output contract
     abstain_if: output.folder == "abstain"
 ```
@@ -128,7 +129,9 @@ A step is exactly one of five kinds, chosen by which key it has. Modifiers for a
 
 **`abstain_if`** is a [condition](expressions.md) that may refer to the step's own output as `output.<field>`. When true, the step is marked abstained and writes in that execution scope are refused. Reads and pure computations may still run; abstention is not an implicit retry or fallback.
 
-Each model step is a fresh context: system message (instructions + bindings) and one user message (the prompt).
+**`images`** is a list of references (or one reference to a list), at most 8 per step, each resolving to a handle issued by [`sight.read_image`](sight.md) in the same run tree. Handle-shaped objects from inputs, MCP arguments or model output are denied. Before any request is sent, the grant is re-checked and the file re-read; a changed or missing file fails the step as a stale image. Images go before the prompt text in the user message. The mock backend accepts images; an Ollama model must report `vision` (checked once, skipped in drills and replays). Recorded payloads replace image data with a digest placeholder.
+
+Each model step is a fresh context: system message (instructions + bindings) and one user message (the prompt, preceded by any images).
 
 ### Ritual
 

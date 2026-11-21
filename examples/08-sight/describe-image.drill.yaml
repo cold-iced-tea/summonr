@@ -1,0 +1,16 @@
+# Drill for describe-image: the model's caption is scripted, so no vision model
+# is needed. The image is still read for real, so the fixture root must be
+# granted (see the README line).
+#   (see examples/README.md for the grant root)
+#   summonr inscribe describe-image.yaml   # with the root edited to your checkout
+#   summonr drill describe-image against examples/08-sight/describe-image.drill.yaml
+drill: describe-image-cases
+ritual: describe-image
+cases:
+  - id: tiny-png-is-captioned
+    inputs: {path: dot.png}
+    model: {described: [{caption: A single teal pixel}]}
+    expect:
+      outcome: returned
+      result: {width: 1, height: 1, mime: image/png, caption: A single teal pixel}
+      model_calls: 1

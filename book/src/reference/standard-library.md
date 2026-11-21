@@ -8,10 +8,11 @@ select the operations your ritual needs under `reagents`.
 - [`data`](data.md): pure computation over explicit values, including bounded
   map, filter, and fold.
 - [`file`](file.md): scoped, read-only text files and directory listings.
+- [`sight`](sight.md): scoped image reads that return handles for model steps (vision).
 - [`http`](http.md): scoped HTTP(S) GET returning bounded UTF-8 text.
 - [`mail`](mail.md): the existing fixture mailbox, including its held writes.
 
-`data` needs no external grant. `file`, `http`, and `mail` do. Reads produce
+`data` needs no external grant. `file`, `sight`, `http`, and `mail` do. Reads produce
 observations of mutable external state; they are not pure functions, and repeated
 reads need not agree. Read results are untrusted input if later sent to a model.
 An origin or directory grant does not establish that its content is trustworthy.

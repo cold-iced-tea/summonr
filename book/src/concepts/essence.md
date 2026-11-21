@@ -36,6 +36,8 @@ Ollama reports prompt tokens only after inference. Summonr can cap *generated* t
 
 If a token budget applies and the backend does not report usage, Summonr fails closed: the step fails rather than continuing blind.
 
+Images count too. Backends report image tokens inside prompt tokens, so they count under `tokens` (and cost, if priced). A step with `images` overshoots a token budget more easily than a text step, because the image cost is also unknown until the reply. Keep `tokens` roomy on steps that show images.
+
 Mock token counts are estimates (characters ÷ 4) and are labeled `estimated`.
 
 ## Exhaustion in a batch

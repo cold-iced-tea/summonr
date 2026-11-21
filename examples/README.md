@@ -11,6 +11,7 @@ Runnable rituals for the "Learn by example" chapters of the Summonr Book (`book/
 | `05-label-reviews` | A batch over a list, with a budget that can run out |
 | `06-standard-library` | Pure collection pipelines (`data` standard library) with zero model calls |
 | `07-pacts` | Two-core buyer/supplier contract with pinned ritual, approval threshold, and acceptance check |
+| `08-sight` | An image read in code, then shown to a vision model; the drill scripts the reply so no vision model is needed |
 
 Setup, from the repository root:
 
@@ -23,3 +24,12 @@ echo 'ollama_url: "http://127.0.0.1:11434"' > "$SUMMONR_HOME/config/config.yaml"
 ```
 
 Examples 02–05 name `ollama/qwen3:4b`. Use another model with `--model ollama/<name>`, or `--model mock/keyword` to exercise enum-based mechanics without a model (note: `03-receipt-total` asks the model to extract structured numeric line items, which requires a real model or a scripted `drill`).
+
+`08-sight` needs an absolute grant root, which a saved ritual cannot take from `$PWD`. Rewrite the placeholder to your checkout, grant it, then drill (no vision model needed):
+
+```bash
+sed "s|/absolute/path/to/summonr|$PWD|g" examples/08-sight/describe-image.yaml > "$SUMMONR_HOME/describe-image.yaml"
+summonr inscribe "$SUMMONR_HOME/describe-image.yaml"
+summonr allow describe-image --from sight --select read_image --on root="$PWD/examples/08-sight/fixtures"
+summonr drill describe-image against examples/08-sight/describe-image.drill.yaml
+```
