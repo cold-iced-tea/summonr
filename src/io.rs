@@ -36,8 +36,9 @@ pub trait Io: Send + Sync {
     }
 
     /// True when a call to `operation` is answered with what it would do
-    /// rather than done. Decided by the `Io`, never by inspecting output.
-    fn simulates(&self, _operation: &str) -> bool {
+    /// rather than done. Decided by the `Io` from the operation's declared
+    /// effect (`cfg` knows the owner's MCP reagents), never from output.
+    fn simulates(&self, _operation: &str, _cfg: Option<&crate::util::Config>) -> bool {
         false
     }
 
@@ -99,8 +100,8 @@ impl Io for Simulate {
         self.inner.scripted()
     }
 
-    fn simulates(&self, operation: &str) -> bool {
-        is_write(operation)
+    fn simulates(&self, operation: &str, cfg: Option<&crate::util::Config>) -> bool {
+        is_write(cfg, operation)
     }
 
     fn chat(
@@ -120,7 +121,7 @@ impl Io for Simulate {
         args: &Value,
         auth: &reagent::Authority,
     ) -> Result<Value, reagent::Fail> {
-        if !is_write(operation) {
+        if !is_write(auth.config, operation) {
             return self.inner.call(root, operation, args, auth);
         }
         reagent::authorize(root, operation, args, auth)?;
@@ -225,22 +226,24 @@ impl Io for Scripted {
     }
 }
 
-/// A known tool whose effect is neither read nor pure. An unknown operation
-/// is never guessed to be a write.
-fn is_write(operation: &str) -> bool {
-    effect(operation).is_some_and(|e| !matches!(e, "read" | "pure"))
+/// Anything not known to be a read or pure is a write: a built-in write, an
+/// owner-configured MCP tool (whose default effect is write) and an unknown
+/// operation alike. A simulation that guessed otherwise would perform it.
+fn is_write(cfg: Option<&crate::util::Config>, operation: &str) -> bool {
+    !matches!(effect(cfg, operation), Some("read" | "pure"))
 }
 
 /// A known tool whose effect is pure: computed from its arguments alone, so
 /// it is never recorded and a replay computes it live, metered as live.
-fn is_pure(operation: &str) -> bool {
-    effect(operation) == Some("pure")
+fn is_pure(cfg: Option<&crate::util::Config>, operation: &str) -> bool {
+    effect(cfg, operation) == Some("pure")
 }
 
-fn effect(operation: &str) -> Option<&'static str> {
+/// The one effect classification the executor also uses.
+fn effect(cfg: Option<&crate::util::Config>, operation: &str) -> Option<&'static str> {
     operation
         .split_once('.')
-        .and_then(|(r, t)| reagent::tool(r, t))
+        .and_then(|(r, t)| reagent::tool_meta(cfg, r, t))
         .map(|t| t.effect)
 }
 
@@ -315,7 +318,7 @@ impl Io for Recording {
         args: &Value,
         auth: &reagent::Authority,
     ) -> Result<Value, reagent::Fail> {
-        if is_pure(operation) {
+        if is_pure(auth.config, operation) {
             return self.inner.call(root, operation, args, auth);
         }
         let result = self.inner.call(root, operation, args, auth);
@@ -417,7 +420,7 @@ impl Io for Replay {
         args: &Value,
         auth: &reagent::Authority,
     ) -> Result<Value, reagent::Fail> {
-        if is_pure(operation) {
+        if is_pure(auth.config, operation) {
             return Live.call(root, operation, args, auth);
         }
         reagent::authorize(root, operation, args, auth)?;
@@ -829,9 +832,9 @@ mod tests {
         let args = json!({"message":"001","folder":"Receipts"});
         let out = sim.call(root.to_str(), "mail.move", &args, &auth).unwrap();
         assert_eq!(out["simulated"], true);
-        assert!(sim.simulates("mail.move"));
-        assert!(!sim.simulates("mail.read"));
-        assert!(!sim.simulates("data.count"));
+        assert!(sim.simulates("mail.move", None));
+        assert!(!sim.simulates("mail.read", None));
+        assert!(!sim.simulates("data.count", None));
         assert!(root.join("Inbox/001.eml").exists());
         assert!(!root.join("Receipts/001.eml").exists());
         std::fs::remove_dir_all(&root).ok();
@@ -854,6 +857,46 @@ mod tests {
     }
 
     #[test]
+    fn simulate_never_performs_a_configured_mcp_write() {
+        // The server command would leave a marker if it were ever started.
+        let dir = std::env::temp_dir().join(crate::util::new_id("summonr-sim-mcp"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("started");
+        let mut cfg = crate::util::Config::default();
+        cfg.mcp_reagents.insert(
+            "ext".into(),
+            crate::util::McpReagentConfig {
+                command: vec!["touch".into(), marker.to_string_lossy().into_owned()],
+                cwd: None,
+                env: Default::default(),
+                tools: [(
+                    "send".to_string(),
+                    crate::util::McpToolConfig { effect: "write".into(), description: None },
+                )]
+                .into_iter()
+                .collect(),
+            },
+        );
+        let grants = vec![crate::ritual::Grant {
+            reagent: "ext".into(),
+            action: "send".into(),
+            on: Default::default(),
+            into: Default::default(),
+        }];
+        let selected = Mutex::new(HashSet::new());
+        let mut auth = auth_with(&grants, &selected);
+        auth.config = Some(&cfg);
+        let sim = Simulate::new(Arc::new(Live));
+        assert!(sim.simulates("ext.send", Some(&cfg)));
+        let out = sim.call(None, "ext.send", &json!({"to": "x"}), &auth).unwrap();
+        assert_eq!(out["simulated"], true);
+        assert!(!marker.exists(), "the MCP server was started");
+        // Without a configuration nothing is known about it: fail closed.
+        assert!(sim.simulates("ext.send", None));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn simulate_delegates_reads_unknowns_and_offline() {
         let selected = Mutex::new(HashSet::new());
         let auth = auth_with(&[], &selected);
@@ -863,7 +906,8 @@ mod tests {
             .unwrap();
         assert_ne!(out["simulated"], true);
         assert!(sim.call(None, "nosuch.tool", &json!({}), &auth).is_err());
-        assert!(!sim.simulates("nosuch.tool"));
+        // Unknown is never guessed to be harmless.
+        assert!(sim.simulates("nosuch.tool", None));
         assert!(!sim.offline());
         assert!(Simulate::new(Arc::new(Replay::new(Cassette::default()))).offline());
     }

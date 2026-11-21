@@ -608,7 +608,7 @@ impl Run {
         let hold = hold || caller_hold;
         // A simulated run never files a petition: the held write is
         // authorized and recorded as simulated, with `would_hold`.
-        let would_hold = hold && self.io.simulates(op);
+        let would_hold = hold && self.io.simulates(op, Some(&self.core.cfg));
         if hold && !would_hold {
             // Buffer before acting: record what would be done and why, and
             // leave the decision to a person.
@@ -681,7 +681,7 @@ impl Run {
         };
         self.check_live()?;
         let is_write = !matches!(effect, "read" | "pure");
-        let fence_key = if is_write && !self.io.simulates(op) {
+        let fence_key = if is_write && !self.io.simulates(op, Some(&self.core.cfg)) {
             reagent::authorize(self.core.cfg.mail_root.as_deref(), op, &args, &auth)?;
             match self
                 .core
@@ -1777,6 +1777,44 @@ mod tests {
             .unwrap()
             .query_row("SELECT COUNT(*) FROM petitions", [], |r| r.get(0))
             .unwrap()
+    }
+
+    #[test]
+    fn simulated_run_never_performs_or_holds_an_mcp_write() {
+        let mut f = Fixture::new();
+        let marker = f.root.join("server-started");
+        Arc::get_mut(&mut f.core).unwrap().cfg.mcp_reagents.insert(
+            "ext".into(),
+            crate::util::McpReagentConfig {
+                command: vec!["touch".into(), marker.to_string_lossy().into_owned()],
+                cwd: None,
+                env: Default::default(),
+                tools: [(
+                    "send".to_string(),
+                    crate::util::McpToolConfig { effect: "write".into(), description: None },
+                )]
+                .into_iter()
+                .collect(),
+            },
+        );
+        let def = definition(json!({"ritual":"mcp-sim",
+            "requires":[{"reagent":"ext","action":"send"}],
+            "steps":[{"id":"send","operation":"ext.send","arguments":{"to":"x"}},
+                     {"id":"held","operation":"ext.send","hold":true,"arguments":{"to":"y"}}]}));
+        let mut run = simulated_run(&f, def);
+        let id = run.id.clone();
+        let fin = run.execute();
+        assert_eq!(fin.outcome, Outcome::Returned, "{:?}", fin.error);
+        assert!(!marker.exists(), "the MCP server was started");
+        assert_eq!(petition_count(&f), 0);
+        let fences: i64 = f
+            .core
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM effect_fence WHERE summon=?1", [&id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(fences, 0);
     }
 
     #[test]

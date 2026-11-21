@@ -800,7 +800,7 @@ pub fn perform(
         .ok_or_else(|| Fail::Failed(format!("bad operation `{operation}`")))?;
     let out = io.call(mail_root, operation, args, auth)?;
     // The Io says whether it simulated this call; its output is never inspected.
-    if io.simulates(operation) {
+    if io.simulates(operation, auth.config) {
         return Ok((out.clone(), Evidence::Simulated { would: out }));
     }
     let Some(c) = check else {
