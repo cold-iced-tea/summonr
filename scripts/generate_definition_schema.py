@@ -50,7 +50,8 @@ def build():
         'minimum': number, 'maximum': number, **{k:u64 for k in ['minLength','maxLength','minItems','maxItems']},
         'title': string, 'description': string, 'default': {}})
     definitions['model'] = obj({'name': nullable(string), 'settings': mapping({}), 'instructions': nullable(string),
-        'bind': arr(string), 'prompt': string, 'schema': nullable(ref('valueSchema')), 'abstain_if': nullable(string)}, ['prompt'])
+        'bind': arr(string), 'prompt': string, 'schema': nullable(ref('valueSchema')), 'abstain_if': nullable(string),
+        'images': {'anyOf': [string, {**arr(string), 'maxItems': 8}, {'type': 'null'}]}}, ['prompt'])
     definitions['verify'] = obj({'observe': string, 'arguments': mapping({}), 'expect': mapping({})}, ['observe', 'expect'])
     properties = {'id': nullable(string), 'operation': nullable(string), 'arguments': nullable(mapping({})),
         'verify': nullable(ref('verify')), 'hold': {'type':['boolean','string','null']}, 'model': nullable(ref('model')), 'ritual': nullable(string),
