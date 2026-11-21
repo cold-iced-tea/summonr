@@ -65,9 +65,23 @@ impl Core {
             )));
         }
 
+        struct UnloadGuard<'a> {
+            cfg: &'a crate::util::Config,
+            models: BTreeSet<String>,
+        }
+        impl Drop for UnloadGuard<'_> {
+            fn drop(&mut self) {
+                for m in &self.models {
+                    backend::unload(&self.cfg.backend_url_for(m), m);
+                }
+            }
+        }
         let series = new_id("series");
         let mut trials = Vec::new();
-        let mut models = BTreeSet::new();
+        let mut unload_guard = UnloadGuard {
+            cfg: &self.cfg,
+            models: BTreeSet::new(),
+        };
         let (mut correct, mut abstained, mut invalid, mut failed, mut tokens, mut ms) =
             (0usize, 0usize, 0usize, 0usize, 0i64, 0i64);
         let mut touchstone_errors = 0usize;
@@ -98,7 +112,7 @@ impl Core {
             };
             let used = run.models_used.clone();
             let fin = self.complete(run, true);
-            models.extend(used.lock().unwrap().iter().cloned());
+            unload_guard.models.extend(used.lock().unwrap().iter().cloned());
             let s = self.summon(&id)?;
             let took = s["ended"].as_i64().unwrap_or(0) - s["started"].as_i64().unwrap_or(0);
             let trial_tokens = s["tokens"].as_i64().unwrap_or(0);
@@ -139,9 +153,7 @@ impl Core {
             }
             trials.push(json!({"case": case.id, "summon": id, "outcome": fin.outcome, "correct": matches, "expected": expect, "got": fin.result, "error": fin.error, "ms": took, "tokens": trial_tokens}));
         }
-        for m in &models {
-            backend::unload(&self.cfg.backend_url_for(m), m);
-        }
+        drop(unload_guard);
 
         let n = set.cases.len();
         let (lo, hi) = wilson(correct, n);

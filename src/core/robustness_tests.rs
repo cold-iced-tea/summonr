@@ -1231,3 +1231,276 @@ fn event_subscription_streams_backlog_and_live_events() {
     c.stop.store(true, std::sync::atomic::Ordering::SeqCst);
     let _ = handle.join();
 }
+
+#[test]
+fn revive_does_not_repeat_non_idempotent_writes_inside_child_rituals() {
+    let p = paths();
+    let c = Core::open(p.clone()).unwrap();
+    let root = p.state.parent().unwrap().join("workspace");
+    std::fs::create_dir_all(&root).unwrap();
+    let root_s = root.to_str().unwrap();
+    let log_file = root.join("child.jsonl");
+
+    let kid_path = p.config.join("kid.yaml");
+    std::fs::write(
+        &kid_path,
+        format!(
+            r#"
+ritual: kid
+requires:
+  - reagent: file
+    action: append_jsonl
+    on: {{root: "{root_s}"}}
+essence: {{requests: 0, tool_calls: 4}}
+steps:
+  - id: first
+    operation: file.append_jsonl
+    arguments: {{root: "{root_s}", path: "child.jsonl", record: {{step: "first"}}}}
+  - id: second
+    operation: file.append_jsonl
+    arguments: {{root: "{root_s}", path: "child.jsonl", record: {{step: "second"}}}}
+return: {{done: true}}
+"#
+        ),
+    )
+    .unwrap();
+    c.dispatch("inscribe", json!({"path": kid_path.to_str().unwrap()})).unwrap();
+
+    let dad_path = p.config.join("dad.yaml");
+    std::fs::write(
+        &dad_path,
+        format!(
+            r#"
+ritual: dad
+requires:
+  - reagent: file
+    action: append_jsonl
+    on: {{root: "{root_s}"}}
+essence: {{requests: 0, tool_calls: 1}}
+steps:
+  - id: call
+    ritual: kid
+    arguments: {{}}
+return: {{ok: true}}
+"#
+        ),
+    )
+    .unwrap();
+    c.dispatch("inscribe", json!({"path": dad_path.to_str().unwrap()})).unwrap();
+    c.dispatch(
+        "grant",
+        json!({"ritual": "dad", "scopes": [{"reagent": "file", "select": ["append_jsonl"]}], "on": {"root": root_s}}),
+    )
+    .unwrap();
+
+    // First run exhausts tool_calls=1 after `kid`'s first append.
+    let s1 = c.dispatch("invoke", json!({"target": "dad", "args": {}})).unwrap()["summon"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let d1 = c.dispatch("wait", json!({"summon": s1, "timeout_ms": 5000})).unwrap();
+    assert_eq!(d1["outcome"], "exhausted", "{d1}");
+    assert_eq!(std::fs::read_to_string(&log_file).unwrap(), "{\"step\":\"first\"}\n");
+
+    // Revive runs again; `kid.first` must hit the copied child fence and NOT append twice.
+    let s2 = c.dispatch("revive", json!({"summon": s1})).unwrap()["summon"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let d2 = c.dispatch("wait", json!({"summon": s2, "timeout_ms": 5000})).unwrap();
+    assert_eq!(d2["outcome"], "exhausted", "{d2}");
+    assert_eq!(
+        std::fs::read_to_string(&log_file).unwrap(),
+        "{\"step\":\"first\"}\n",
+        "child write was repeated on revive"
+    );
+
+    drop(c);
+    std::fs::remove_dir_all(p.state.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn identical_writes_in_each_loop_and_idless_steps_all_execute() {
+    let p = paths();
+    let c = Core::open(p.clone()).unwrap();
+    let root = p.state.parent().unwrap().join("workspace");
+    std::fs::create_dir_all(&root).unwrap();
+    let root_s = root.to_str().unwrap();
+    let log_file = root.join("ticks.jsonl");
+
+    let r_path = p.config.join("ticks.yaml");
+    std::fs::write(
+        &r_path,
+        format!(
+            r#"
+ritual: ticks
+inputs:
+  items: {{type: array, default: [1, 2, 3]}}
+requires:
+  - reagent: file
+    action: append_jsonl
+    on: {{root: "{root_s}"}}
+essence: {{requests: 0, tool_calls: 10, items: 10}}
+steps:
+  - id: loop
+    each: x in inputs.items
+    steps:
+      - id: w
+        operation: file.append_jsonl
+        arguments: {{root: "{root_s}", path: "ticks.jsonl", record: {{tick: 1}}}}
+  - id: w1
+    operation: file.append_jsonl
+    arguments: {{root: "{root_s}", path: "ticks.jsonl", record: {{tick: 2}}}}
+  - id: w2
+    operation: file.append_jsonl
+    arguments: {{root: "{root_s}", path: "ticks.jsonl", record: {{tick: 2}}}}
+return: {{ok: true}}
+"#
+        ),
+    )
+    .unwrap();
+    c.dispatch("inscribe", json!({"path": r_path.to_str().unwrap()})).unwrap();
+    c.dispatch(
+        "grant",
+        json!({"ritual": "ticks", "scopes": [{"reagent": "file", "select": ["append_jsonl"]}], "on": {"root": root_s}}),
+    )
+    .unwrap();
+
+    let s = c.dispatch("invoke", json!({"target": "ticks", "args": {}})).unwrap()["summon"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let d = c.dispatch("wait", json!({"summon": s, "timeout_ms": 5000})).unwrap();
+    assert_eq!(d["outcome"], "returned", "{d}");
+    let lines: Vec<String> = std::fs::read_to_string(&log_file)
+        .unwrap()
+        .lines()
+        .map(String::from)
+        .collect();
+    assert_eq!(
+        lines,
+        vec![
+            "{\"tick\":1}",
+            "{\"tick\":1}",
+            "{\"tick\":1}",
+            "{\"tick\":2}",
+            "{\"tick\":2}",
+        ]
+    );
+
+    drop(c);
+    std::fs::remove_dir_all(p.state.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn revive_preserves_child_model_limits_and_caller() {
+    let p = paths();
+    let c = Core::open(p.clone()).unwrap();
+    let child_path = p.config.join("child-m.yaml");
+    std::fs::write(
+        &child_path,
+        r#"
+ritual: child-m
+model: mock/child-model
+essence: {requests: 2}
+steps:
+  - id: ask
+    model:
+      prompt: "hello"
+return: {out: "${steps.ask.output}"}
+"#,
+    )
+    .unwrap();
+    c.dispatch("inscribe", json!({"path": child_path.to_str().unwrap()})).unwrap();
+
+    let parent_path = p.config.join("parent-m.yaml");
+    std::fs::write(
+        &parent_path,
+        r#"
+ritual: parent-m
+model: mock/parent-model
+essence: {requests: 2}
+steps:
+  - id: call
+    ritual: child-m
+    arguments: {}
+return: {out: "${steps.call.output.out}"}
+"#,
+    )
+    .unwrap();
+    c.dispatch("inscribe", json!({"path": parent_path.to_str().unwrap()})).unwrap();
+
+    // Invoke with tighter limit (requests: 0) and a familiar caller, NO model override.
+    let s1 = c
+        .dispatch(
+            "invoke",
+            json!({"target": "parent-m", "args": {}, "limits": {"requests": 0}, "caller": "familiar:alpha"}),
+        )
+        .unwrap()["summon"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let d1 = c.dispatch("wait", json!({"summon": s1, "timeout_ms": 5000})).unwrap();
+    assert_eq!(d1["outcome"], "exhausted", "{d1}");
+    assert_eq!(d1["familiar"], "familiar:alpha");
+
+    // Revive must preserve caller attribution, tighter requests: 0 limit, and
+    // child's own `mock/child-model` (not overwritten by `mock/parent-model`).
+    let s2 = c.dispatch("revive", json!({"summon": s1})).unwrap()["summon"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let d2 = c.dispatch("wait", json!({"summon": s2, "timeout_ms": 5000})).unwrap();
+    assert_eq!(d2["outcome"], "exhausted", "{d2}");
+    assert_eq!(d2["familiar"], "familiar:alpha");
+    let child_model: String = c
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT model FROM summons WHERE parent=?1 LIMIT 1",
+            rusqlite::params![s2],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(child_model, "mock/child-model");
+
+    drop(c);
+    std::fs::remove_dir_all(p.state.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn session_bid_charges_tokens_even_when_schema_check_fails() {
+    let p = paths();
+    let c = Core::open(p.clone()).unwrap();
+    let sid = c
+        .dispatch(
+            "session_open",
+            json!({"model": "mock/s", "essence": {"requests": 5, "tokens": 10000}}),
+        )
+        .unwrap()["session"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // Mock returns `{"x": 0}`, which fails the `minimum: 5` schema check.
+    let err = c
+        .dispatch(
+            "session_bid",
+            json!({
+                "session": sid,
+                "prompt": "give me json",
+                "schema": {"type": "object", "required": ["x"], "properties": {"x": {"type": "integer", "minimum": 5}}}
+            }),
+        )
+        .unwrap_err();
+    assert_eq!(err.code, "invalid_invocation");
+    let state = c.dispatch("session_get", json!({"session": sid})).unwrap();
+    assert!(
+        state["used_tokens"].as_u64().unwrap_or(0) > 0,
+        "tokens must be charged even when schema validation fails: {state}"
+    );
+    assert_eq!(state["used_requests"], 1);
+
+    drop(c);
+    std::fs::remove_dir_all(p.state.parent().unwrap()).unwrap();
+}

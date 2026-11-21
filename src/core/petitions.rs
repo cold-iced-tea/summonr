@@ -136,17 +136,14 @@ impl Core {
         }
         let mut waiting = Vec::new();
         let mut ready = Vec::new();
+        let mut to_mark_part = Vec::new();
         for (pet, part) in chosen.into_iter().zip(parts) {
             let Some(part) = part else {
                 ready.push(pet);
                 continue;
             };
             let column = if by_caller { "caller_decision" } else { "callee_decision" };
-            self.db
-                .lock()
-                .unwrap()
-                .execute(&format!("UPDATE petitions SET {column}=?2 WHERE id=?1 AND status='pending'"), params![pet.id, if permit { "permit" } else { "deny" }])
-                .map_err(|e| RpcErr::new("storage_failed", 11, e.to_string()))?;
+            to_mark_part.push((pet.id.clone(), column));
             let other_permitted = if by_caller { !part.needs_callee || part.callee_decision.as_deref() == Some("permit") } else { !part.needs_caller || part.caller_decision.as_deref() == Some("permit") };
             if permit && !other_permitted {
                 waiting.push(pet.id.clone());
@@ -154,23 +151,29 @@ impl Core {
                 ready.push(pet);
             }
         }
-        let chosen = ready;
         // A caller-side record of a held action under a pact: deciding it
         // signs the decision and sends it to the callee.
-        let (relayed, chosen): (Vec<Petition>, Vec<Petition>) = chosen.into_iter().partition(|pet| pet.operation == "pact.decide" || pet.operation == "pact.accept");
-        let mut decided = Vec::new();
-        for pet in relayed {
-            decided.push(if pet.operation == "pact.accept" {
-                self.decide_delivery(&pet, permit, None)?
-            } else {
-                self.relay_decision(&pet, permit)?
-            });
-        }
+        let (relayed, chosen): (Vec<Petition>, Vec<Petition>) = ready.into_iter().partition(|pet| pet.operation == "pact.decide" || pet.operation == "pact.accept");
+        // Atomically record part decisions and claim local petitions as
+        // `executing` before performing any relayed or local side effects.
         {
             let mut db = self.db.lock().unwrap();
             let tx = db
                 .transaction()
                 .map_err(|e| RpcErr::new("storage_failed", 11, e.to_string()))?;
+            for (pid, column) in &to_mark_part {
+                let n = tx
+                    .execute(
+                        &format!("UPDATE petitions SET {column}=?2 WHERE id=?1 AND status='pending'"),
+                        params![pid, if permit { "permit" } else { "deny" }],
+                    )
+                    .map_err(|e| RpcErr::new("storage_failed", 11, e.to_string()))?;
+                if n != 1 {
+                    return Err(RpcErr::conflict(
+                        "petition already claimed; nothing was decided",
+                    ));
+                }
+            }
             for pet in &chosen {
                 let n = tx
                     .execute(
@@ -186,6 +189,14 @@ impl Core {
             }
             tx.commit()
                 .map_err(|e| RpcErr::new("storage_failed", 11, e.to_string()))?;
+        }
+        let mut decided = Vec::new();
+        for pet in relayed {
+            decided.push(if pet.operation == "pact.accept" {
+                self.decide_delivery(&pet, permit, None)?
+            } else {
+                self.relay_decision(&pet, permit)?
+            });
         }
         for pet in chosen {
             let id = pet.id.as_str().to_string();
@@ -230,45 +241,50 @@ impl Core {
                 if pet.digest.is_none() {
                     warning = Some("petition is not bound to a resource version; it was filed before digests or by a reagent without one");
                 }
-                let current = self.grants_for(&pet.ritual)?;
-                // Legacy petitions have no snapshot: refuse effects rather than broaden authority.
-                let snapshot = pet.authority.as_ref().ok_or_else(|| {
-                    RpcErr::conflict("petition has no authority snapshot; reconcile or deny it")
-                })?;
-                let grants = ritual::intersect_grants(&current, snapshot);
-                let selected = pet.selection;
-                let selected = Mutex::new(selected);
-                let auth = reagent::Authority {
-                    deadline: Some(deadline),
-                    on_item: None,
-                    grants: &grants,
-                    selected: &selected,
-                    // Checked again against the exact bytes being moved.
-                    expected_digest: pet.digest.as_deref(),
-                    config: Some(&self.cfg),
-                };
-                let check = pet.verify;
-                match reagent::perform(
-                    self.cfg.mail_root.as_deref(),
-                    &pet.operation,
-                    &pet.arguments,
-                    check.as_ref(),
-                    &auth,
-                    &crate::io::Live,
-                ) {
-                    Ok((output, evidence)) => (
-                        PetitionState::Applied,
-                        json!({"output": output, "evidence": evidence}),
+                match (self.grants_for(&pet.ritual), pet.authority.as_ref()) {
+                    (Err(e), _) => (PetitionState::Failed, json!({"error": e.message})),
+                    // Legacy petitions have no snapshot: refuse effects rather than broaden authority.
+                    (Ok(_), None) => (
+                        PetitionState::Failed,
+                        json!({"error": "petition has no authority snapshot; reconcile or deny it"}),
                     ),
-                    Err(f @ reagent::Fail::Unverified(_)) => {
-                        (PetitionState::Unverified, json!({"error": f.message()}))
+                    (Ok(current), Some(snapshot)) => {
+                        let grants = ritual::intersect_grants(&current, snapshot);
+                        let selected = pet.selection;
+                        let selected = Mutex::new(selected);
+                        let auth = reagent::Authority {
+                            deadline: Some(deadline),
+                            on_item: None,
+                            grants: &grants,
+                            selected: &selected,
+                            // Checked again against the exact bytes being moved.
+                            expected_digest: pet.digest.as_deref(),
+                            config: Some(&self.cfg),
+                        };
+                        let check = pet.verify;
+                        match reagent::perform(
+                            self.cfg.mail_root.as_deref(),
+                            &pet.operation,
+                            &pet.arguments,
+                            check.as_ref(),
+                            &auth,
+                            &crate::io::Live,
+                        ) {
+                            Ok((output, evidence)) => (
+                                PetitionState::Applied,
+                                json!({"output": output, "evidence": evidence}),
+                            ),
+                            Err(f @ reagent::Fail::Unverified(_)) => {
+                                (PetitionState::Unverified, json!({"error": f.message()}))
+                            }
+                            // The resource changed between the first check and the write.
+                            Err(f) if pet.digest.is_some() && now() != pet.digest => (
+                                PetitionState::Stale,
+                                json!({"recorded": pet.digest, "now": now(), "error": f.message()}),
+                            ),
+                            Err(f) => (PetitionState::Failed, json!({"error": f.message()})),
+                        }
                     }
-                    // The resource changed between the first check and the write.
-                    Err(f) if pet.digest.is_some() && now() != pet.digest => (
-                        PetitionState::Stale,
-                        json!({"recorded": pet.digest, "now": now(), "error": f.message()}),
-                    ),
-                    Err(f) => (PetitionState::Failed, json!({"error": f.message()})),
                 }
             };
             let decided_ms = now_ms();

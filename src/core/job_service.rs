@@ -76,19 +76,12 @@ impl Core {
                     let (id, mut run, _) = self.make_run(resolved, None, None, None);
                     run.job_claim = Some(claim.clone());
                     self.emit(&id,"job.claim","claimed shared job item",json!({"job":claim.job,"item":claim.item,"version":claim.version,"owner":claim.owner,"generation":claim.generation,"expires":claim.expires}));
-                    let attached = jobs::attach(&self.db.lock().unwrap(), &claim, &id, now_ms());
+                    let attached = jobs::attach(&self.db.lock().unwrap(), &claim, &id, now_ms())
+                        .and_then(|_| self.storage_health());
                     if let Err(e) = attached {
-                        self.active.lock().unwrap().remove(&id);
-                        // The run has not dispatched any work. Preserve that in its terminal record.
-                        let fin = Finished {
-                            outcome: Outcome::Failed,
-                            result: Value::Null,
-                            error: Some(e.message.clone()),
-                        };
-                        self.finish_summon(&id, &fin, json!([]));
+                        self.fail_unstarted(&id, &e);
                         return Err(e);
                     }
-                    self.storage_health()?;
                     run
                 };
                 let id = run.id.clone();

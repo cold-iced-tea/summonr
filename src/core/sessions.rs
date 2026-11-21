@@ -276,6 +276,19 @@ impl Core {
 
     pub(super) fn session_bid(&self, p: Value) -> Result<Value, RpcErr> {
         let p: requests::SessionBid = decode(p)?;
+        // Serialize concurrent bids on the same session so request/token
+        // limits cannot be raced and turns cannot overwrite each other.
+        let lock = {
+            static LOCKS: std::sync::OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
+                std::sync::OnceLock::new();
+            let map = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+            map.lock()
+                .unwrap()
+                .entry(p.session.clone())
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+        let _session_guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut s = self.load_session(&p.session)?;
         Self::require_open(&s)?;
         let model = s.model.clone().ok_or_else(|| {
@@ -352,9 +365,9 @@ impl Core {
             )
             .map_err(storage_error)?;
 
-        let base_url = self.cfg.ollama_url.as_deref().unwrap_or("http://127.0.0.1:11434");
+        let base_url = self.cfg.backend_url_for(&model);
         let resp = backend::chat(
-            base_url,
+            &base_url,
             &model,
             backend::ChatReq {
                 model: &model,
@@ -368,6 +381,31 @@ impl Core {
         )
         .map_err(|e| RpcErr::new("backend_failed", 11, e))?;
 
+        // Charge tokens before validating the output so a schema failure
+        // never becomes a free retry, and reject post-response overruns.
+        let turn_tokens = resp.prompt_tokens.saturating_add(resp.output_tokens);
+        s.used_tokens = s.used_tokens.saturating_add(turn_tokens);
+        self.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET used_tokens=?2 WHERE id=?1",
+                params![s.id, s.used_tokens as i64],
+            )
+            .map_err(storage_error)?;
+        if let Some(max_tok) = s.essence.tokens {
+            if s.used_tokens > max_tok {
+                return Err(RpcErr::new(
+                    "exhausted",
+                    10,
+                    format!(
+                        "session token essence exhausted ({}/{})",
+                        s.used_tokens, max_tok
+                    ),
+                ));
+            }
+        }
+
         let parsed: Value = if schema.is_some() {
             let v: Value = serde_json::from_str(&resp.content)
                 .map_err(|e| RpcErr::invalid(format!("model output was not valid JSON: {e}")))?;
@@ -378,8 +416,6 @@ impl Core {
         } else {
             Value::String(resp.content.clone())
         };
-        let turn_tokens = resp.prompt_tokens.saturating_add(resp.output_tokens);
-        s.used_tokens = s.used_tokens.saturating_add(turn_tokens);
         let turn_idx = s.turns.len() + 1;
         s.turns.push(json!({
             "turn": turn_idx,

@@ -158,6 +158,11 @@ pub struct Run {
     pub job_claim: Option<crate::jobs::Claim>,
     pub core: Arc<Core>,
     pub id: String,
+    /// Root summon id of the execution tree; fences are keyed under this so
+    /// child writes survive revive and recast.
+    pub root_id: String,
+    /// Stable hierarchical prefix for fence keys (e.g. `call>`, `batch[2]/`).
+    pub fence_prefix: String,
     pub def: Ritual,
     pub inputs: Value,
     pub model_override: Option<String>,
@@ -261,6 +266,8 @@ impl Run {
             job_claim: self.job_claim.clone(),
             core: self.core.clone(),
             id: self.id.clone(),
+            root_id: self.root_id.clone(),
+            fence_prefix: self.fence_prefix.clone(),
             def: self.def.clone(),
             inputs: self.inputs.clone(),
             model_override: self.model_override.clone(),
@@ -440,7 +447,7 @@ impl Run {
     }
 
     fn run_steps(&mut self, steps: &[Step], scope: &mut Scope) -> Result<(), Fail> {
-        for s in steps {
+        for (step_idx, s) in steps.iter().enumerate() {
             self.check_live()?;
             let id = s.id().cloned().unwrap_or_default();
             let top_level = self.depth == 0 && scope.frames.len() == 1;
@@ -454,7 +461,7 @@ impl Run {
                         s.retry,
                         &s.fallback,
                         scope,
-                        |this, sc| this.operation(s, sc).map(|v| (v, false)),
+                        |this, sc| this.operation(s, step_idx, sc).map(|v| (v, false)),
                     )?;
                     let kind = if s.operation.starts_with("data.") {
                         StepKind::Pure
@@ -491,7 +498,7 @@ impl Run {
                     );
                 }
                 Step::Ritual(s) => {
-                    let (out, abstained) = self.child(s, scope)?;
+                    let (out, abstained) = self.child(s, step_idx, scope)?;
                     let frame = scope.frames.last_mut().unwrap();
                     frame.abstained |= abstained;
                     frame.steps.insert(
@@ -507,7 +514,7 @@ impl Run {
                         ),
                     );
                 }
-                Step::Each(s) => self.each(s, scope)?,
+                Step::Each(s) => self.each(s, step_idx, scope)?,
                 Step::If(s) => {
                     let taken = ritual::eval(&s.condition, scope)
                         .map_err(Fail::Failed)?
@@ -540,9 +547,18 @@ impl Run {
         Ok(())
     }
 
-    fn operation(&mut self, s: &plan::Operation, scope: &mut Scope) -> Result<Value, Fail> {
+    fn operation(&mut self, s: &plan::Operation, step_idx: usize, scope: &mut Scope) -> Result<Value, Fail> {
         let op = s.operation.as_str();
         let sid = s.id.as_deref().unwrap_or(op);
+        let site = match s.id.as_deref() {
+            Some(name) => name.to_string(),
+            None => format!("#{step_idx}:{op}"),
+        };
+        let fence_step = if self.fence_prefix.is_empty() {
+            site
+        } else {
+            format!("{}{}", self.fence_prefix, site)
+        };
         let (reagent, tool) = op
             .split_once('.')
             .ok_or_else(|| Fail::Failed(format!("bad operation `{op}`")))?;
@@ -713,9 +729,10 @@ impl Run {
         let is_write = !matches!(effect, "read" | "pure");
         let fence_key = if is_write && !self.io.simulates(op, Some(&self.core.cfg)) {
             reagent::authorize(self.core.cfg.mail_root.as_deref(), op, &args, &auth)?;
+            self.check_live()?;
             match self
                 .core
-                .fence_acquire(&self.id, sid, op, effect, &args)
+                .fence_acquire(&self.root_id, &fence_step, op, effect, &args)
                 .map_err(|e| Fail::Failed(e.message))?
             {
                 crate::core::FenceAcquire::Cached { output, evidence } => {
@@ -754,7 +771,6 @@ impl Run {
             format!("{sid}: dispatch {op}"),
             json!({"step":sid,"operation":op,"arguments":args,"effect":effect,"fence_key":fence_key}),
         );
-        self.check_live()?;
         match reagent::perform(
             self.core.cfg.mail_root.as_deref(),
             op,
@@ -829,7 +845,14 @@ impl Run {
             }
             Err(f) => {
                 if let Some(ref fk) = fence_key {
-                    self.core.fence_fail(fk, &f.message());
+                    // Pre-dispatch refusals (validation, authorization, cancel)
+                    // never sent an external write, so clear the fence instead
+                    // of blocking a future revive.
+                    if matches!(f, Fail::Invalid(_) | Fail::Denied(_) | Fail::Cancelled) {
+                        self.core.fence_clear(fk);
+                    } else {
+                        self.core.fence_fail(fk, &f.message());
+                    }
                 }
                 let kind = if matches!(f, Fail::Unverified(_)) {
                     "check.failed"
@@ -1036,9 +1059,13 @@ impl Run {
     /// A ritual step: a pinned child ritual run as its own linked summon in a
     /// fresh context, with explicit inputs, no more authority than this
     /// summon holds, and essence drawn from this summon's.
-    fn child(&mut self, s: &plan::Ritual, scope: &Scope) -> Result<(Value, bool), Fail> {
+    fn child(&mut self, s: &plan::Ritual, step_idx: usize, scope: &Scope) -> Result<(Value, bool), Fail> {
         let name = s.ritual.as_str();
         let sid = s.id.as_deref().unwrap_or(name);
+        let child_site = match s.id.as_deref() {
+            Some(id) => id.to_string(),
+            None => format!("#{step_idx}:{name}"),
+        };
         let (version, hash, def) = self
             .core
             .load_ritual(name, s.version)
@@ -1086,6 +1113,8 @@ impl Run {
             job_claim: self.job_claim.clone(),
             core: self.core.clone(),
             id: child_id.clone(),
+            root_id: self.root_id.clone(),
+            fence_prefix: format!("{}{child_site}>", self.fence_prefix),
             def,
             inputs,
             model_override: self.model_override.clone(),
@@ -1195,8 +1224,13 @@ impl Run {
         fatal
     }
 
-    fn each(&mut self, s: &plan::Each, scope: &mut Scope) -> Result<(), Fail> {
+    fn each(&mut self, s: &plan::Each, step_idx: usize, scope: &mut Scope) -> Result<(), Fail> {
         let id = s.id.clone().unwrap_or_default();
+        let each_site = if id.is_empty() {
+            format!("#{step_idx}:each")
+        } else {
+            id.clone()
+        };
         let var = &s.variable;
         let path = &s.source;
         let source = path.join(".");
@@ -1255,7 +1289,10 @@ impl Run {
                     vars: BTreeMap::from([(var.clone(), item)]),
                     ..Default::default()
                 });
+                let next_prefix = format!("{}{each_site}[{i}]/", self.fence_prefix);
+                let prev_prefix = std::mem::replace(&mut self.fence_prefix, next_prefix);
                 let ran = self.run_steps(body, scope);
+                self.fence_prefix = prev_prefix;
                 let frame = scope.frames.pop().unwrap();
                 if let Some(f) =
                     self.record_batch_item(&id, top_level, keep_going, &mut items, label, frame, ran)
@@ -1310,7 +1347,10 @@ impl Run {
                                     vars: BTreeMap::from([(var.clone(), item.clone())]),
                                     ..Default::default()
                                 });
+                                let next_prefix = format!("{}{each_site}[{i}]/", worker.fence_prefix);
+                                let prev_prefix = std::mem::replace(&mut worker.fence_prefix, next_prefix);
                                 let ran = worker.run_steps(body, &mut wscope);
+                                worker.fence_prefix = prev_prefix;
                                 let frame = wscope.frames.pop().unwrap();
                                 let fatal_here = matches!(
                                     ran,
@@ -1436,6 +1476,8 @@ mod tests {
             Run {
                 job_claim: None,
                 core: self.core.clone(),
+                root_id: id.clone(),
+                fence_prefix: String::new(),
                 id,
                 inputs: json!({}),
                 model_override: model.map(String::from),

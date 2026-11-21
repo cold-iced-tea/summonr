@@ -957,7 +957,14 @@ impl Core {
             &id,
             "summon.start",
             &format!("{} version {} invoked", r.def.ritual, r.version),
-            json!({"hash": r.hash, "inputs": r.inputs, "model": r.model, "warnings": r.warnings}),
+            json!({
+                "hash": r.hash,
+                "inputs": r.inputs,
+                "model": r.model,
+                "model_override": model_override,
+                "settings_override": r.settings,
+                "warnings": r.warnings,
+            }),
         );
         for w in &r.warnings {
             self.emit(&id, "drift", w, json!({}));
@@ -967,6 +974,8 @@ impl Core {
             job_claim: None,
             core: self.clone(),
             id: id.clone(),
+            root_id: id.clone(),
+            fence_prefix: String::new(),
             meters: vec![Arc::new(Meter::new(&r.def.essence))],
             def: r.def,
             inputs: r.inputs,
@@ -985,14 +994,69 @@ impl Core {
         (id, run, cancel)
     }
 
+    /// Clean up a run created by `make_run` if a setup step fails before its
+    /// thread starts, so neither the `running` row nor the `active` slot leaks.
+    pub(crate) fn fail_unstarted(&self, id: &str, err: &RpcErr) {
+        let fin = Finished {
+            outcome: Outcome::Failed,
+            result: Value::Null,
+            error: Some(err.message.clone()),
+        };
+        self.finish_summon(id, &fin, json!([]));
+        self.active.lock().unwrap().remove(id);
+    }
+
+    /// Recover the original `model_override` and `settings_override` from a
+    /// root summon's `summon.start` event so revive and recast do not clobber
+    /// child models or drop caller settings.
+    fn load_start_overrides(&self, old_id: &str) -> (Option<String>, BTreeMap<String, String>) {
+        let raw: Option<String> = self
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT data FROM events WHERE summon=?1 AND kind='summon.start' ORDER BY seq ASC LIMIT 1",
+                params![old_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten();
+        let Some(raw) = raw else {
+            return (None, BTreeMap::new());
+        };
+        let Ok(v) = serde_json::from_str::<Value>(&raw) else {
+            return (None, BTreeMap::new());
+        };
+        let model_override = v
+            .get("model_override")
+            .and_then(Value::as_str)
+            .map(String::from);
+        let settings_override = v
+            .get("settings_override")
+            .and_then(Value::as_object)
+            .map(|m| {
+                m.iter()
+                    .map(|(k, val)| {
+                        let s = match val {
+                            Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        };
+                        (k.clone(), s)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        (model_override, settings_override)
+    }
+
     /// Run to completion and record the end, releasing models unless another
     /// summon still needs them.
     fn complete(self: &Arc<Self>, mut run: Run, hold_models: bool) -> Finished {
         let fin = run.execute();
         let others = {
-            let mut active = self.active.lock().unwrap();
-            active.remove(&run.id);
-            active.len()
+            let active = self.active.lock().unwrap();
+            active.keys().filter(|k| k.as_str() != run.id.as_str()).count()
         };
         let models: Vec<String> = run.models_used.lock().unwrap().iter().cloned().collect();
         let cleanup: Vec<Value> = models
@@ -1028,6 +1092,9 @@ impl Core {
         if run.depth == 0 {
             self.on_run_end(&run.id);
         }
+        // Leave `active` only after the terminal record is durable so a clean
+        // shutdown cannot exit mid-finalization and seal this run interrupted.
+        self.active.lock().unwrap().remove(&run.id);
         fin
     }
 
@@ -1183,6 +1250,14 @@ impl Core {
         self.persisted(saved);
     }
 
+    pub(crate) fn fence_clear(&self, fence_key: &str) {
+        let saved = self.db.lock().unwrap().execute(
+            "DELETE FROM effect_fence WHERE fence_key=?1 AND state='dispatched'",
+            params![fence_key],
+        );
+        self.persisted(saved);
+    }
+
     fn copy_fences(
         &self,
         from: &str,
@@ -1213,7 +1288,8 @@ impl Core {
         drop(q);
         for (step, op, effect, args_hash, state, output, evidence, error, updated) in rows {
             if let Some(keep) = keep_steps {
-                if !keep.contains(&step) {
+                let top = step.split(['>', '[', '/']).next().unwrap_or(&step);
+                if !keep.contains(top) {
                     continue;
                 }
             }
@@ -1339,15 +1415,16 @@ impl Core {
             i64,
             String,
             String,
-            Option<String>,
             String,
+            Option<String>,
+            Option<String>,
             Option<String>,
         )> = self
             .db
             .lock()
             .unwrap()
             .query_row(
-                "SELECT parent, ritual, version, hash, inputs, model, status, outcome FROM summons WHERE id=?1",
+                "SELECT parent, ritual, version, hash, inputs, status, outcome, essence, familiar FROM summons WHERE id=?1",
                 params![old_id],
                 |r| {
                     Ok((
@@ -1359,12 +1436,13 @@ impl Core {
                         r.get(5)?,
                         r.get(6)?,
                         r.get(7)?,
+                        r.get(8)?,
                     ))
                 },
             )
             .optional()
             .map_err(storage_error)?;
-        let (parent, ritual, version, hash, inputs_raw, model, status, outcome) =
+        let (parent, ritual, version, hash, inputs_raw, status, outcome, essence_raw, familiar) =
             row.ok_or_else(|| RpcErr::not_found(format!("no summon `{old_id}`")))?;
         if parent.is_some() {
             return Err(RpcErr::invalid("only a root summon can be revived"));
@@ -1386,20 +1464,34 @@ impl Core {
         let args: Map<String, Value> = serde_json::from_str(&inputs_raw).map_err(|e| {
             RpcErr::new("storage_failed", 11, format!("corrupt inputs for `{old_id}`: {e}"))
         })?;
+        let stored_limits: Essence = essence_raw
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        let (orig_model_override, orig_settings) = self.load_start_overrides(&old_id);
         let spec = Spec {
             target: ritual,
             version: Some(version as u32),
-            model: model.clone(),
+            model: orig_model_override.clone(),
+            settings: orig_settings,
+            limits: stored_limits,
             args,
             expected_hash: Some(hash),
+            caller: familiar.unwrap_or_default(),
             ..Default::default()
         };
         let r = self.resolve(&spec)?;
         Self::check_authority(&r)?;
         self.admit()?;
-        let (id, run, _cancel) = self.make_run(r, model, None, None);
-        self.copy_checkpoints(&old_id, &id)?;
-        self.copy_fences(&old_id, &id, None)?;
+        let (id, run, _cancel) = self.make_run(r, orig_model_override, None, None);
+        if let Err(e) = self
+            .copy_checkpoints(&old_id, &id)
+            .and_then(|_| self.copy_fences(&old_id, &id, None))
+            .and_then(|_| self.storage_health())
+        {
+            self.fail_unstarted(&id, &e);
+            return Err(e);
+        }
         self.emit(
             &id,
             "revive",
@@ -1425,14 +1517,15 @@ impl Core {
             i64,
             String,
             String,
-            Option<String>,
             String,
+            Option<String>,
+            Option<String>,
         )> = self
             .db
             .lock()
             .unwrap()
             .query_row(
-                "SELECT parent, ritual, version, hash, inputs, model, status FROM summons WHERE id=?1",
+                "SELECT parent, ritual, version, hash, inputs, status, essence, familiar FROM summons WHERE id=?1",
                 params![old_id],
                 |r| {
                     Ok((
@@ -1443,12 +1536,13 @@ impl Core {
                         r.get(4)?,
                         r.get(5)?,
                         r.get(6)?,
+                        r.get(7)?,
                     ))
                 },
             )
             .optional()
             .map_err(storage_error)?;
-        let (parent, ritual, version, hash, inputs_raw, prev_model, status) =
+        let (parent, ritual, version, hash, inputs_raw, status, essence_raw, familiar) =
             row.ok_or_else(|| RpcErr::not_found(format!("no summon `{old_id}`")))?;
         if parent.is_some() {
             return Err(RpcErr::invalid("only a root summon can be recast"));
@@ -1461,13 +1555,21 @@ impl Core {
         let args: Map<String, Value> = serde_json::from_str(&inputs_raw).map_err(|e| {
             RpcErr::new("storage_failed", 11, format!("corrupt inputs for `{old_id}`: {e}"))
         })?;
-        let chosen_model = req.model.or(prev_model);
+        let stored_limits: Essence = essence_raw
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        let (orig_model_override, orig_settings) = self.load_start_overrides(&old_id);
+        let chosen_model = req.model.or(orig_model_override);
         let spec = Spec {
             target: ritual,
             version: Some(version as u32),
             model: chosen_model.clone(),
+            settings: orig_settings,
+            limits: stored_limits,
             args,
             expected_hash: Some(hash),
+            caller: familiar.unwrap_or_default(),
             ..Default::default()
         };
         let r = self.resolve(&spec)?;
@@ -1515,7 +1617,13 @@ impl Core {
                 }
             }
         }
-        self.copy_fences(&old_id, &id, Some(&keep))?;
+        if let Err(e) = self
+            .copy_fences(&old_id, &id, Some(&keep))
+            .and_then(|_| self.storage_health())
+        {
+            self.fail_unstarted(&id, &e);
+            return Err(e);
+        }
         self.emit(
             &id,
             "recast",
@@ -1641,7 +1749,10 @@ impl Core {
         };
         let out = json!({"summon": "", "ritual": r.def.ritual, "version": r.version, "hash": r.hash, "warnings": r.warnings});
         let (id, run, _) = self.make_run(r, spec.model.clone(), None, io);
-        self.storage_health()?;
+        if let Err(e) = self.storage_health() {
+            self.fail_unstarted(&id, &e);
+            return Err(e);
+        }
         if let Some(key) = &spec.idempotency_key {
             let saved = self.db.lock().unwrap().execute(
                 "INSERT INTO invocations(caller,key,request_hash,summon) VALUES (?1,?2,?3,?4)",
