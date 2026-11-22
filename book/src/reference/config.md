@@ -48,6 +48,7 @@ style: keyword
 | `repos` | none | Repositories the `git`, `gh` and `trial` reagents may act on: `NAME: {path, trunk, remote, test, disposable}`. See [Repositories](../guides/repositories.md). |
 | `commands` | none | Scoped commands the `cmd` reagent may execute, by name |
 | `mcp_reagents` | none | External stdio MCP servers configured as reagents, by name |
+| `wasm_reagents` | none | SHA-256-pinned WebAssembly (WASI) reagents (`NAME: {module, sha256, runtime, tools, preopen_dirs, max_memory_mb, fuel, timeout_ms}`) |
 | `git`, `gh` | on PATH | The `git` and `gh` programs those reagents run |
 | `openssl` | on PATH | The `openssl` program used for RFC 3161 timestamps |
 | `max_depth` | `3` | How deeply rituals may call rituals |

@@ -518,15 +518,27 @@ pub fn tool_meta(
     if let Some(t) = tool(reagent_name, name) {
         return Some(ToolMeta::from(t));
     }
-    let mcp = cfg?.mcp_reagents.get(reagent_name)?;
-    let t = mcp.tools.get(name)?;
-    let effect = match t.effect.as_str() {
-        "read" => "read",
-        _ => "write",
+    if let Some(mcp) = cfg?.mcp_reagents.get(reagent_name) {
+        let t = mcp.tools.get(name)?;
+        let effect = match t.effect.as_str() {
+            "read" => "read",
+            _ => "write",
+        };
+        return Some(ToolMeta {
+            effect,
+            determinism: "external",
+        });
+    }
+    let wasm = cfg?.wasm_reagents.get(reagent_name)?;
+    let t = wasm.tools.get(name)?;
+    let (effect, determinism) = match t.effect.as_str() {
+        "pure" => ("pure", "deterministic"),
+        "read" => ("read", "deterministic over live state"),
+        _ => ("write", "external"),
     };
     Some(ToolMeta {
         effect,
-        determinism: "external",
+        determinism,
     })
 }
 pub fn tools_of(name: &str) -> Vec<&'static str> {
@@ -539,8 +551,14 @@ pub fn tools_of_cfg(cfg: Option<&crate::util::Config>, name: &str) -> Vec<String
     if !builtin.is_empty() {
         return builtin.into_iter().map(String::from).collect();
     }
-    cfg.and_then(|c| c.mcp_reagents.get(name))
-        .map(|m| m.tools.keys().cloned().collect())
+    if let Some(tools) = cfg
+        .and_then(|c| c.mcp_reagents.get(name))
+        .map(|m| m.tools.keys().cloned().collect::<Vec<_>>())
+    {
+        return tools;
+    }
+    cfg.and_then(|c| c.wasm_reagents.get(name))
+        .map(|w| w.tools.keys().cloned().collect())
         .unwrap_or_default()
 }
 pub fn input_schema(operation: &str) -> Option<Value> {
@@ -907,6 +925,20 @@ pub fn call(
         validate_arguments(&format!("{reagent}.{tool}"), args, true).map_err(Fail::Invalid)?;
         return implementation.call(mail_root, tool, args, auth);
     }
+    if auth
+        .config
+        .is_some_and(|c| c.wasm_reagents.contains_key(reagent))
+    {
+        authorize_wasm(reagent, tool, auth)?;
+        let wasm_cfg = auth
+            .config
+            .and_then(|c| c.wasm_reagents.get(reagent))
+            .expect("authorized above");
+        let timeout = auth
+            .deadline
+            .map(|d| d.saturating_duration_since(std::time::Instant::now()));
+        return crate::wasm_reagent::call_tool(wasm_cfg, tool, args, timeout).map_err(Fail::Failed);
+    }
     authorize_mcp(reagent, tool, auth)?;
     let mcp_cfg = auth
         .config
@@ -935,7 +967,47 @@ pub fn authorize(
         validate_arguments(operation, args, true).map_err(Fail::Invalid)?;
         return implementation.authorize(mail_root, tool, args, auth);
     }
+    if auth
+        .config
+        .is_some_and(|c| c.wasm_reagents.contains_key(reagent))
+    {
+        return authorize_wasm(reagent, tool, auth).map(|_| ());
+    }
     authorize_mcp(reagent, tool, auth).map(|_| ())
+}
+
+fn authorize_wasm(
+    reagent: &str,
+    tool: &str,
+    auth: &Authority,
+) -> Result<&'static str, Fail> {
+    let cfg = auth
+        .config
+        .and_then(|c| c.wasm_reagents.get(reagent))
+        .ok_or_else(|| Fail::Failed(format!("unknown wasm reagent `{reagent}`")))?;
+    let t = cfg
+        .tools
+        .get(tool)
+        .ok_or_else(|| Fail::Failed(format!("wasm reagent `{reagent}` has no tool `{tool}`")))?;
+    if t.effect == "pure" {
+        return Ok("pure");
+    }
+    let mut matching = auth
+        .grants
+        .iter()
+        .filter(|g| g.reagent == reagent && g.action == tool)
+        .peekable();
+    if matching.peek().is_none() {
+        return Err(Fail::Denied(format!(
+            "{reagent}.{tool} is not authorized by any grant"
+        )));
+    }
+    if !matching.any(|g| g.on.is_empty() && g.into.is_empty()) {
+        return Err(Fail::Denied(format!(
+            "{reagent}.{tool} is only granted with a scope, and wasm grants cannot be scoped; grant it without on/into"
+        )));
+    }
+    Ok(if t.effect == "read" { "read" } else { "write" })
 }
 
 /// Apply the authority side effects of an output that did not come from a

@@ -44,7 +44,7 @@ mod workbench;
 
 pub(crate) use reagents::{
     cmd_reagent, file_reagent, gh_reagent, git_reagent, http_reagent, mcp_reagent, sight_reagent,
-    trial_reagent,
+    trial_reagent, wasm_reagent,
 };
 
 use grammar::{Op, Style};

@@ -226,6 +226,7 @@ impl Core {
                     "config_sha256": cfg_hash,
                     "present": present,
                     "mcp_reagents": self.cfg.mcp_reagents.keys().collect::<Vec<_>>(),
+                    "wasm_reagents": self.cfg.wasm_reagents.iter().map(|(k, v)| (k, &v.sha256)).collect::<BTreeMap<_, _>>(),
                     "commands": self.cfg.commands.keys().collect::<Vec<_>>(),
                     "pricing_rules": self.cfg.pricing.len(),
                 }),

@@ -6,3 +6,4 @@ pub(crate) mod http_reagent;
 pub(crate) mod mcp_reagent;
 pub(crate) mod sight_reagent;
 pub(crate) mod trial_reagent;
+pub(crate) mod wasm_reagent;

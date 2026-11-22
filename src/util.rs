@@ -346,6 +346,9 @@ pub struct Config {
     /// External MCP stdio servers configured as reagents, by name.
     #[serde(default)]
     pub mcp_reagents: std::collections::BTreeMap<String, McpReagentConfig>,
+    /// Capability-sandboxed WebAssembly (WASI) reagents pinned by SHA-256, by name.
+    #[serde(default)]
+    pub wasm_reagents: std::collections::BTreeMap<String, WasmReagentConfig>,
     /// Outbound HTTP egress policy (host allow/deny lists and private-IP blocking).
     #[serde(default)]
     pub egress: EgressConfig,
@@ -377,6 +380,51 @@ pub struct Config {
 pub struct SightConfig {
     pub max_bytes: Option<u64>,
     pub max_per_step: Option<usize>,
+}
+
+/// Configuration for a pinned, capability-sandboxed WebAssembly (WASI) reagent.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct WasmReagentConfig {
+    /// Absolute path to the `.wasm` module binary.
+    pub module: String,
+    /// Required 64-character lowercase hex SHA-256 of the `.wasm` module.
+    pub sha256: String,
+    /// WASI runtime binary (default: `wasmtime`).
+    #[serde(default)]
+    pub runtime: Option<String>,
+    /// Declared tools exposed by this Wasm reagent.
+    #[serde(default)]
+    pub tools: std::collections::BTreeMap<String, WasmToolConfig>,
+    /// Explicit preopened directories (`--dir`); empty by default (no filesystem access).
+    #[serde(default)]
+    pub preopen_dirs: Vec<String>,
+    /// Optional linear-memory limit in MiB.
+    #[serde(default)]
+    pub max_memory_mb: Option<u64>,
+    /// Optional deterministic WASI fuel limit.
+    #[serde(default)]
+    pub fuel: Option<u64>,
+    /// Hard wall-clock timeout in milliseconds (default: 10000).
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    /// Maximum stdout bytes accepted (default: 262144).
+    #[serde(default)]
+    pub max_output_bytes: Option<usize>,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct WasmToolConfig {
+    /// `"pure"`, `"read"`, or `"write"` (default `"write"` — fail closed).
+    #[serde(default = "default_wasm_effect")]
+    pub effect: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+fn default_wasm_effect() -> String {
+    "write".into()
 }
 
 /// Role-Based Access Control settings for operator separation of duties.
