@@ -76,6 +76,28 @@ suggestion. Most recent last.
     was not there. *Suggestion:* a doc test that compiles each documented
     "rejected" example and expects the rejection.
 
+26. **A big run's record becomes unreadable.** A 30-minute bench ended
+    and `run --wait --json`, `record ID --json` and `logs ID --json` all
+    failed with "lost the core: frame too large": the whole record
+    (mostly per-step events of child summons) is over the 64 MiB RPC
+    frame. The run's results were fine; I recovered them by reading
+    `state/summonr.db` with `sqlite3`, which no user should have to do.
+    *Suggestion:* never send a whole record in one frame; page `record`
+    and `logs`, and give `run --wait --json` / `record` a result-only form
+    (outcome, error, result, usage, child ids).
+27. **A cheap child's budget can throw away an expensive sibling's work.**
+    The bench ran three hunts (516 model calls, 30 minutes), then `gather`
+    hit its own 1-minute time essence. The bench ended `exhausted` and its
+    result held none of the hunts' findings; they survived only as child
+    summon rows. Pure work on ~1,100 findings took minutes, which I had
+    not expected. *Suggestion:* include completed child results in an
+    exhausted parent's `result.partial`; and say in the docs roughly what
+    pure steps cost (each one is recorded), so time essence for pure
+    rituals can be set sensibly.
+28. **`history` lists only top-level summons.** Finding the child hunts
+    of a failed bench needed the record, which was unreadable (26), so
+    again the database. *Suggestion:* `history --children ID`.
+
 ## Reflections after the build
 
 What it was like to build a real multi-ritual workflow, beyond single
@@ -157,6 +179,8 @@ Not Summonr's fault, but a Summonr user that is an agent will make them too.
   (chunks skipped) but not the cost (data carried).
 - **A test before the code, mostly.** Most rituals got their drill first
   and failed first; `bench.yaml` did not, and `test.yaml` could not.
-- **A process kill that matched my own shell.** `pkill -f` on a pattern
-  that appeared in the killing command line ended that shell; harmless,
-  but it hid whether the stop worked.
+- **A process kill that matched my own shell, twice.** `pkill -f` (and a
+  `pgrep` loop) on a pattern that appeared in the killing command line
+  ended that shell, and I repeated it after writing this lesson down.
+  Writing a lesson down is not the same as changing the habit; use exact
+  pids from `ps`, or have Summonr own the stop (entry 9).

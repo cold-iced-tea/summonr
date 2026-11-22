@@ -14,3 +14,4 @@ grant bughunt-test --from trial --select run
 grant bughunt-test --from cmd --select read
 grant bughunt-bench --from file --select list,read_text --on root="$root"
 grant bughunt-bench --from file --select read_json --on root="$lab/benchmark"
+grant bughunt-rescore --from file --select read_json --on root="$lab/benchmark"

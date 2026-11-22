@@ -1,0 +1,39 @@
+language_version: 1
+ritual: bughunt-rescore
+description: >-
+  Gather and score hunts saved to a file (a JSON list of hunt results) against
+  a gold set, both in the lab's benchmark folder. For re-scoring without
+  re-running the model.
+inputs:
+  hunts: {type: string, default: hunts.json}
+  gold: {type: string, default: gold.json}
+requires:
+  - {reagent: file, action: read_json, on: {root: /absolute/path/to/lab/benchmark}}
+essence: {requests: 0, time: 1h}
+steps:
+  - id: saved
+    operation: file.read_json
+    arguments: {root: /absolute/path/to/lab/benchmark, path: "${inputs.hunts}"}
+  - id: gold
+    operation: file.read_json
+    arguments: {root: /absolute/path/to/lab/benchmark, path: "${inputs.gold}"}
+  - id: all_findings
+    operation: data.fold
+    arguments:
+      values: "${steps.saved.output.value}"
+      initial: []
+      operation: data.concat
+      arguments: {left: "${acc}", right: "${item.findings}"}
+  - id: kept
+    ritual: bughunt-gather
+    arguments: {hunts: "${steps.saved.output.value}", min_batch: 1}
+  - id: raw
+    ritual: bughunt-score
+    arguments: {findings: "${steps.all_findings.output}", gold: "${steps.gold.output.value}"}
+  - id: filtered
+    ritual: bughunt-score
+    arguments: {findings: "${steps.kept.output.findings}", gold: "${steps.gold.output.value}"}
+return:
+  raw: "${steps.raw.output}"
+  after_gather: "${steps.filtered.output}"
+  findings: "${steps.kept.output.findings}"

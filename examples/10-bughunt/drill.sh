@@ -12,7 +12,7 @@ trap '"$bin" core stop --json >/dev/null 2>&1 || true; rm -rf "$home"' EXIT
 
 fixture="$here/fixtures/target"
 # Children before parents: a ritual step needs its child already inscribed.
-for name in verdict batch-ready gather scan-file hunt test score bench; do
+for name in verdict batch-ready gather scan-file hunt test score bench rescore; do
   f="$here/$name.yaml"; [ -f "$f" ] || continue
   sed -e "s|/absolute/path/to/lab|$here/fixtures|g" \
       -e "s|/absolute/path/to/target-repro|$fixture-repro|g" \

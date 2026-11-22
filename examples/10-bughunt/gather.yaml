@@ -7,7 +7,7 @@ description: >-
 inputs:
   hunts: list
   min_batch: {type: integer, default: 5, min: 1, max: 1000}
-essence: {requests: 0, time: 1m}
+essence: {requests: 0, time: 30m}
 steps:
   - id: all
     operation: data.fold

@@ -8,7 +8,7 @@ inputs:
   findings: list
   # {total, by_file: {FILE: [{id, text}]}}, made by benchmark/make_gold.py
   gold: object
-essence: {requests: 0, time: 5m}
+essence: {requests: 0, time: 30m}
 steps:
   - id: per_finding
     each: found in inputs.findings

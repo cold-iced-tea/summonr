@@ -1,0 +1,12 @@
+# Drill for bughunt-rescore: reads fixtures/benchmark/hunts.json and gold.json.
+drill: bughunt-rescore-cases
+ritual: bughunt-rescore
+cases:
+  - id: saved-hunts-are-scored
+    inputs: {}
+    expect:
+      outcome: returned
+      result:
+        raw: {gold_total: 1, gold_hit: 1, hit_ids: [g-auth], findings: 2, hits: 1, noise: 1}
+        after_gather: {gold_total: 1, gold_hit: 1, findings: 1, hits: 1, noise: 0}
+      model_calls: 0
