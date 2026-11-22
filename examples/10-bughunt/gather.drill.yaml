@@ -1,0 +1,44 @@
+# Drill for bughunt-gather: pure, no model. Run through ./drill.sh.
+drill: bughunt-gather-cases
+ritual: bughunt-gather
+cases:
+  - id: same-spot-from-two-angles-collapses
+    inputs:
+      min_batch: 1
+      hunts:
+        - angle: a
+          findings:
+            - {kind: bug, severity: high, confidence: 0.9, claim: first, trigger: t, snippet: x(), file: src/a.rs, start: 0}
+        - angle: b
+          findings:
+            - {kind: bug, severity: high, confidence: 0.8, claim: second, trigger: t, snippet: x(), file: src/a.rs, start: 0}
+            - {kind: bypass, severity: low, confidence: 0.8, claim: other, trigger: t, snippet: x(), file: src/a.rs, start: 0}
+    expect:
+      outcome: returned
+      result: {count: 2, pass: true}
+      model_calls: 0
+  - id: low-confidence-dropped
+    inputs:
+      min_batch: 1
+      hunts:
+        - angle: a
+          findings:
+            - {kind: bug, severity: high, confidence: 0.1, claim: weak, trigger: t, snippet: y(), file: src/a.rs, start: 0}
+    expect:
+      outcome: returned
+      result: {count: 0, findings: [], pass: false}
+  - id: small-batch-does-not-pass
+    inputs:
+      min_batch: 3
+      hunts:
+        - angle: a
+          findings:
+            - {kind: bug, severity: high, confidence: 0.9, claim: c, trigger: t, snippet: z(), file: src/a.rs, start: 0}
+    expect:
+      outcome: returned
+      result: {count: 1, min_batch: 3, pass: false}
+  - id: no-hunts-at-all
+    inputs: {hunts: []}
+    expect:
+      outcome: returned
+      result: {count: 0, pass: false}

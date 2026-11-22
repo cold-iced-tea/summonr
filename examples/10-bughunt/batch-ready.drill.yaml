@@ -1,0 +1,10 @@
+# Drill for bughunt-batch-ready, the touchstone gate after gather.
+drill: bughunt-batch-ready-cases
+ritual: bughunt-batch-ready
+cases:
+  - id: passes-through-true
+    inputs: {output: {count: 5, min_batch: 5, pass: true, findings: []}}
+    expect: {outcome: returned, result: {pass: true}, model_calls: 0}
+  - id: passes-through-false
+    inputs: {output: {count: 1, min_batch: 5, pass: false, findings: []}}
+    expect: {outcome: returned, result: {pass: false}}
