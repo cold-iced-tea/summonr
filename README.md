@@ -166,14 +166,16 @@ Every CLI clause has two spellings—keyword (`invoke ... given ... then return 
 
 ---
 
-## v0.2 Roadmap: verifiable enterprise governance
+## v0.2: verifiable enterprise governance
 
-v0.1 establishes single-core enforcement, cryptographic run receipts, bilateral pacts, signed packs, and monetary budgets. **v0.2** targets production enterprise governance:
+v0.2 ships production enterprise governance controls mapped directly to SOC 2 (Security & Processing Integrity) and ISO/IEC 27001:2022 (see [Enterprise Governance & Compliance](book/src/governance/index.md)):
 
-- **SOC 2 / ISO 27001 readiness:** Map Summonr controls (change management via content-hashed rituals, least-privilege grants, dual-control petitions, and signed epitaph chains) to SOC 2 CC6/CC7/CC8 and ISO 27001 Annex A controls; ship exportable auditor evidence bundles, configurable retention policies, and automatic PII redaction for stored elegy payloads.
-- **RBAC for reagent management:** Replace the single-owner local socket trust model with cryptographic operator roles separating **ritual authors** (`inscribe` / `reliquary publish`), **security administrators** (`grant` / `revoke` / `config` / reagent registration), and **reviewers** (`petition permit/deny` / `rite` gate sign-off), with quorum approval for high-impact writes.
-- **Tamper-evident SQLite audit logs:** Extend Ed25519 hash chaining and Merkle log commitments beyond run epitaphs to cover every administrative state transition in `summonr.db`—grants, revocations, familiar lifecycle, reagent configuration, and policy edits—so any out-of-band SQLite tampering is detected at startup and during offline `summonr verify`.
-- **Transition to Wasm reagents:** Migrate external and custom capabilities from native Rust adapters and stdio subprocesses to capability-sandboxed **WebAssembly (Wasm) reagents** (WASI Component Model), enforcing deterministic memory/CPU fuel limits, portable filesystem/network sandboxing across OSes, and content-hashed reagent pinning alongside rituals.
+- **SOC 2 / ISO 27001 evidence & retention:** Signed compliance evidence bundles (`summonr audit export --format json`), line-delimited SIEM streaming (`--format ndjson`), offline third-party bundle verification (`summonr audit verify-bundle`), and chain-preserving retention pruning (`summonr audit prune`).
+- **Dual-layer RBAC & separation of duties:** Ed25519 operator roles (`admin`, `policy_author`, `agent_runner`, `reviewer`, `auditor`, `security_admin`), normalized SQLite RBAC tables (`summonr rbac ...`), pre-execution reagent guards in `src/exec.rs`, `rbac.enforce`, and `rbac.require_independent_reviewer` to block self-approval of held petitions.
+- **Tamper-evident SQLite audit logs:** Append-only `audit_log` with SQLite `BEFORE UPDATE`/`BEFORE DELETE` triggers, SHA-256 hash chaining, Ed25519 signatures (`summonr-audit-v1\0`), `SO_PEERCRED` actor attribution, `config.yaml` boot anchoring, atomic `summon.finished` cross-anchoring, fail-closed startup verification, and `summonr audit verify`.
+- **Capability-sandboxed WASI `wasm_reagents`:** SHA-256-pinned WebAssembly reagents with `env_clear()`, explicit directory/env preopens, process-group timeout kills, bounded stdout, and fail-closed write classification (`src/reagents/wasm_reagent.rs`).
+
+**Next (v0.3 horizon):** `M-of-N` quorum petition approvals, automatic PII redaction for stored elegy payloads, and embedded in-process Wasmtime fuel/memory-limited Component Model execution.
 
 ---
 
@@ -184,6 +186,7 @@ cargo clippy --offline --all-targets -- -D warnings
 cargo test --offline
 cargo build --offline
 python3 -B scripts/check_offline.py
+python3 -B scripts/check_governance.py
 python3 -B scripts/check_jobs.py
 python3 -B scripts/check_stdlib.py
 python3 -B scripts/check_reliquary.py
@@ -191,8 +194,8 @@ python3 -B scripts/check_rites.py
 mdbook build book
 ```
 
-- **Book:** [Introduction](book/src/introduction.md) · [First ritual](book/src/getting-started/first-ritual.md) · [Determinism boundary](book/src/concepts/determinism.md) · [Authority](book/src/concepts/authority.md) · [Essence](book/src/concepts/essence.md) · [Sight](book/src/reference/sight.md) · [Configuration](book/src/reference/config.md) · [Robustness roadmap](book/src/roadmap.md)
-- **Worked examples:** [examples/README.md](examples/README.md) (manifest checks, ticket triage, receipt verification, form routing, budgeted batches, stdlib pipelines, two-core pacts, and `sight` vision)
+- **Book:** [Introduction](book/src/introduction.md) · [Enterprise Governance & Compliance](book/src/governance/index.md) · [First ritual](book/src/getting-started/first-ritual.md) · [Determinism boundary](book/src/concepts/determinism.md) · [Authority](book/src/concepts/authority.md) · [Essence](book/src/concepts/essence.md) · [Sight](book/src/reference/sight.md) · [Configuration](book/src/reference/config.md) · [Robustness roadmap](book/src/roadmap.md)
+- **Worked examples:** [examples/README.md](examples/README.md) (including [09-redact-document](examples/09-redact-document/README.md) for active boundary enforcement)
 
 ## License
 

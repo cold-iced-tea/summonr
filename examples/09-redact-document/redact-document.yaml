@@ -1,0 +1,60 @@
+ritual: redact-document
+inputs:
+  path:
+    type: string
+  hold:
+    type: boolean
+    default: true
+    user_only: true
+essence:
+  requests: 0
+  time: 1m
+requires:
+  - reagent: file
+    action: read_text
+    on:
+      root: /absolute/path/to/intake
+  - reagent: file
+    action: write_text
+    on:
+      root: /absolute/path/to/redacted
+  - reagent: file
+    action: stat
+    on:
+      root: /absolute/path/to/redacted
+steps:
+  - id: read_in
+    operation: file.read_text
+    arguments:
+      root: /absolute/path/to/intake
+      path: "${inputs.path}"
+  - id: mask_ssn
+    operation: data.replace
+    arguments:
+      text: "${steps.read_in.output.text}"
+      from: "123-45-6789"
+      to: "[REDACTED-SSN]"
+  - id: mask_acct
+    operation: data.replace
+    arguments:
+      text: "${steps.mask_ssn.output}"
+      from: "ACCT-998811"
+      to: "[REDACTED-ACCT]"
+  - id: write_out
+    operation: file.write_text
+    hold: "${inputs.hold}"
+    arguments:
+      root: /absolute/path/to/redacted
+      path: "${inputs.path}"
+      text: "${steps.mask_acct.output}"
+    verify:
+      observe: file.stat
+      arguments:
+        root: /absolute/path/to/redacted
+        path: "${inputs.path}"
+      expect:
+        exists: true
+return:
+  path: "${inputs.path}"
+  held: "${steps.write_out.output.held}"
+  petition: "${steps.write_out.output.petition}"

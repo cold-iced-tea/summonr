@@ -12,6 +12,7 @@ Runnable rituals for the "Learn by example" chapters of the Summonr Book (`book/
 | `06-standard-library` | Pure collection pipelines (`data` standard library) with zero model calls |
 | `07-pacts` | Two-core buyer/supplier contract with pinned ritual, approval threshold, and acceptance check |
 | `08-sight` | An image read in code, then shown to a vision model; the drill scripts the reply so no vision model is needed |
+| `09-redact-document` | Active boundary enforcement: scoped file roots, `user_only` petition hold, post-write `file.stat` verify, and `audit verify` |
 
 Setup, from the repository root:
 

@@ -261,7 +261,7 @@ use cli::core::{core_command, help, validate_file};
 use cli::eval::{assay, drill, experiment_judge, experiment_sweep, experiment_weigh};
 use cli::invoke::{fence_command, follow_command, invoke, petition, wait_for};
 use cli::session::{session_bid, session_bind, session_imbue, session_lethe, session_soul, session_summon};
-use cli::trust::{audit_command, chain_command, epitaph_command, epitaph_verify_command, familiar_command, key_command, operator_command, peer_command, verify_command, witness_command};
+use cli::trust::{audit_command, chain_command, epitaph_command, epitaph_verify_command, familiar_command, key_command, operator_command, peer_command, rbac_command, verify_command, witness_command};
 use cli::work::{demo_command, job_command, pact_command, reliquary_command, rite_command};
 
 fn run(op: Op, paths: &Paths, style: Style) -> i32 {
@@ -290,9 +290,14 @@ fn run(op: Op, paths: &Paths, style: Style) -> i32 {
     if op.tsa_ca.is_some() && op.verb != "verify" {
         return finish(Err(RpcErr::invalid("tsa-ca is valid only with verify")), json_out, |_| {});
     }
-    if op.key.is_some() && !matches!(op.verb.as_str(), "familiar" | "peer" | "verify" | "witness" | "pact") {
+    if op.key.is_some()
+        && !matches!(
+            op.verb.as_str(),
+            "familiar" | "peer" | "verify" | "witness" | "pact" | "audit" | "operator" | "reliquary"
+        )
+    {
         return finish(
-            Err(RpcErr::invalid("key is valid only with familiar add, peer add, verify, witness accept or pact admit")),
+            Err(RpcErr::invalid("key is valid only with familiar add, peer add, operator add, audit verify-bundle, reliquary, verify, witness accept or pact admit")),
             json_out,
             |_| {},
         );
@@ -780,6 +785,7 @@ fn run(op: Op, paths: &Paths, style: Style) -> i32 {
         "chain" => chain_command(&op, &mut client),
         "audit" => audit_command(&op, &mut client),
         "operator" => operator_command(&op, &mut client),
+        "rbac" => rbac_command(&op, &mut client),
         "verify" => verify_command(&op, &mut client),
         "witness" => witness_command(&op, &mut client),
         "peer" => peer_command(&op, &mut client),

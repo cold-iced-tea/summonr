@@ -226,6 +226,12 @@ pub const VERBS: &[(&str, &str, bool, &str)] = &[
         "Manage RBAC operator keys and roles: new, add, list, revoke",
     ),
     (
+        "rbac",
+        "",
+        false,
+        "Manage RBAC roles, reagent permissions, and actor bindings",
+    ),
+    (
         "daemon",
         "panel",
         false,

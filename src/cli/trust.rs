@@ -733,3 +733,78 @@ pub(crate) fn operator_command(op: &Op, client: &mut Client) -> i32 {
         _ => println!("{}", serde_json::to_string_pretty(d).unwrap_or_default()),
     })
 }
+
+pub(crate) fn rbac_command(op: &Op, client: &mut Client) -> i32 {
+    let p = &op.positionals;
+    let arg = |i: usize| p.get(i).cloned().unwrap_or_default();
+    let usage = "use: rbac list | role-create NAME [DESC] | grant ROLE TYPE PATTERN ACTION | revoke ROLE TYPE PATTERN ACTION | bind ACTOR_ID ROLE | unbind ACTOR_ID ROLE";
+    let res = match (p.first().map(String::as_str), p.len()) {
+        (None | Some("list"), 0 | 1) => client.call("rbac_list", json!({})),
+        (Some("role-create"), 2) => {
+            client.call("rbac_role_create", json!({"name": arg(1), "description": ""}))
+        }
+        (Some("role-create"), 3) => {
+            client.call("rbac_role_create", json!({"name": arg(1), "description": arg(2)}))
+        }
+        (Some("grant"), 5) => client.call(
+            "rbac_permission_grant",
+            json!({
+                "role": arg(1),
+                "resource_type": arg(2),
+                "resource_pattern": arg(3),
+                "action": arg(4),
+            }),
+        ),
+        (Some("revoke"), 5) => client.call(
+            "rbac_permission_revoke",
+            json!({
+                "role": arg(1),
+                "resource_type": arg(2),
+                "resource_pattern": arg(3),
+                "action": arg(4),
+            }),
+        ),
+        (Some("bind"), 3) => client.call(
+            "rbac_actor_bind",
+            json!({"actor_id": arg(1), "role": arg(2)}),
+        ),
+        (Some("unbind"), 3) => client.call(
+            "rbac_actor_unbind",
+            json!({"actor_id": arg(1), "role": arg(2)}),
+        ),
+        _ => Err(RpcErr::invalid(usage)),
+    };
+    let verb = p.first().cloned().unwrap_or_else(|| "list".into());
+    finish(res, op.json, |d| match verb.as_str() {
+        "list" => {
+            rubric("RBAC ROLES");
+            for r in d["roles"].as_array().cloned().unwrap_or_default() {
+                let tag = if r["builtin"] == true { "builtin" } else { "custom" };
+                println!(
+                    "  {} [{}] {}",
+                    bold(Ink::Bone, s(&r, "name")),
+                    paint(Ink::Dim, tag),
+                    s(&r, "description")
+                );
+            }
+            let bindings = d["bindings"].as_array().cloned().unwrap_or_default();
+            if !bindings.is_empty() {
+                rubric("ACTOR BINDINGS");
+                for b in bindings {
+                    let state = if b["revoked_at"].is_i64() {
+                        paint(Ink::Rubric, "revoked")
+                    } else {
+                        paint(Ink::Verdigris, "active")
+                    };
+                    println!(
+                        "  {} → {} ({})",
+                        bold(Ink::Bone, s(&b, "actor_id")),
+                        paint(Ink::Gold, s(&b, "role")),
+                        state
+                    );
+                }
+            }
+        }
+        _ => println!("{}", serde_json::to_string_pretty(d).unwrap_or_default()),
+    })
+}
