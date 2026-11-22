@@ -177,7 +177,7 @@ impl Core {
     }
 
     /// Record an administrative/policy audit entry with an explicit actor string.
-    pub(super) fn record_audit_as(
+    pub(crate) fn record_audit_as(
         &self,
         actor: &str,
         action: &str,

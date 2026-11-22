@@ -10,6 +10,7 @@ mod petitions;
 mod epitaphs;
 mod familiars;
 mod operators;
+pub(crate) mod rbac;
 mod signed;
 mod witness;
 mod pacts;
@@ -228,6 +229,26 @@ CREATE TABLE IF NOT EXISTS operators (
   key_id TEXT NOT NULL UNIQUE,
   created INTEGER NOT NULL,
   revoked INTEGER);
+CREATE TABLE IF NOT EXISTS rbac_roles (
+  name TEXT PRIMARY KEY,
+  description TEXT NOT NULL,
+  builtin INTEGER NOT NULL DEFAULT 0,
+  created INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS rbac_role_permissions (
+  role_name TEXT NOT NULL REFERENCES rbac_roles(name) ON DELETE CASCADE,
+  resource_type TEXT NOT NULL,
+  resource_pattern TEXT NOT NULL,
+  action TEXT NOT NULL,
+  PRIMARY KEY (role_name, resource_type, resource_pattern, action));
+CREATE TABLE IF NOT EXISTS rbac_actor_roles (
+  actor_id TEXT NOT NULL,
+  role_name TEXT NOT NULL REFERENCES rbac_roles(name) ON DELETE RESTRICT,
+  granted_by TEXT NOT NULL,
+  granted_at INTEGER NOT NULL,
+  revoked_at INTEGER,
+  PRIMARY KEY (actor_id, role_name));
+CREATE INDEX IF NOT EXISTS idx_rbac_actor_roles_active
+  ON rbac_actor_roles(actor_id) WHERE revoked_at IS NULL;
 ";
 
 pub(crate) enum FenceAcquire {
@@ -492,6 +513,7 @@ impl Core {
             let _ = core.settle_if_pact(&id);
         }
         core.storage_health().map_err(|e| e.message)?;
+        core.seed_rbac()?;
         core.verify_integrity_on_startup();
         if core.storage_health().is_ok() {
             core.anchor_config_on_boot();
@@ -1085,6 +1107,14 @@ impl Core {
             self.emit(&id, "drift", w, json!({}));
         }
         let root_ritual = r.def.ritual.clone();
+        let actor = if r.caller.starts_with("operator:") {
+            Some(self.actor_context_for(&Self::normalize_actor_id(&r.caller)))
+        } else if self.cfg.rbac.enforce {
+            let cur = audit::current_actor();
+            Some(self.actor_context_for(&Self::normalize_actor_id(&cur)))
+        } else {
+            None
+        };
         let run = Run {
             job_claim: None,
             core: self.clone(),
@@ -1103,6 +1133,7 @@ impl Core {
             io: io.unwrap_or_else(|| Arc::new(crate::io::Live)),
             models_used: Arc::new(Mutex::new(BTreeSet::new())),
             root_ritual,
+            actor,
             done: 0,
             total: 0,
         };
@@ -2360,6 +2391,12 @@ impl Core {
             "operator_add" => self.operator_add(p),
             "operator_list" => self.operator_list(),
             "operator_revoke" => self.operator_revoke(p),
+            "rbac_role_create" => self.rbac_role_create(p),
+            "rbac_permission_grant" => self.rbac_permission_grant(p),
+            "rbac_permission_revoke" => self.rbac_permission_revoke(p),
+            "rbac_actor_bind" => self.rbac_actor_bind(p),
+            "rbac_actor_unbind" => self.rbac_actor_unbind(p),
+            "rbac_list" => self.rbac_list(),
             "peer_add" => self.peer_add(p),
             "pact_admit" => self.pact_admit(p),
             "pact_offer" => self.pact_offer(p),

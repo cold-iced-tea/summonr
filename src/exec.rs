@@ -204,6 +204,8 @@ pub struct Run {
     pub models_used: Arc<Mutex<BTreeSet<String>>>,
     /// The directly invoked ritual, whose standing grants this summon uses.
     pub root_ritual: String,
+    /// Authenticated actor context for pre-execution RBAC reagent checks.
+    pub actor: Option<crate::core::rbac::ActorContext>,
     pub done: u64,
     pub total: u64,
 }
@@ -220,6 +222,52 @@ fn brief(v: &Value) -> String {
 impl Run {
     fn emit(&self, kind: &str, text: impl Into<String>, data: Value) {
         self.core.emit(&self.id, kind, &text.into(), data);
+    }
+
+    /// Pre-execution RBAC guard: verifies that the invoking actor's active roles
+    /// permit the requested reagent operation before any side effects, probes,
+    /// petitions, or fences occur. Denials are recorded to the tamper-evident
+    /// `audit_log` and emitted as `rbac.denied` events.
+    fn guard_reagent_rbac(&self, sid: &str, op: &str, effect: &str) -> Result<(), Fail> {
+        use crate::core::rbac::{PermissionAction, RbacDecision};
+        let action = match effect {
+            "pure" | "read" => PermissionAction::Read,
+            _ => PermissionAction::Write,
+        };
+        match self
+            .core
+            .authorize_reagent(self.actor.as_ref(), op, action)
+        {
+            RbacDecision::Allow { .. } => Ok(()),
+            RbacDecision::Deny { reason } => {
+                let actor = self
+                    .actor
+                    .as_ref()
+                    .map(|a| a.actor_id.as_str())
+                    .unwrap_or("anonymous");
+                self.core.record_audit_as(
+                    actor,
+                    "rbac.reagent_denied",
+                    op,
+                    "denied",
+                    json!({
+                        "summon": self.id,
+                        "ritual": self.root_ritual,
+                        "step": sid,
+                        "effect": effect,
+                        "reason": reason,
+                    }),
+                );
+                self.emit(
+                    "rbac.denied",
+                    format!("{sid}: {op} denied by RBAC ({reason})"),
+                    json!({"step": sid, "operation": op, "actor": actor, "reason": reason}),
+                );
+                Err(Fail::Denied(format!(
+                    "actor `{actor}` is not permitted to invoke `{op}`: {reason}"
+                )))
+            }
+        }
     }
 
     fn check_live(&self) -> Result<(), Fail> {
@@ -308,6 +356,7 @@ impl Run {
             io: self.io.clone(),
             models_used: self.models_used.clone(),
             root_ritual: self.root_ritual.clone(),
+            actor: self.actor.clone(),
             done: 0,
             total: 0,
         }
@@ -633,6 +682,7 @@ impl Run {
             .map(|t| t.effect)
             .unwrap_or("unknown");
         reagent::check_job_effect(self.job_claim.is_some(), effect)?;
+        self.guard_reagent_rbac(sid, op, effect)?;
         if !matches!(effect, "read" | "pure") && scope.frames.iter().any(|f| f.abstained) {
             return Err(Fail::Denied(
                 "an abstained result cannot authorize a write in this scope".into(),
@@ -1003,6 +1053,7 @@ impl Run {
                     "step {sid}: image `{path}` is {recorded} bytes, over the {max_bytes}-byte limit for model steps"
                 )));
             }
+            self.guard_reagent_rbac(sid, "sight.read_image", "read")?;
             reagent::authorize(
                 self.core.cfg.mail_root.as_deref(),
                 "sight.read_image",
@@ -1342,6 +1393,7 @@ impl Run {
             io: self.io.clone(),
             models_used: self.models_used.clone(),
             root_ritual: self.root_ritual.clone(),
+            actor: self.actor.clone(),
             done: 0,
             total: 0,
         };
@@ -1712,6 +1764,7 @@ mod tests {
                 io: Arc::new(crate::io::Live),
                 models_used: Arc::new(Mutex::new(BTreeSet::new())),
                 root_ritual: String::new(),
+                actor: None,
                 done: 0,
                 total: 0,
             }

@@ -7,6 +7,8 @@ use crate::keys::{self, PublicKey};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OperatorRole {
     Author,
+    PolicyAuthor,
+    AgentRunner,
     SecurityAdmin,
     Reviewer,
     Auditor,
@@ -17,12 +19,14 @@ impl OperatorRole {
     pub(crate) fn parse(s: &str) -> Result<Self, RpcErr> {
         match s {
             "author" => Ok(Self::Author),
+            "policy_author" => Ok(Self::PolicyAuthor),
+            "agent_runner" => Ok(Self::AgentRunner),
             "security_admin" => Ok(Self::SecurityAdmin),
             "reviewer" => Ok(Self::Reviewer),
             "auditor" => Ok(Self::Auditor),
             "admin" => Ok(Self::Admin),
             other => Err(RpcErr::invalid(format!(
-                "unknown operator role `{other}`; use author, security_admin, reviewer, auditor, or admin"
+                "unknown operator role `{other}`; use admin, policy_author, agent_runner, security_admin, reviewer, auditor, or author"
             ))),
         }
     }
@@ -30,6 +34,8 @@ impl OperatorRole {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Author => "author",
+            Self::PolicyAuthor => "policy_author",
+            Self::AgentRunner => "agent_runner",
             Self::SecurityAdmin => "security_admin",
             Self::Reviewer => "reviewer",
             Self::Auditor => "auditor",
@@ -56,6 +62,7 @@ impl OperatorRole {
                 | "familiar_list"
                 | "peer_list"
                 | "operator_list"
+                | "rbac_list"
                 | "pact_list"
                 | "pact_show"
                 | "pact_history"
@@ -83,6 +90,50 @@ impl OperatorRole {
         match self {
             Self::Admin => true,
             Self::Auditor => read_only,
+            Self::PolicyAuthor => {
+                read_only
+                    || matches!(
+                        method,
+                        "inscribe"
+                            | "compile"
+                            | "rehearse"
+                            | "drill"
+                            | "drill_inline"
+                            | "assay"
+                            | "assay_compare"
+                            | "glean"
+                            | "experiment_sweep"
+                            | "experiment_judge"
+                            | "experiment_weigh"
+                            | "reliquary_publish"
+                            | "reliquary_retract"
+                            | "reliquary_export"
+                            | "rite_rehearse"
+                    )
+            }
+            Self::AgentRunner => {
+                read_only
+                    || matches!(
+                        method,
+                        "invoke"
+                            | "cancel"
+                            | "revive"
+                            | "recast"
+                            | "rite_start"
+                            | "rite_advance"
+                            | "session_open"
+                            | "session_close"
+                            | "session_soul"
+                            | "session_bind"
+                            | "session_imbue"
+                            | "session_bid"
+                            | "session_lethe"
+                            | "session_inscribe"
+                            | "job_create"
+                            | "job_work"
+                            | "job_retry"
+                    )
+            }
             Self::Author => {
                 read_only
                     || matches!(
@@ -138,6 +189,11 @@ impl OperatorRole {
                             | "operator_new"
                             | "operator_add"
                             | "operator_revoke"
+                            | "rbac_role_create"
+                            | "rbac_permission_grant"
+                            | "rbac_permission_revoke"
+                            | "rbac_actor_bind"
+                            | "rbac_actor_unbind"
                             | "pact_admit"
                             | "pact_unadmit"
                             | "pact_limit"
@@ -257,6 +313,7 @@ impl Core {
                 format!("cannot place key file {}: {e}", file.display()),
             ));
         }
+        self.rbac_sync_operator_role(&name, role.as_str());
         self.record_audit(
             "operator.new",
             &name,
@@ -290,6 +347,7 @@ impl Core {
                 params![name, role.as_str(), pubkey.text(), pubkey.id(), now_ms()],
             )
             .map_err(sql)?;
+        self.rbac_sync_operator_role(&name, role.as_str());
         self.record_audit(
             "operator.add",
             &name,
@@ -335,6 +393,7 @@ impl Core {
         if n == 0 {
             return Err(RpcErr::not_found(format!("no active operator `{name}`")));
         }
+        self.rbac_revoke_operator_roles(&name);
         self.record_audit("operator.revoke", &name, "ok", json!({"revoked": true}));
         Ok(json!({"name": name, "revoked": true}))
     }
@@ -475,6 +534,42 @@ mod tests {
         );
         let err3 = signed_call(&core, &auditor_key, "revoke", json!({"ritual": "r1", "scopes": []})).unwrap_err();
         assert_eq!(err3.code, "not_authorized");
+
+        drop(core);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn policy_author_and_agent_runner_roles_are_separated() {
+        let p = test_paths("author-vs-runner");
+        let core = Core::open(p.clone()).unwrap();
+        let dir = p.state.parent().unwrap();
+
+        let pa_key = keys::generate();
+        let runner_key = keys::generate();
+
+        core.operator_add(json!({"name": "pa", "role": "policy_author", "key": pa_key.public().text()})).unwrap();
+        core.operator_add(json!({"name": "runner", "role": "agent_runner", "key": runner_key.public().text()})).unwrap();
+
+        let rf = dir.join("r.yaml");
+        std::fs::write(
+            &rf,
+            "ritual: r2\nessence: {requests: 0, time: 1m}\nsteps:\n  - id: s\n    operation: data.merge\n    arguments: {left: {}, right: {ok: true}}\nreturn:\n  ok: true\n",
+        )
+        .unwrap();
+
+        // policy_author can inscribe, but CANNOT invoke.
+        signed_call(&core, &pa_key, "inscribe", json!({"path": rf.to_str().unwrap()})).unwrap();
+        let e1 = signed_call(&core, &pa_key, "invoke", json!({"target": "r2", "args": {}})).unwrap_err();
+        assert_eq!(e1.code, "not_authorized");
+
+        // agent_runner CANNOT inscribe or grant, but CAN invoke.
+        let e2 = signed_call(&core, &runner_key, "inscribe", json!({"path": rf.to_str().unwrap()})).unwrap_err();
+        assert_eq!(e2.code, "not_authorized");
+        let e3 = signed_call(&core, &runner_key, "grant", json!({"ritual": "r2", "scopes": []})).unwrap_err();
+        assert_eq!(e3.code, "not_authorized");
+        let inv = signed_call(&core, &runner_key, "invoke", json!({"target": "r2", "args": {}})).unwrap();
+        assert!(inv["summon"].is_string(), "expected summon id in {inv}");
 
         drop(core);
         let _ = std::fs::remove_dir_all(dir);
