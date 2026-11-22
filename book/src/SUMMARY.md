@@ -52,7 +52,14 @@
   - [Reliquary: signed ritual packs](concepts/reliquary.md)
   - [Rites: multi-stage workflows](concepts/rites.md)
 
-# Part IV — Reference & Horizon
+# Part IV — Enterprise Governance & Compliance
+
+- [Enterprise Governance & Compliance](governance/index.md)
+  - [Deterministic Boundaries & Redaction](governance/deterministic-boundaries.md)
+  - [Access Control & Least Privilege](governance/access-control.md)
+  - [Tamper-Evident Audit Trails](governance/audit-trails.md)
+
+# Part V — Reference & Horizon
 
 - [Runtime capabilities](reference/capabilities.md)
 - [Ritual file format](reference/ritual-format.md)
