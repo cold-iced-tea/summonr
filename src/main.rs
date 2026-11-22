@@ -261,7 +261,7 @@ use cli::core::{core_command, help, validate_file};
 use cli::eval::{assay, drill, experiment_judge, experiment_sweep, experiment_weigh};
 use cli::invoke::{fence_command, follow_command, invoke, petition, wait_for};
 use cli::session::{session_bid, session_bind, session_imbue, session_lethe, session_soul, session_summon};
-use cli::trust::{audit_command, chain_command, epitaph_command, epitaph_verify_command, familiar_command, key_command, peer_command, verify_command, witness_command};
+use cli::trust::{audit_command, chain_command, epitaph_command, epitaph_verify_command, familiar_command, key_command, operator_command, peer_command, verify_command, witness_command};
 use cli::work::{demo_command, job_command, pact_command, reliquary_command, rite_command};
 
 fn run(op: Op, paths: &Paths, style: Style) -> i32 {
@@ -779,6 +779,7 @@ fn run(op: Op, paths: &Paths, style: Style) -> i32 {
         "epitaph" => epitaph_command(&op, &mut client),
         "chain" => chain_command(&op, &mut client),
         "audit" => audit_command(&op, &mut client),
+        "operator" => operator_command(&op, &mut client),
         "verify" => verify_command(&op, &mut client),
         "witness" => witness_command(&op, &mut client),
         "peer" => peer_command(&op, &mut client),

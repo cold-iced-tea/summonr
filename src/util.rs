@@ -361,6 +361,9 @@ pub struct Config {
     /// Additional allowed `Host` header values (host or host:port) for `summonr mcp http`.
     #[serde(default)]
     pub mcp_allowed_hosts: Vec<String>,
+    /// Optional Role-Based Access Control (RBAC) enforcement settings.
+    #[serde(default)]
+    pub rbac: RbacConfig,
     /// The `git` and `gh` programs (default: the ones on PATH).
     pub git: Option<String>,
     pub gh: Option<String>,
@@ -374,6 +377,18 @@ pub struct Config {
 pub struct SightConfig {
     pub max_bytes: Option<u64>,
     pub max_per_step: Option<usize>,
+}
+
+/// Role-Based Access Control settings for operator separation of duties.
+#[derive(Deserialize, Default, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RbacConfig {
+    /// When true, unsigned local socket calls are refused (operators must sign).
+    #[serde(default)]
+    pub enforce: bool,
+    /// When true, the operator who started a summon cannot permit its held petitions.
+    #[serde(default)]
+    pub require_independent_reviewer: bool,
 }
 
 /// Owner-configured API pricing for a model or `<provider>/*` wildcard.

@@ -219,6 +219,12 @@ pub const VERBS: &[(&str, &str, bool, &str)] = &[
         "Inspect or verify the tamper-evident administrative audit log",
     ),
     (
+        "operator",
+        "",
+        false,
+        "Manage RBAC operator keys and roles: new, add, list, revoke",
+    ),
+    (
         "daemon",
         "panel",
         false,

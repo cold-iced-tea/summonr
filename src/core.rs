@@ -9,6 +9,7 @@ mod job_service;
 mod petitions;
 mod epitaphs;
 mod familiars;
+mod operators;
 mod signed;
 mod witness;
 mod pacts;
@@ -220,6 +221,13 @@ CREATE TRIGGER IF NOT EXISTS audit_log_no_update
 CREATE TRIGGER IF NOT EXISTS audit_log_no_delete
   BEFORE DELETE ON audit_log
   BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
+CREATE TABLE IF NOT EXISTS operators (
+  name TEXT PRIMARY KEY,
+  role TEXT NOT NULL,
+  key TEXT NOT NULL,
+  key_id TEXT NOT NULL UNIQUE,
+  created INTEGER NOT NULL,
+  revoked INTEGER);
 ";
 
 pub(crate) enum FenceAcquire {
@@ -405,6 +413,7 @@ impl Core {
         add_column(&db, "baselines", "touchstone", "TEXT")?;
         add_column(&db, "summons", "cost_microusd", "INTEGER")?;
         add_column(&db, "sessions", "used_cost_microusd", "INTEGER NOT NULL DEFAULT 0")?;
+        add_column(&db, "petitions", "decided_by", "TEXT")?;
         // Work that was running when a previous core died cannot be shown as
         // done; its completion is unknown.
         let lost: Vec<String> = {
@@ -2345,6 +2354,10 @@ impl Core {
             "familiar_allow" => self.familiar_allow(p, true),
             "familiar_disallow" => self.familiar_allow(p, false),
             "familiar_revoke" => self.familiar_revoke(p),
+            "operator_new" => self.operator_new(p),
+            "operator_add" => self.operator_add(p),
+            "operator_list" => self.operator_list(),
+            "operator_revoke" => self.operator_revoke(p),
             "peer_add" => self.peer_add(p),
             "pact_admit" => self.pact_admit(p),
             "pact_offer" => self.pact_offer(p),
@@ -2615,6 +2628,29 @@ impl Core {
                             if method == "subscribe" {
                                 core.serve_subscribe(&mut stream, id, &req["params"]);
                                 break;
+                            }
+                            if core.cfg.rbac.enforce
+                                && !matches!(
+                                    method.as_str(),
+                                    "ping" | "identity" | "chain_verify" | "audit_verify" | "shutdown"
+                                )
+                            {
+                                core.record_audit(
+                                    "rbac.unsigned_refused",
+                                    &method,
+                                    "denied",
+                                    json!({"reason": "rbac.enforce requires Ed25519-signed operator requests"}),
+                                );
+                                let e = RpcErr::new(
+                                    "not_authorized",
+                                    4,
+                                    format!("RBAC enforcement is active; `{method}` requires a signed operator request"),
+                                );
+                                let reply = json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": e.message, "data": {"code": e.code, "exit": e.exit, "detail": e.data}}});
+                                if write_frame(&mut stream, &reply).is_err() {
+                                    break;
+                                }
+                                continue;
                             }
                             let reply = match core.dispatch(&method, req["params"].clone()) {
                                 Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),

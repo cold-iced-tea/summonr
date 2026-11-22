@@ -44,10 +44,16 @@ impl Core {
         // One lookup: the familiar the signature was checked against is the
         // one that acts, even if it is revoked a moment later.
         let found: std::cell::RefCell<Option<(String, String, Vec<String>)>> = std::cell::RefCell::new(None);
+        let operator: std::cell::RefCell<Option<(String, super::operators::OperatorRole, crate::keys::PublicKey)>> =
+            std::cell::RefCell::new(None);
         let ward: std::cell::RefCell<Option<(String, crate::keys::PublicKey)>> = std::cell::RefCell::new(None);
         let party: std::cell::RefCell<Option<(String, crate::keys::PublicKey)>> = std::cell::RefCell::new(None);
         let peer: std::cell::RefCell<Option<(String, crate::keys::PublicKey)>> = std::cell::RefCell::new(None);
         let lookup = |id: &str| {
+            if let Some((name, role, key)) = self.operator_by_key(id) {
+                *operator.borrow_mut() = Some((name, role, key));
+                return Some(key);
+            }
             if let Some((name, key, allowed)) = self.familiar_by_key(id) {
                 *found.borrow_mut() = Some((key.id(), name, allowed));
                 return Some(key);
@@ -70,6 +76,10 @@ impl Core {
         let mut seen = |key: &str, nonce: &str, _ts: i64| self.nonce_seen(key, nonce, now);
         let outcome = match envelope::open_request(frame, &lookup, &audience, now, &mut seen) {
             Ok(opened) => {
+                if let Some((name, role, _)) = operator.into_inner().filter(|(_, _, k)| k.id() == opened.key) {
+                    let result = self.dispatch_operator(&name, role, &opened.method, opened.params);
+                    return envelope::seal_reply(&self.key, &opened.nonce, &result);
+                }
                 let party = party.into_inner().filter(|(_, k)| k.id() == opened.key);
                 let ward = ward.into_inner().filter(|(_, k)| k.id() == opened.key);
                 let peer = peer.into_inner().filter(|(_, k)| k.id() == opened.key);

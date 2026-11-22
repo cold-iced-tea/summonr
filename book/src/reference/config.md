@@ -59,6 +59,7 @@ style: keyword
 | `tls` | none | Optional PEM `cert` and `key` paths for TLS on `summonr listen` and `summonr mcp http` |
 | `mcp_auth` | none | Optional OAuth 2.1 Bearer JWT verification settings for `summonr mcp http` |
 | `mcp_allowed_hosts` | `[]` | Additional allowed `Host` header values (host or `host:port`) for `summonr mcp http` |
+| `rbac` | `{enforce: false, require_independent_reviewer: false}` | Operator RBAC settings: require Ed25519-signed operator requests and block self-approval of held petitions |
 
 ### `egress`
 

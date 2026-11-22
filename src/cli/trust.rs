@@ -611,3 +611,49 @@ pub(crate) fn audit_command(op: &Op, client: &mut Client) -> i32 {
         code
     }
 }
+
+pub(crate) fn operator_command(op: &Op, client: &mut Client) -> i32 {
+    let p = &op.positionals;
+    let arg = |i: usize| p.get(i).cloned().unwrap_or_default();
+    let usage = "use: operator list | new NAME ROLE | add NAME ROLE key K | revoke NAME\n  roles: author, security_admin, reviewer, auditor, admin";
+    let res = match (p.first().map(String::as_str), p.len()) {
+        (None | Some("list"), 0 | 1) => client.call("operator_list", json!({})),
+        (Some("new"), 3) => client.call("operator_new", json!({"name": arg(1), "role": arg(2)})),
+        (Some("add"), 3) => match &op.key {
+            Some(k) => client.call("operator_add", json!({"name": arg(1), "role": arg(2), "key": k})),
+            None => Err(RpcErr::invalid("give the operator's public key: operator add NAME ROLE key ed25519:…")),
+        },
+        (Some("revoke"), 2) => client.call("operator_revoke", json!({"name": arg(1)})),
+        _ => Err(RpcErr::invalid(usage)),
+    };
+    let verb = p.first().cloned().unwrap_or_else(|| "list".into());
+    finish(res, op.json, |d| match verb.as_str() {
+        "list" => {
+            let items = d.as_array().cloned().unwrap_or_default();
+            if items.is_empty() {
+                println!("{}", paint(Ink::Dim, "No operators registered. Create one: summonr operator new alice author"));
+            }
+            for o in items {
+                let state = if o["revoked"].is_i64() {
+                    paint(Ink::Rubric, "revoked")
+                } else {
+                    paint(Ink::Verdigris, "active")
+                };
+                println!(
+                    "  {} [{}] {} {}",
+                    bold(Ink::Bone, s(&o, "name")),
+                    paint(Ink::Gold, s(&o, "role")),
+                    state,
+                    paint(Ink::Dim, &short(s(&o, "id")))
+                );
+            }
+        }
+        "new" => {
+            rubric(&format!("OPERATOR · {} ({})", s(d, "name"), s(d, "role")));
+            row("key file", s(d, "key_file"));
+            row("public key", s(d, "key"));
+            row("id", s(d, "id"));
+        }
+        _ => println!("{}", serde_json::to_string_pretty(d).unwrap_or_default()),
+    })
+}

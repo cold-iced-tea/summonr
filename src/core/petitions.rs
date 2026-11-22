@@ -133,6 +133,31 @@ impl Core {
                 None if by_caller => return Err(RpcErr::new("not_authorized", 4, "the caller decides only petitions filed under its pact")),
                 _ => {}
             }
+            if permit && !by_caller && self.cfg.rbac.require_independent_reviewer {
+                let actor = super::audit::current_actor();
+                if let Some(op_name) = actor
+                    .strip_prefix("operator:")
+                    .and_then(|s| s.split('(').next())
+                {
+                    let expected_owner = format!("operator:{op_name}");
+                    if self.owner_of(&pet.summon) == Some(Some(expected_owner)) {
+                        self.record_audit(
+                            "rbac.self_approval_refused",
+                            &pet.id,
+                            "denied",
+                            json!({"summon": pet.summon, "operator": op_name}),
+                        );
+                        return Err(RpcErr::new(
+                            "not_authorized",
+                            4,
+                            format!(
+                                "separation of duties: operator `{op_name}` started summon `{}` and cannot permit its petition `{}`",
+                                pet.summon, pet.id
+                            ),
+                        ));
+                    }
+                }
+            }
         }
         let mut waiting = Vec::new();
         let mut ready = Vec::new();
