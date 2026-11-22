@@ -69,6 +69,9 @@ pub(crate) fn call_tool(
     if runtime.ends_with("wasmtime") {
         cmd.arg("run");
         for dir in &cfg.preopen_dirs {
+            if dir.starts_with('-') {
+                return Err(format!("invalid wasm preopen_dirs entry `{dir}`: must not start with `-`"));
+            }
             cmd.arg("--dir").arg(dir);
         }
         if let Some(fuel) = cfg.fuel {
@@ -76,9 +79,9 @@ pub(crate) fn call_tool(
         }
         if let Some(mb) = cfg.max_memory_mb {
             let bytes = mb.saturating_mul(1024 * 1024);
-            cmd.arg("-W").arg(format!("max-wasm-stack={}", bytes.min(64 * 1024 * 1024)));
+            cmd.arg("-W").arg(format!("memory-reservation={bytes}"));
         }
-        cmd.arg(&cfg.module);
+        cmd.arg("--").arg(&cfg.module);
     } else {
         // Custom WASI runner receives `<module>` as its sole positional argument.
         cmd.arg(&cfg.module);
@@ -102,9 +105,18 @@ pub(crate) fn call_tool(
 
     let req_payload = json!({"tool": tool, "arguments": args}).to_string();
     if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(req_payload.as_bytes())
-            .map_err(|e| format!("failed writing stdin to wasm reagent: {e}"))?;
+        if let Err(e) = stdin.write_all(req_payload.as_bytes()) {
+            // BrokenPipe means the child exited before reading stdin; let wait()
+            // collect its exit status and stderr rather than leaking a zombie.
+            if e.kind() != std::io::ErrorKind::BrokenPipe {
+                let pid = child.id() as libc::pid_t;
+                unsafe {
+                    libc::kill(-pid, libc::SIGKILL);
+                }
+                let _ = child.wait();
+                return Err(format!("failed writing stdin to wasm reagent: {e}"));
+            }
+        }
     }
 
     let mut stdout = child.stdout.take().expect("piped stdout");
@@ -124,6 +136,8 @@ pub(crate) fn call_tool(
                         libc::kill(-pid, libc::SIGKILL);
                     }
                     let _ = child.wait();
+                    let _ = out_handle.join();
+                    let _ = err_handle.join();
                     return Err(format!(
                         "wasm reagent timed out after {}ms (process group killed)",
                         timeout.as_millis()
@@ -246,6 +260,33 @@ mod tests {
         let out = call_tool(&cfg, "calc", &json!({"x": 42}), None).unwrap();
         assert_eq!(out["tool"], "calc");
         assert_eq!(out["arguments"]["x"], 42);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rejects_dash_preopen_dir_and_handles_early_exit_cleanly() {
+        let dir = std::env::temp_dir().join(format!("summonr-wasm-hard-{}", new_id("t")));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let wasm_file = dir.join("calc.wasm");
+        std::fs::write(&wasm_file, WASM_MAGIC_V1).unwrap();
+        let digest = sha256_hex(WASM_MAGIC_V1);
+
+        // Option-injection check on preopen_dirs when runtime is wasmtime.
+        let mut cfg_bad_dir = make_wasm_cfg(&wasm_file, digest.clone(), "wasmtime".into());
+        cfg_bad_dir.preopen_dirs = vec!["--allow-precompiled".into()];
+        let err = call_tool(&cfg_bad_dir, "calc", &json!({}), None).unwrap_err();
+        assert!(err.contains("must not start with `-`"), "unexpected err: {err}");
+
+        // Early-exiting runner (closes stdin immediately without reading): must report
+        // exit status & stderr cleanly without leaking a zombie or failing on BrokenPipe.
+        let early = dir.join("early-exit.sh");
+        std::fs::write(&early, "#!/bin/sh\necho 'boom' >&2\nexit 7\n").unwrap();
+        std::fs::set_permissions(&early, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let cfg_early = make_wasm_cfg(&wasm_file, digest, early.display().to_string());
+        let err2 = call_tool(&cfg_early, "calc", &json!({"big": "x".repeat(4096)}), None).unwrap_err();
+        assert!(err2.contains("boom"), "expected stderr message, got: {err2}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

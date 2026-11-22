@@ -772,8 +772,26 @@ pub(crate) fn verify_evidence_bundle(
         ));
     }
 
-    // Re-verify every audit_log entry's hash and Ed25519 signature.
+    if body["audit_verification"]["ok"] != true {
+        return Err(RpcErr::new(
+            "verification_failed",
+            15,
+            "bundle audit_verification status is not ok",
+        ));
+    }
+    if body["chain_verification"]["ok"] != true {
+        return Err(RpcErr::new(
+            "verification_failed",
+            15,
+            "bundle chain_verification status is not ok",
+        ));
+    }
+
+    // Re-verify every audit_log entry's sequence continuity, prev_hash linkage,
+    // canonical SHA-256 hash, and Ed25519 signature.
     let audit_entries = body["audit_log"].as_array().cloned().unwrap_or_default();
+    let unfiltered_start = body["window"]["from_ms"].is_null();
+    let mut expected_prev: Option<(i64, String)> = None;
     for entry in &audit_entries {
         let seq = entry["seq"].as_i64().unwrap_or(0);
         let ts = entry["ts"].as_i64().unwrap_or(0);
@@ -784,6 +802,33 @@ pub(crate) fn verify_evidence_bundle(
         let prev = entry["prev_hash"].as_str().unwrap_or("");
         let hash = entry["hash"].as_str().unwrap_or("");
         let sig = entry["sig"].as_str().unwrap_or("");
+        match &expected_prev {
+            None => {
+                if unfiltered_start && (seq != 1 || prev != ZEROS) {
+                    return Err(RpcErr::new(
+                        "verification_failed",
+                        15,
+                        format!("unfiltered audit_log must start at seq 1 with zero prev_hash (saw seq {seq})"),
+                    ));
+                }
+            }
+            Some((p_seq, p_hash)) => {
+                if seq != p_seq + 1 {
+                    return Err(RpcErr::new(
+                        "verification_failed",
+                        15,
+                        format!("audit_log sequence gap: expected {}, saw {seq}", p_seq + 1),
+                    ));
+                }
+                if prev != p_hash {
+                    return Err(RpcErr::new(
+                        "verification_failed",
+                        15,
+                        format!("audit entry #{seq} prev_hash does not link to entry #{p_seq}"),
+                    ));
+                }
+            }
+        }
         let payload =
             canonical_audit_entry(seq, prev, ts, actor, action, target, outcome, &entry["detail"]);
         if sha256_hex(payload.as_bytes()) != hash {
@@ -816,6 +861,7 @@ pub(crate) fn verify_evidence_bundle(
                 format!("audit entry #{seq} signature verification failed"),
             ));
         }
+        expected_prev = Some((seq, hash.to_string()));
     }
 
     // Re-verify epitaph links and Merkle root.
@@ -1067,6 +1113,48 @@ mod tests {
         let after = core.audit_verify().unwrap();
         assert_eq!(after["ok"], false, "expected tamper detection: {after}");
         assert_eq!(after["problem"]["seq"], exec_seq, "{after}");
+
+        drop(core);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn verify_evidence_bundle_rejects_omitted_audit_entries() {
+        let p = test_paths("bundle-gap");
+        let core = Core::open(p.clone()).unwrap();
+        let dir = p.state.parent().unwrap().to_path_buf();
+
+        core.record_audit("test.one", "t1", "ok", json!({}));
+        core.record_audit("test.two", "t2", "ok", json!({}));
+
+        let bundle_file = dir.join("orig.bundle.json");
+        core.audit_export(json!({"file": bundle_file.to_str().unwrap()}))
+            .unwrap();
+
+        // Remove the middle audit entry and re-sign the bundle with the core's key
+        // to simulate a compromised exporter omitting a row.
+        let mut env: Value =
+            serde_json::from_str(&std::fs::read_to_string(&bundle_file).unwrap()).unwrap();
+        let entries = env["bundle"]["audit_log"].as_array_mut().unwrap();
+        assert!(entries.len() >= 3);
+        entries.remove(1);
+        let canonical = crate::util::canonical_json(&env["bundle"]);
+        let new_hash = sha256_hex(canonical.as_bytes());
+        let new_sig = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(core.key.sign(BUNDLE_DOMAIN, canonical.as_bytes()));
+        env["bundle_hash"] = json!(new_hash);
+        env["signature"] = json!(new_sig);
+
+        let gap_file = dir.join("gap.bundle.json");
+        std::fs::write(&gap_file, serde_json::to_string(&env).unwrap()).unwrap();
+        let err = verify_evidence_bundle(gap_file.to_str().unwrap(), &core.key.public())
+            .unwrap_err();
+        assert_eq!(err.exit, 15);
+        assert!(
+            err.message.contains("sequence gap"),
+            "expected sequence gap error, got: {}",
+            err.message
+        );
 
         drop(core);
         let _ = std::fs::remove_dir_all(dir);

@@ -22,7 +22,7 @@ All notable changes to Summonr are documented in this file.
   - `summonr audit prune given days=N [--dry-run]` for chain-preserving plaintext elegy retention pruning.
 - **Capability-Sandboxed WASI `wasm_reagents` (`src/reagents/wasm_reagent.rs`):**
   - Wasm v1 magic and SHA-256 digest pinning verified on every call.
-  - `env_clear()`, explicit `preopen_dirs` / `allow_env` pass-through, `setsid` process-group timeout kills, bounded stdout (`max_output_bytes`), and fail-closed default effect `"write"`.
+  - Unconditional `env_clear()` (zero host env inheritance), explicit `preopen_dirs`, `setsid` process-group timeout kills, bounded stdout (`max_output_bytes`), and fail-closed default effect `"write"`.
 - **Documentation & Examples:**
   - Added **Part IV — Enterprise Governance & Compliance** to the mdBook (`book/src/governance/`) mapping controls to SOC 2 and ISO/IEC 27001:2022.
   - Added runnable `examples/09-redact-document/` and end-to-end `scripts/check_governance.py`.

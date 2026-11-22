@@ -1137,11 +1137,11 @@ impl Core {
             self.emit(&id, "drift", w, json!({}));
         }
         let root_ritual = r.def.ritual.clone();
+        let cur_actor = audit::current_actor();
         let actor = if r.caller.starts_with("operator:") {
             Some(self.actor_context_for(&Self::normalize_actor_id(&r.caller)))
-        } else if self.cfg.rbac.enforce {
-            let cur = audit::current_actor();
-            Some(self.actor_context_for(&Self::normalize_actor_id(&cur)))
+        } else if cur_actor.starts_with("operator:") || self.cfg.rbac.enforce {
+            Some(self.actor_context_for(&Self::normalize_actor_id(&cur_actor)))
         } else {
             None
         };
@@ -1675,7 +1675,9 @@ impl Core {
             json!({"revived_from": old_id}),
         );
         let core = self.clone();
+        let spawn_actor = audit::current_actor();
         std::thread::spawn(move || {
+            let _actor = audit::ActorGuard::enter(spawn_actor);
             core.complete(run, false);
         });
         Ok(json!({"summon": id, "revived_from": old_id}))
@@ -1807,7 +1809,9 @@ impl Core {
             json!({"recast_from": old_id, "from_step": req.from_step, "kept_steps": keep.len()}),
         );
         let core = self.clone();
+        let spawn_actor = audit::current_actor();
         std::thread::spawn(move || {
+            let _actor = audit::ActorGuard::enter(spawn_actor);
             core.complete(run, false);
         });
         Ok(json!({"summon": id, "recast_from": old_id, "from_step": req.from_step}))
@@ -1938,7 +1942,9 @@ impl Core {
             self.storage_health()?;
         }
         let core = self.clone();
+        let spawn_actor = audit::current_actor();
         std::thread::spawn(move || {
+            let _actor = audit::ActorGuard::enter(spawn_actor);
             core.complete(run, false);
         });
         let mut out = out;

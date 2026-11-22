@@ -34,7 +34,7 @@ See the concrete `redact-document.yaml` walkthrough in `README.md` for a full en
 - **Host-level sandboxing for custom reagents (`wasm_reagents`):** Custom external tools configured under `wasm_reagents:` in `config.yaml` (`src/reagents/wasm_reagent.rs`) are subject to:
   - **Wasm v1 magic (`\0asm\x01\0\0\0`) and SHA-256 digest pinning** verified on every single invocation (fail-closed if the `.wasm` module changed on disk).
   - **Fail-closed effect classification:** Any Wasm tool not explicitly declared `"read"` or `"pure"` defaults to `"write"`, requiring write grants, RBAC write permissions, and idempotency fencing.
-  - **Process isolation:** `env_clear()` strips host secrets from the environment; only explicitly allowed `preopen_dirs` and `allow_env` keys are passed to the WASI runtime (`wasmtime` / `wasmer`); `setsid` process-group timeout kills terminate runaway modules; stdout is hard-capped by `max_output_bytes`.
+  - **Process isolation:** `env_clear()` unconditionally scrubs the entire host environment (zero host env inheritance); only explicitly configured `preopen_dirs` are passed to the WASI runtime (`wasmtime`); `setsid` process-group timeout kills terminate runaway modules; stdout is hard-capped by `max_output_bytes`.
 
 ## 4. Verification Commands
 
