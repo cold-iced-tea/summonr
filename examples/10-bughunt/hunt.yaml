@@ -1,0 +1,156 @@
+language_version: 1
+ritual: bughunt-hunt
+description: >-
+  Read source files in a few directories, chunk by chunk, and ask a small
+  model for bugs or ways around the system from one angle. Read-only.
+inputs:
+  dirs: {type: list, default: [src]}
+  angle: string
+  ext: {type: string, default: ".rs"}
+  chunk: {type: integer, default: 150, min: 1, max: 2000}
+  # No range operation exists, so chunk starts are listed; starts past the
+  # end of a file are skipped. Covers files up to 4,500 lines at chunk 150.
+  starts:
+    type: list
+    default: [0, 150, 300, 450, 600, 750, 900, 1050, 1200, 1350, 1500, 1650, 1800, 1950, 2100, 2250, 2400, 2550, 2700, 2850, 3000, 3150, 3300, 3450, 3600, 3750, 3900, 4050, 4200, 4350]
+model: ollama/qwen3:4b
+settings: {temperature: 0, num_ctx: 16384}
+requires:
+  - {reagent: file, action: list, on: {root: /absolute/path/to/target}}
+  - {reagent: file, action: read_text, on: {root: /absolute/path/to/target}}
+essence: {requests: 400, time: 3h}
+defs:
+  finding:
+    type: object
+    required: [kind, severity, confidence, claim, trigger, snippet]
+    additionalProperties: false
+    properties:
+      kind: {type: string, enum: [bug, bypass]}
+      severity: {type: string, enum: [low, medium, high, critical]}
+      confidence: {type: number, minimum: 0, maximum: 1}
+      claim: {type: string, maxLength: 300}
+      trigger: {type: string, maxLength: 300}
+      snippet: {type: string, maxLength: 200}
+steps:
+  - id: per_dir
+    each: dir in inputs.dirs
+    steps:
+      - id: listing
+        operation: file.list
+        arguments: {root: /absolute/path/to/target, path: "${dir}"}
+      - id: per_entry
+        each: entry in steps.listing.output.entries
+        steps:
+          - id: is_source
+            operation: data.ends_with
+            arguments: {text: "${entry.name}", suffix: "${inputs.ext}"}
+          - id: is_file
+            operation: data.compare
+            arguments: {left: "${entry.kind}", right: file, operator: eq}
+          - id: wanted
+            operation: data.logic
+            arguments: {operator: and, left: "${steps.is_source.output}", right: "${steps.is_file.output}"}
+          - if: steps.wanted.output
+            then:
+              - id: source
+                operation: file.read_text
+                arguments: {root: /absolute/path/to/target, path: "${dir}/${entry.name}"}
+              - id: lines
+                operation: data.lines
+                arguments: {text: "${steps.source.output.text}"}
+              - id: line_count
+                operation: data.count
+                arguments: {value: "${steps.lines.output}"}
+              - id: per_chunk
+                each: start in inputs.starts
+                steps:
+                  - id: in_file
+                    operation: data.compare
+                    arguments: {left: "${start}", right: "${steps.line_count.output}", operator: lt}
+                  - if: steps.in_file.output
+                    then:
+                      - id: stop_raw
+                        operation: data.arithmetic
+                        arguments: {left: "${start}", right: "${inputs.chunk}", operator: add}
+                      - id: stop
+                        operation: data.clamp
+                        arguments: {value: "${steps.stop_raw.output}", min: 0, max: "${steps.line_count.output}"}
+                      - id: window
+                        operation: data.slice
+                        arguments: {values: "${steps.lines.output}", start: "${start}", end: "${steps.stop.output}"}
+                      - id: text
+                        operation: data.join
+                        arguments: {values: "${steps.window.output}", separator: "\n"}
+                      - id: scan
+                        model:
+                          instructions: |
+                            You are a careful security and correctness reviewer.
+                            Look only for problems matching the angle you are given.
+                            Report only problems you can point to in the code shown.
+                            For each one give: kind (bug, or bypass for a way around a
+                            permission or limit), severity, your confidence from 0 to 1,
+                            the claim in one sentence, an input or sequence that
+                            triggers it, and snippet: one line copied exactly from the
+                            code. If you find nothing, return an empty list.
+                          prompt: |
+                            Angle: ${inputs.angle}
+                            File: ${dir}/${entry.name} (lines from ${start})
+
+                            ${steps.text.output}
+                          schema:
+                            type: object
+                            required: [findings]
+                            additionalProperties: false
+                            properties:
+                              findings: {type: array, maxItems: 8, items: {$ref: "#/$defs/finding"}}
+                      - id: per_finding
+                        each: found in steps.scan.output.findings
+                        steps:
+                          - id: placed
+                            operation: data.merge
+                            arguments:
+                              left: "${found}"
+                              right: {file: "${dir}/${entry.name}", start: "${start}"}
+                      - id: chunk_findings
+                        operation: data.fold
+                        arguments:
+                          values: "${steps.per_finding.output}"
+                          initial: []
+                          operation: data.concat
+                          arguments: {left: "${acc}", right: ["${item.outputs.placed}"]}
+                  - id: chunk_out
+                    operation: data.select
+                    arguments:
+                      condition: "${steps.in_file.output}"
+                      then: "${steps.chunk_findings.output}"
+                      else: []
+              - id: file_findings
+                operation: data.fold
+                arguments:
+                  values: "${steps.per_chunk.output}"
+                  initial: []
+                  operation: data.concat
+                  arguments: {left: "${acc}", right: "${item.outputs.chunk_out}"}
+          - id: entry_out
+            operation: data.select
+            arguments:
+              condition: "${steps.wanted.output}"
+              then: "${steps.file_findings.output}"
+              else: []
+      - id: dir_findings
+        operation: data.fold
+        arguments:
+          values: "${steps.per_entry.output}"
+          initial: []
+          operation: data.concat
+          arguments: {left: "${acc}", right: "${item.outputs.entry_out}"}
+  - id: all_findings
+    operation: data.fold
+    arguments:
+      values: "${steps.per_dir.output}"
+      initial: []
+      operation: data.concat
+      arguments: {left: "${acc}", right: "${item.outputs.dir_findings}"}
+return:
+  angle: "${inputs.angle}"
+  findings: "${steps.all_findings.output}"

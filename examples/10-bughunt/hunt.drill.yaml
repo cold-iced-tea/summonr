@@ -1,0 +1,42 @@
+# Drill for bughunt-hunt: the model's findings are scripted by step id
+# (`scan`), so no model is needed. Files are read for real from
+# fixtures/target, so run it through ./drill.sh, which rewrites the root.
+drill: bughunt-hunt-cases
+ritual: bughunt-hunt
+cases:
+  - id: finding-gets-file-and-chunk
+    inputs: {dirs: [src], angle: authority bypass}
+    model:
+      scan:
+        - findings:
+            - {kind: bypass, severity: high, confidence: 0.9, claim: Any role starting with admin passes, trigger: role "administrator-ish", snippet: 'role.starts_with("admin")'}
+    expect:
+      outcome: returned
+      result:
+        angle: authority bypass
+        findings:
+          - {kind: bypass, severity: high, confidence: 0.9, claim: Any role starting with admin passes, trigger: role "administrator-ish", snippet: 'role.starts_with("admin")', file: src/auth.rs, start: 0}
+      model_calls: 1
+  - id: nothing-found-is-fine
+    inputs: {dirs: [src], angle: panics}
+    model:
+      scan:
+        - findings: []
+    expect:
+      outcome: returned
+      result: {angle: panics, findings: []}
+      model_calls: 1
+  - id: chunks-cover-the-whole-file
+    inputs: {dirs: [src], angle: panics, chunk: 3, starts: [0, 3, 6]}
+    model:
+      scan:
+        - findings: []
+        - findings:
+            - {kind: bug, severity: low, confidence: 0.5, claim: c, trigger: t, snippet: // end}
+    expect:
+      outcome: returned
+      result:
+        angle: panics
+        findings:
+          - {kind: bug, severity: low, confidence: 0.5, claim: c, trigger: t, snippet: // end, file: src/auth.rs, start: 3}
+      model_calls: 2
