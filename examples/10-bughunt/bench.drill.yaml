@@ -4,16 +4,18 @@ drill: bughunt-bench-cases
 ritual: bughunt-bench
 cases:
   - id: real-and-made-up-findings-scored
-    inputs: {dirs: [src], angle: authority bypass}
+    inputs: {dirs: [src], angles: [authority bypass, panics]}
     model:
       scan:
         - findings:
             - {kind: bypass, severity: high, confidence: 0.9, claim: prefix match, trigger: t, snippet: 'role.starts_with("admin")'}
             - {kind: bug, severity: low, confidence: 0.9, claim: invented, trigger: t, snippet: "let x = unsafe { y };"}
+        - findings:
+            - {kind: bug, severity: high, confidence: 0.8, claim: same spot again, trigger: t, snippet: 'role.starts_with("admin")'}
     expect:
       outcome: returned
       result:
-        angle: authority bypass
-        raw: {gold_total: 1, gold_hit: 1, hit_ids: [g-auth], findings: 2, hits: 1, noise: 1}
-        after_gather: {gold_total: 1, gold_hit: 1, hit_ids: [g-auth], findings: 1, hits: 1, noise: 0}
-      model_calls: 1
+        angles: [authority bypass, panics]
+        raw: {gold_total: 1, gold_hit: 1, hit_ids: [g-auth], findings: 3, hits: 2, noise: 1}
+        after_gather: {gold_total: 1, gold_hit: 1, hit_ids: [g-auth], findings: 2, hits: 2, noise: 0}
+      model_calls: 2

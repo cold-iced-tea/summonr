@@ -7,6 +7,9 @@ description: >-
 inputs:
   path: string
   angle: string
+  # Chunks that start after this line are test code and are not scanned
+  # (Rust convention). Empty string scans everything.
+  stop_at: {type: string, default: "mod tests {"}
   chunk: {type: integer, default: 150, min: 1, max: 2000}
   # No range operation exists, so chunk starts are listed; starts past the
   # end of a file are skipped. Covers files up to 4,500 lines at chunk 150.
@@ -47,9 +50,35 @@ steps:
     each: start in inputs.starts
     on_failure: continue
     steps:
-      - id: in_file
+      - id: in_range
         operation: data.compare
         arguments: {left: "${start}", right: "${steps.line_count.output}", operator: lt}
+      # Everything before this chunk, to see whether the test module began.
+      # (No index_of exists, so each chunk re-joins its prefix.)
+      - id: before_end
+        operation: data.clamp
+        arguments: {value: "${start}", min: 0, max: "${steps.line_count.output}"}
+      - id: before
+        operation: data.slice
+        arguments: {values: "${steps.lines.output}", start: 0, end: "${steps.before_end.output}"}
+      - id: before_text
+        operation: data.join
+        arguments: {values: "${steps.before.output}", separator: "\n"}
+      - id: has_stop
+        operation: data.compare
+        arguments: {left: "${inputs.stop_at}", right: "", operator: ne}
+      - id: stop_seen
+        operation: data.contains
+        arguments: {value: "\n${steps.before_text.output}", needle: "\n${inputs.stop_at}"}
+      - id: in_tests
+        operation: data.logic
+        arguments: {operator: and, left: "${steps.has_stop.output}", right: "${steps.stop_seen.output}"}
+      - id: not_tests
+        operation: data.logic
+        arguments: {operator: not, left: "${steps.in_tests.output}"}
+      - id: in_file
+        operation: data.logic
+        arguments: {operator: and, left: "${steps.in_range.output}", right: "${steps.not_tests.output}"}
       - if: steps.in_file.output
         then:
           - id: stop_raw
@@ -93,9 +122,19 @@ steps:
               - id: needle
                 operation: data.trim
                 arguments: {text: "${found.snippet}"}
-              - id: quoted
+              - id: appears
                 operation: data.contains
                 arguments: {value: "${steps.text.output}", needle: "${steps.needle.output}"}
+              # A quote under 8 characters (`}`, `{`) locates nothing.
+              - id: needle_len
+                operation: data.count
+                arguments: {value: "${steps.needle.output}"}
+              - id: long_enough
+                operation: data.compare
+                arguments: {left: "${steps.needle_len.output}", right: 8, operator: ge}
+              - id: quoted
+                operation: data.logic
+                arguments: {operator: and, left: "${steps.appears.output}", right: "${steps.long_enough.output}"}
               - id: placed
                 operation: data.merge
                 arguments:

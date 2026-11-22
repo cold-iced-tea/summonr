@@ -1,7 +1,7 @@
 {
  "target": "8cdd038",
  "source": "fix commits a2f4c0b",
- "total": 5,
+ "total": 4,
  "by_file": {
   "src/core/signed.rs": [
    {
@@ -21,10 +21,6 @@
    {
     "id": "a2f4c0b:src/envelope.rs:4",
     "text": "if p.purpose != REPLY_PURPOSE || p.core != core.id() {\nreturn Err(\"reply has the wrong purpose or core\".into());\n}\nif p.in_reply_to != expected_nonce {\nreturn Err(\"reply answers a different request\".into());\n}"
-   },
-   {
-    "id": "a2f4c0b:src/envelope.rs:5",
-    "text": "assert_eq!(open(&w, &frame, NOW + 1, &mut used).unwrap_err(), Refusal::Replayed);\n}\n#[test]\nfn claimed_nonce_is_read_without_trusting_it() {\nlet w = world();\nlet n = new_nonce();\nassert_eq!(claimed_nonce(&request(&w, NOW, &n)), n);\nassert_eq!(claimed_nonce(&json!({\"signed\": {}})), \"\");\n}\n#[test]\nfn reply_round_trip() {\nlet w = world();"
    }
   ]
  }

@@ -38,7 +38,7 @@ cases:
       result:
         angle: panics
         findings:
-          - {kind: bug, severity: low, confidence: 0.5, claim: c, trigger: t, snippet: // end, file: src/auth.rs, start: 3, quoted: true}
+          - {kind: bug, severity: low, confidence: 0.5, claim: c, trigger: t, snippet: // end, file: src/auth.rs, start: 3, quoted: false}
       model_calls: 2
   - id: invented-snippet-is-marked-unquoted
     inputs: {dirs: [src], angle: panics}
@@ -64,5 +64,26 @@ cases:
       result:
         angle: panics
         findings:
-          - {kind: bug, severity: low, confidence: 0.5, claim: c, trigger: t, snippet: // end, file: src/auth.rs, start: 3, quoted: true}
+          - {kind: bug, severity: low, confidence: 0.5, claim: c, trigger: t, snippet: // end, file: src/auth.rs, start: 3, quoted: false}
       model_calls: 2
+  - id: test-module-chunks-are-not-scanned
+    inputs: {dirs: [lib], angle: panics, chunk: 3, starts: [0, 3, 6]}
+    model:
+      scan:
+        - findings: []
+        - findings: []
+    expect:
+      outcome: returned
+      result: {angle: panics, findings: []}
+      model_calls: 2
+  - id: too-short-snippet-is-not-a-quote
+    inputs: {dirs: [src], angle: panics}
+    model:
+      scan:
+        - findings:
+            - {kind: bug, severity: low, confidence: 0.9, claim: c, trigger: t, snippet: "}"}
+    expect:
+      outcome: returned
+      result:
+        findings:
+          - {kind: bug, severity: low, confidence: 0.9, claim: c, trigger: t, snippet: "}", file: src/auth.rs, start: 0, quoted: false}

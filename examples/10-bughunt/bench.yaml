@@ -1,36 +1,57 @@
 language_version: 1
 ritual: bughunt-bench
 description: >-
-  Run one hunt and score it against a gold set in the lab's benchmark
-  folder, then report recall and noise. Large inputs never cross the command
+  Run one hunt per angle and score their findings together against a gold
+  set in the lab's benchmark folder, then report recall and noise. Large inputs never cross the command
   line: the gold set is read from a file.
 inputs:
   dirs: {type: list, default: [src]}
-  angle: string
+  angles: list
   gold: {type: string, default: gold.json}
 requires:
   - {reagent: file, action: list, on: {root: /absolute/path/to/target}}
   - {reagent: file, action: read_text, on: {root: /absolute/path/to/target}}
   - {reagent: file, action: read_json, on: {root: /absolute/path/to/lab/benchmark}}
-essence: {requests: 400, time: 3h}
+essence: {requests: 1500, time: 6h}
 steps:
   - id: gold
     operation: file.read_json
     arguments: {root: /absolute/path/to/lab/benchmark, path: "${inputs.gold}"}
-  - id: hunt
-    ritual: bughunt-hunt
-    arguments: {dirs: "${inputs.dirs}", angle: "${inputs.angle}"}
+  - id: per_angle
+    each: angle in inputs.angles
+    on_failure: continue
+    steps:
+      - id: hunt
+        ritual: bughunt-hunt
+        arguments: {dirs: "${inputs.dirs}", angle: "${angle}"}
+  - id: hunts_ok
+    operation: data.filter
+    arguments: {values: "${steps.per_angle.output}", predicate: 'item.status == "returned"'}
+  - id: hunts
+    operation: data.fold
+    arguments:
+      values: "${steps.hunts_ok.output}"
+      initial: []
+      operation: data.concat
+      arguments: {left: "${acc}", right: ["${item.outputs.hunt}"]}
+  - id: all_findings
+    operation: data.fold
+    arguments:
+      values: "${steps.hunts.output}"
+      initial: []
+      operation: data.concat
+      arguments: {left: "${acc}", right: "${item.findings}"}
   - id: kept
     ritual: bughunt-gather
-    arguments: {hunts: ["${steps.hunt.output}"], min_batch: 1}
+    arguments: {hunts: "${steps.hunts.output}", min_batch: 1}
   - id: raw
     ritual: bughunt-score
-    arguments: {findings: "${steps.hunt.output.findings}", gold: "${steps.gold.output.value}"}
+    arguments: {findings: "${steps.all_findings.output}", gold: "${steps.gold.output.value}"}
   - id: filtered
     ritual: bughunt-score
     arguments: {findings: "${steps.kept.output.findings}", gold: "${steps.gold.output.value}"}
 return:
-  angle: "${inputs.angle}"
+  angles: "${inputs.angles}"
   raw: "${steps.raw.output}"
   after_gather: "${steps.filtered.output}"
   findings: "${steps.kept.output.findings}"

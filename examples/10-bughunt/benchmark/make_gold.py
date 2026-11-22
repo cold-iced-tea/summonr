@@ -34,7 +34,7 @@ def fix_gold(repo, commits):
         parent = git(repo, "rev-parse", "--short", f"{c}^").strip()
         parents.add(parent)
         diff = git(repo, "diff", "-U3", f"{c}^", c, "--", "src")
-        file, old, n = None, [], 0
+        file, old, n, skip, tests_at = None, [], 0, False, None
 
         def flush():
             nonlocal old, n
@@ -50,10 +50,20 @@ def fix_gold(repo, commits):
                 file = line[6:] if line.startswith("--- a/") else None
                 if file and (file.endswith("_tests.rs") or "/tests/" in file):
                     file = None  # test code is not where a bug lives
+                tests_at = None
+                if file:
+                    src = git(repo, "show", f"{c}^:{file}").splitlines()
+                    tests_at = next((i + 1 for i, l in enumerate(src) if l.startswith("mod tests {")), None)
             elif line.startswith("+++ "):
                 continue
             elif line.startswith("@@"):
                 flush()
+                start = int(re.match(r"@@ -(\d+)", line).group(1))
+                # Hunks inside the file's test module are the fix's new tests,
+                # not where the bug was.
+                skip = tests_at is not None and start >= tests_at
+            elif skip:
+                continue
             elif line.startswith("-") or line.startswith(" "):
                 old.append(line[1:])
         flush()

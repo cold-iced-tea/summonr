@@ -1,7 +1,7 @@
 {
  "target": "4979f5c",
  "source": "fix commits c06fd86",
- "total": 4,
+ "total": 2,
  "by_file": {
   "src/exec.rs": [
    {
@@ -9,20 +9,10 @@
     "text": "ritual::render_value(&v, scope).map_err(|e| Fail::Failed(format!(\"{op}: {e}\")))\n};\nlet mut raw_args = object(&s.arguments);\nlet body = if matches!(op, \"data.map\" | \"data.fold\") {\nraw_args.as_object_mut().unwrap().remove(\"arguments\")\n} else {\nNone\n};\nlet mut args = render(raw_args, scope)?;\nif let Some(body) = body {\nargs[\"arguments\"] = body;\n}\nlet effect = reagent::tool_meta(Some(&self.core.cfg), reagent, tool)\n.map(|t| t.effect)"
    }
   ],
-  "src/ritual.rs": [
-   {
-    "id": "c06fd86:src/ritual.rs:2",
-    "text": "assert_eq!(out_schema[\"properties\"][\"review\"][\"properties\"][\"verdict\"][\"type\"], \"string\");\n}\nconst CHILD: &str = r#\"\nritual: child\ninputs: {text: {type: string}}"
-   }
-  ],
   "src/stdlib.rs": [
    {
-    "id": "c06fd86:src/stdlib.rs:3",
+    "id": "c06fd86:src/stdlib.rs:2",
     "text": ".get(\"predicate\")\n.and_then(Value::as_str)\n.ok_or(\"filter needs a literal predicate\")?;\nlet expr = ritual::parse_expr(p)?;\nlet mut paths = Vec::new();\nritual::expr_refs(&expr, &mut paths);"
-   },
-   {
-    "id": "c06fd86:src/stdlib.rs:4",
-    "text": "assert!(\nvalidate_collection(\"data.filter\", &json!({\"predicate\":\"inputs.secret == 1\"})).is_err()\n);\n}\n#[test]\nfn extended_stdlib_logic_math_objects_and_hashing() {"
    }
   ]
  }

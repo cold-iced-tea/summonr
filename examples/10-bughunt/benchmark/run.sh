@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
 # Run the bughunt benchmark: one lab per gold set, one hunt each, scored.
-#   benchmark/run.sh REPO OUT_DIR SUMMONR_BIN [ANGLE]
+#   benchmark/run.sh REPO OUT_DIR SUMMONR_BIN
 # Fix-commit gold sets run at the fix's parent; the Gemini set at 5fb6bbe.
 # Prints one summary line per gold set; full results in OUT_DIR/bench-*.json.
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$1"; out="$(mkdir -p "$2" && cd "$2" && pwd)"; bin="$3"
-angle="${4:-ways to bypass a permission, scope or resource limit}"
+# The rite's three default angles.
+angles='["ways to bypass a permission, scope or resource limit", "panics, overflows or unbounded work on hostile input", "injection: untrusted text reaching a path, command, header, query or prompt"]'
 
 bench() {  # name commit gold dirs
   local name="$1" commit="$2" gold="$3" dirs="$4" lab="$out/$1"
   "$here/../setup.sh" "$lab" "$repo" "$commit" "$bin" >/dev/null || { echo "$name setup failed"; return; }
   local s=$SECONDS
-  SUMMONR_HOME="$lab/home" "$bin" run bughunt-bench --arg "dirs=$dirs" --arg "angle=$angle" \
+  SUMMONR_HOME="$lab/home" "$bin" run bughunt-bench --arg "dirs=$dirs" --arg "angles=$angles" \
     --arg "gold=$gold" --wait --json --timeout 3h > "$out/bench-$name.json" 2>&1
   local code=$? took=$((SECONDS - s))
   python3 -I - "$out/bench-$name.json" "$name" "$code" "$took" <<'EOF'
@@ -32,7 +33,9 @@ EOF
   SUMMONR_HOME="$lab/home" "$bin" core stop --json >/dev/null 2>&1 || true
 }
 
-for c in c06fd86 4979f5c 35f37f0; do
-  bench "fix-$c" "$(git -C "$repo" rev-parse --short "$c^")" "fix-$c.json" '["src","src/reagents"]'
-done
-bench gemini 5fb6bbe gemini-125.json '["src/reagents","src/core"]'
+parent() { git -C "$repo" rev-parse --short "$1^"; }
+# Directories are the ones holding each gold set's files.
+bench fix-c06fd86 "$(parent c06fd86)" fix-c06fd86.json '["src"]'
+bench fix-4979f5c "$(parent 4979f5c)" fix-4979f5c.json '["src","src/reagents"]'
+bench fix-35f37f0 "$(parent 35f37f0)" fix-35f37f0.json '["src"]'
+bench gemini 5fb6bbe gemini-125.json '["src/reagents"]'

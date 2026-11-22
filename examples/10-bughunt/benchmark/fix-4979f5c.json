@@ -1,7 +1,7 @@
 {
  "target": "35f37f0",
  "source": "fix commits 4979f5c",
- "total": 3,
+ "total": 2,
  "by_file": {
   "src/reagent.rs": [
    {
@@ -11,12 +11,6 @@
    {
     "id": "4979f5c:src/reagent.rs:2",
     "text": "let key = match reagent {\n\"file\" => \"root\",\n\"http\" => \"origin\",\n_ => return Ok(()),\n};\nif !into.is_empty() || on.len() != 1 || !on.contains_key(key) {"
-   }
-  ],
-  "src/reagents/mcp_reagent.rs": [
-   {
-    "id": "4979f5c:src/reagents/mcp_reagent.rs:3",
-    "text": "}\n}\n#[test]\nfn mcp_reagent_enforces_grants_and_calls_stdio_server() {\nlet cfg = mock_mcp_config();"
    }
   ]
  }
