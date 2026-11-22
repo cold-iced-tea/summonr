@@ -202,8 +202,9 @@ pub(super) fn operation_output_type(
         "data.keys" | "data.split" | "data.lines" => Ty::List(Box::new(Ty::Str)),
         "data.range" => Ty::List(Box::new(Ty::Int)),
         "data.index_of" => nullable(Ty::Int),
+        // An empty or all-null list gives null.
         "data.coalesce" => match arg_types.get("values") {
-            Some(Ty::List(elem)) => (**elem).clone(),
+            Some(Ty::List(elem)) => nullable((**elem).clone()),
             _ => Ty::Any,
         },
         "data.flatten" => match arg_types.get("values") {

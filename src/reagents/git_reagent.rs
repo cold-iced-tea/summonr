@@ -695,13 +695,17 @@ impl Reagent for Git {
                 if path.exists() {
                     return Err(Fail::Invalid(format!("{} already exists", path.display())));
                 }
-                git(cfg, main, &["fetch", "--quiet", &r.remote], d)?;
-                let tracking = format!("refs/remotes/{}/{}", r.remote, r.trunk);
-                if !git_test(cfg, main, &["show-ref", "--verify", "--quiet", &tracking], d)? {
-                    return Err(Fail::Invalid(format!(
-                        "{} has no branch `{}`, so the trunk cannot be checked as up to date; push it there first",
-                        r.remote, r.trunk
-                    )));
+                // Fetch the trunk by name, so a trunk the remote no longer has
+                // is an error rather than a stale tracking ref that looks fine.
+                let refspec = format!("+refs/heads/{0}:refs/remotes/{1}/{0}", r.trunk, r.remote);
+                if let Err(e) = git(cfg, main, &["fetch", "--quiet", &r.remote, &refspec], d) {
+                    if e.message().contains("couldn't find remote ref") {
+                        return Err(Fail::Invalid(format!(
+                            "{} has no branch `{}`, so the trunk cannot be checked as up to date; push it there first",
+                            r.remote, r.trunk
+                        )));
+                    }
+                    return Err(e);
                 }
                 let range = format!("{}..{}/{}", r.trunk, r.remote, r.trunk);
                 let behind = git(cfg, main, &["rev-list", "--count", &range], d)?;
@@ -1195,8 +1199,9 @@ mod tests {
     #[test]
     fn worktree_add_explains_a_remote_without_the_trunk() {
         let f = fixture();
-        sh(&f.root.join("origin.git"), &["branch", "-D", "master"]);
-        sh(&f.main(), &["update-ref", "-d", "refs/remotes/origin/master"]);
+        // The likely real case: the remote's trunk was deleted or renamed
+        // after we fetched it, so a stale origin/master is still here.
+        sh(&f.root.join("origin.git"), &["branch", "-m", "master", "main"]);
         let err = call(&f, "worktree_add", json!({"repo": "demo", "branch": "fresh"})).unwrap_err().message();
         assert!(err.contains("origin has no branch `master`"), "{err}");
         assert!(!err.contains("rev-list"), "{err}");

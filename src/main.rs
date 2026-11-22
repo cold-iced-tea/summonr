@@ -101,14 +101,31 @@ fn main() {
 /// `k`, exactly as if it had been typed after `given k=`. Read here, by the
 /// CLI, so the request carries values, never paths the core would open.
 fn read_arg_files(op: &mut grammar::Op) -> Result<(), RpcErr> {
+    use std::io::Read;
     const MAX: u64 = 1_048_576;
     for (k, path) in std::mem::take(&mut op.arg_files) {
-        let too_big = std::fs::metadata(&path).map(|m| m.len() > MAX).unwrap_or(false);
-        if too_big {
-            return Err(RpcErr::invalid(format!("input `{k}`: {path} is over 1 MiB")));
+        let fail = |why: String| RpcErr::invalid(format!("input `{k}`: {path}: {why}"));
+        // Check the opened handle, not the path, and bound the read itself:
+        // /dev/zero, FIFOs and /proc files report size 0.
+        let file = std::fs::File::open(&path).map_err(|e| fail(format!("cannot read: {e}")))?;
+        let meta = file.metadata().map_err(|e| fail(format!("cannot read: {e}")))?;
+        if !meta.is_file() {
+            return Err(fail("not a regular file".into()));
         }
-        let text = std::fs::read_to_string(&path)
-            .map_err(|e| RpcErr::invalid(format!("input `{k}`: cannot read {path}: {e}")))?;
+        let mut bytes = Vec::new();
+        file.take(MAX + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| fail(format!("cannot read: {e}")))?;
+        if bytes.len() as u64 > MAX {
+            return Err(fail("is over 1 MiB".into()));
+        }
+        let mut text = String::from_utf8(bytes).map_err(|_| fail("is not UTF-8 text".into()))?;
+        // Drop one trailing newline, as $(cat FILE) would, so "5\n" is 5.
+        if text.ends_with("\r\n") {
+            text.truncate(text.len() - 2);
+        } else if text.ends_with('\n') {
+            text.truncate(text.len() - 1);
+        }
         op.args.insert(k, text);
     }
     Ok(())
@@ -974,8 +991,21 @@ mod arg_file_tests {
         std::fs::write(&f, "{\"total\": 1}\n").unwrap();
         let mut op = grammar::parse(&["run".into(), "r".into(), "--arg-file".into(), format!("gold={}", f.display())]).unwrap();
         read_arg_files(&mut op).unwrap();
-        assert_eq!(op.args["gold"], "{\"total\": 1}\n");
+        // One trailing newline is dropped, as $(cat FILE) would.
+        assert_eq!(op.args["gold"], "{\"total\": 1}");
         assert!(op.arg_files.is_empty());
+        let n = dir.join("n.txt");
+        std::fs::write(&n, "5\r\n").unwrap();
+        let mut op = grammar::parse(&["run".into(), "r".into(), "--arg-file".into(), format!("n={}", n.display())]).unwrap();
+        read_arg_files(&mut op).unwrap();
+        assert_eq!(op.args["n"], "5");
+        std::fs::write(&n, "a\n\n").unwrap();
+        let mut op = grammar::parse(&["run".into(), "r".into(), "--arg-file".into(), format!("n={}", n.display())]).unwrap();
+        read_arg_files(&mut op).unwrap();
+        assert_eq!(op.args["n"], "a\n", "only one newline is dropped");
+        // Not a regular file: refused before any read (no endless /dev/zero).
+        let mut op = grammar::parse(&["run".into(), "r".into(), "--arg-file".into(), "z=/dev/zero".into()]).unwrap();
+        assert!(read_arg_files(&mut op).unwrap_err().message.contains("not a regular file"));
 
         let missing = dir.join("nope.json");
         let mut op = grammar::parse(&["run".into(), "r".into(), "--arg-file".into(), format!("gold={}", missing.display())]).unwrap();

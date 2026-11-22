@@ -167,7 +167,7 @@ Output: a list of items, each `{item, status, error, outputs, steps, effects, in
 | `returned`, `abstained`, `invalid`, `failed`, `unverified` | Items by status |
 | `applied`, `observed`, `held` | Writes applied, writes observed by the runtime, writes held as petitions |
 
-`keep` lists body steps whose outputs each item keeps; the others are left out of `outputs` (their status still appears under `steps`). Use it when a body reads large data, such as a file's text, that later steps do not need: loop results are data, and data arguments are capped at 1 MiB. A name that is not a result-producing step of the body is a validation error, and a reference to a dropped output is a type error.
+`keep` lists body steps whose outputs each item keeps; the others are left out of `outputs` (their status still appears under `steps`). Use it when a body reads large data, such as a file's text, that later steps do not need: loop results are data, and data arguments are capped at 1 MiB. A name that is not a step whose result an item records (a `data` operation, model step or ritual step, including inside `if` branches; not an `if` itself, another operation, or a nested loop) is a validation error, and a reference to a dropped output is a type error.
 
 With `on_failure: stop`, the first failed item ends the batch. With `continue`, it is recorded and the batch goes on. Exhaustion and cancellation always stop.
 

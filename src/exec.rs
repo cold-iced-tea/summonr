@@ -1437,7 +1437,6 @@ impl Run {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     fn record_batch_item(
         &mut self,
         id: &str,

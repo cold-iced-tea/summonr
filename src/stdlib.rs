@@ -394,7 +394,11 @@ pub fn call(name: &str, a: &Value) -> Result<Value, String> {
         },
         "lines" => {
             let v: Vec<&str> = s("text").lines().take(10001).collect();
-            match a.get("number_from").and_then(Value::as_i64) {
+            let first = match a.get("number_from") {
+                None => None,
+                Some(n) => Some(n.as_i64().ok_or("number_from must fit signed 64-bit integer")?),
+            };
+            match first {
                 None => json!(v),
                 Some(first) => {
                     let mut out = Vec::with_capacity(v.len());
@@ -423,7 +427,10 @@ pub fn call(name: &str, a: &Value) -> Result<Value, String> {
         "range" => {
             let start = a["start"].as_i64().ok_or("start must fit signed 64-bit integer")?;
             let end = a["end"].as_i64().ok_or("end must fit signed 64-bit integer")?;
-            let step = a.get("step").and_then(Value::as_i64).unwrap_or(1);
+            let step = match a.get("step") {
+                None => 1,
+                Some(v) => v.as_i64().ok_or("step must fit signed 64-bit integer")?,
+            };
             if step < 1 {
                 return Err("step must be at least 1".into());
             }
@@ -840,6 +847,8 @@ mod tests {
         assert_eq!(run("range", json!({"start":5, "end":5})).unwrap(), json!([]));
         assert!(run("range", json!({"start":0, "end":5, "step":0})).is_err());
         assert!(run("range", json!({"start":0, "end":20000})).is_err());
+        assert!(run("range", json!({"start":0, "end":5, "step":9223372036854775808u64})).is_err());
+        assert!(run("lines", json!({"text":"a", "number_from":9223372036854775808u64})).is_err());
         // index_of: equal by default, contains for strings, null when absent.
         assert_eq!(run("index_of", json!({"values":["a", "b", "b"], "needle":"b"})).unwrap(), 1);
         assert_eq!(

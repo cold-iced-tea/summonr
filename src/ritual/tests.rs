@@ -430,6 +430,54 @@ steps:
     }
 
     #[test]
+    fn coalesce_may_be_null_and_keep_names_only_recorded_steps() {
+        let none = |_: &str, _: Option<u32>| None;
+        // coalesce of an empty or all-null list is null, so its type is nullable.
+        let args = std::collections::BTreeMap::from([(
+            "values".to_string(),
+            crate::ritual::types::Ty::List(Box::new(crate::ritual::types::Ty::Str)),
+        )]);
+        let ty = crate::ritual::types::operation_output_type("data.coalesce", None, &args);
+        assert_eq!(ty.label(), "nullable string");
+        let keep_if = parse_file(
+            r#"
+ritual: r
+steps:
+  - id: loop
+    each: x in [1]
+    keep: [gate]
+    steps:
+      - id: gate
+        if: "true"
+        then:
+          - id: inner
+            operation: data.trim
+            arguments: {text: " a "}
+"#,
+        )
+        .unwrap();
+        let errs = validate(&keep_if, &none, &crate::reagent::tool, 3).unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("`keep` names `gate`")), "{errs:?}");
+        let keep_branch = parse_file(
+            r#"
+ritual: r
+steps:
+  - id: loop
+    each: x in [1]
+    keep: [inner]
+    steps:
+      - if: "true"
+        then:
+          - id: inner
+            operation: data.trim
+            arguments: {text: " a "}
+"#,
+        )
+        .unwrap();
+        assert!(validate(&keep_branch, &none, &crate::reagent::tool, 3).is_ok());
+    }
+
+    #[test]
     fn each_keep_is_checked() {
         let none = |_: &str, _: Option<u32>| None;
         let src = |keep: &str, ret: &str| {

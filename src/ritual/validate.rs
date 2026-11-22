@@ -1022,8 +1022,28 @@ impl V<'_> {
             .filter_map(|s| s.id.as_deref())
             .collect();
         if let Some(keep) = &s.keep {
+            // Only steps whose results the runtime records in an item:
+            // data operations, model steps and ritual steps, including
+            // those inside `if` branches (not `if` steps themselves, other
+            // operations, or nested loops).
+            fn recorded(steps: &[Step], out: &mut std::collections::HashSet<String>) {
+                for st in steps {
+                    let produces = st.model.is_some()
+                        || st.ritual.is_some()
+                        || st.operation.as_deref().is_some_and(|o| o.starts_with("data."));
+                    if let (true, Some(id)) = (produces, st.id.as_ref()) {
+                        out.insert(id.clone());
+                    }
+                    if st.each.is_none() {
+                        recorded(st.then.as_deref().unwrap_or(&[]), out);
+                        recorded(st.otherwise.as_deref().unwrap_or(&[]), out);
+                    }
+                }
+            }
+            let mut keepable = std::collections::HashSet::new();
+            recorded(body, &mut keepable);
             for k in keep {
-                if !body_all.contains_key(k) || nested_each_ids.contains(k.as_str()) {
+                if !keepable.contains(k) {
                     self.errors.push(format!(
                         "step {at}: `keep` names `{k}`, which is not a result-producing step in this loop's body"
                     ));
