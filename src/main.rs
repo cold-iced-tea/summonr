@@ -60,6 +60,10 @@ fn main() {
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let paths = Paths::resolve();
+    if let Some(w) = misplaced_config(&paths) {
+        eprintln!("summonr: warning: {w}");
+        let _ = ENV_WARNINGS.set(vec![w]);
+    }
     if args.is_empty() {
         if theme::tty() {
             std::process::exit(finish(
@@ -131,13 +135,44 @@ fn read_arg_files(op: &mut grammar::Op) -> Result<(), RpcErr> {
     Ok(())
 }
 
+/// Warnings about the environment, added to every envelope (and stderr).
+static ENV_WARNINGS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+fn env_warnings() -> Value {
+    json!(ENV_WARNINGS.get().cloned().unwrap_or_default())
+}
+
+fn merged_warnings(own: Option<&Value>) -> Value {
+    let mut all = own.and_then(Value::as_array).cloned().unwrap_or_default();
+    all.extend(env_warnings().as_array().cloned().unwrap_or_default());
+    Value::Array(all)
+}
+
+/// A `config.yaml` written beside the config directory instead of inside it
+/// is silently ignored; say so.
+fn misplaced_config(paths: &Paths) -> Option<String> {
+    let parent = paths.config.parent()?;
+    // Only in a SUMMONR_HOME layout; ~/.config/config.yaml may be another tool's.
+    if paths.state.parent() != Some(parent) {
+        return None;
+    }
+    let stray = parent.join("config.yaml");
+    stray.is_file().then(|| {
+        format!(
+            "{} is not read; Summonr reads {}",
+            stray.display(),
+            paths.config.join("config.yaml").display()
+        )
+    })
+}
+
 /// Print one result. JSON output is exactly one versioned envelope on stdout;
 /// diagnostics go to stderr.
 pub(crate) fn finish(res: Result<Value, RpcErr>, as_json: bool, human: impl FnOnce(&Value)) -> i32 {
     match res {
         Ok(data) => {
             if as_json {
-                let warnings = data.get("warnings").cloned().unwrap_or(json!([]));
+                let warnings = merged_warnings(data.get("warnings"));
                 println!(
                     "{}",
                     json!({"schema_version": 1, "ok": true, "data": data, "error": null, "warnings": warnings})
@@ -151,7 +186,7 @@ pub(crate) fn finish(res: Result<Value, RpcErr>, as_json: bool, human: impl FnOn
             if as_json {
                 println!(
                     "{}",
-                    json!({"schema_version": 1, "ok": false, "data": e.data, "error": {"code": e.code, "message": e.message}, "warnings": []})
+                    json!({"schema_version": 1, "ok": false, "data": e.data, "error": {"code": e.code, "message": e.message}, "warnings": env_warnings()})
                 );
             } else {
                 eprintln!("{} {}", paint(Ink::Rubric, "summonr:"), e.message);
@@ -1022,4 +1057,31 @@ mod arg_file_tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
     use crate::grammar;
+}
+
+#[cfg(test)]
+mod misplaced_config_tests {
+    #[test]
+    fn config_yaml_beside_config_dir_is_reported() {
+        let home = std::env::temp_dir().join(format!("summonr-misplaced-{}", std::process::id()));
+        let paths = crate::util::Paths {
+            runtime: home.join("run"),
+            state: home.join("state"),
+            config: home.join("config"),
+        };
+        std::fs::create_dir_all(&paths.config).unwrap();
+        assert_eq!(super::misplaced_config(&paths), None);
+        std::fs::write(home.join("config.yaml"), "repos: {}\n").unwrap();
+        let w = super::misplaced_config(&paths).unwrap();
+        assert!(w.contains("is not read") && w.contains("config/config.yaml"), "{w}");
+        std::fs::write(paths.config.join("config.yaml"), "repos: {}\n").unwrap();
+        assert!(super::misplaced_config(&paths).is_some(), "still worth saying while both exist");
+        let xdg = crate::util::Paths {
+            runtime: home.join("run"),
+            state: home.join("share/summonr"),
+            config: home.join("config"),
+        };
+        assert_eq!(super::misplaced_config(&xdg), None, "XDG layout: not ours to judge");
+        std::fs::remove_dir_all(&home).unwrap();
+    }
 }
