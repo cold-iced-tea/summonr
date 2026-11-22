@@ -106,6 +106,10 @@ pub fn schema(name: &str) -> Option<Value> {
             vec!["text"],
         ),
         "coalesce" | "flatten" => (json!({"values":array}), vec!["values"]),
+        "unique_by" => (
+            json!({"values":array,"fields":{"type":"array","minItems":1,"maxItems":100,"items":{"type":"string"}}}),
+            vec!["values", "fields"],
+        ),
         "range" => (
             json!({"start":int,"end":int,"step":{"type":"integer","minimum":1}}),
             vec!["start", "end"],
@@ -413,6 +417,22 @@ pub fn call(name: &str, a: &Value) -> Result<Value, String> {
             }
         }
         "coalesce" => values().iter().find(|v| !v.is_null()).cloned().unwrap_or(Value::Null),
+        "unique_by" => {
+            let fields: Vec<&str> = a["fields"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+            let mut seen = std::collections::HashSet::new();
+            let mut out = Vec::new();
+            for v in values() {
+                let obj = v.as_object().ok_or("unique_by needs objects")?;
+                let mut key = Vec::with_capacity(fields.len());
+                for f in &fields {
+                    key.push(equality_key(obj.get(*f).ok_or_else(|| format!("an element has no field `{f}`"))?));
+                }
+                if seen.insert(key) {
+                    out.push(v.clone());
+                }
+            }
+            json!(out)
+        }
         "flatten" => {
             let mut out = Vec::new();
             for v in values() {
@@ -857,6 +877,15 @@ mod tests {
         );
         assert_eq!(run("index_of", json!({"values":[1, 2], "needle":3})).unwrap(), Value::Null);
         assert!(run("index_of", json!({"values":[1], "needle":"1", "match":"contains"})).is_err());
+        // unique_by: first element for each combination of the named fields.
+        assert_eq!(
+            run("unique_by", json!({"values":[
+                {"file":"a","s":"x","claim":1},{"file":"a","s":"x","claim":2},{"file":"b","s":"x","claim":3}
+            ], "fields":["file","s"]})).unwrap(),
+            json!([{"file":"a","s":"x","claim":1},{"file":"b","s":"x","claim":3}])
+        );
+        assert!(run("unique_by", json!({"values":[{"file":"a"}], "fields":["missing"]})).is_err());
+        assert!(run("unique_by", json!({"values":[1], "fields":["a"]})).is_err());
         // lines: optional numbering.
         assert_eq!(
             run("lines", json!({"text":"a\nb", "number_from":10})).unwrap(),

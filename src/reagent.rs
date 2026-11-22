@@ -341,6 +341,13 @@ const DATA_TOOLS: &[ToolSpec] = &[
     },
     ToolSpec {
         reagent: "data",
+        name: "unique_by",
+        effect: "pure",
+        determinism: "deterministic",
+        description: "First object for each combination of the named fields",
+    },
+    ToolSpec {
+        reagent: "data",
         name: "flatten",
         effect: "pure",
         determinism: "deterministic",

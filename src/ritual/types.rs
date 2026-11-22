@@ -224,7 +224,7 @@ pub(super) fn operation_output_type(
             (Some(a), Some(Ty::Null)) => nullable(a.clone()),
             _ => Ty::Any,
         },
-        "data.slice" | "data.sort" | "data.unique" | "data.filter" => match arg_types.get("values")
+        "data.slice" | "data.sort" | "data.unique" | "data.unique_by" | "data.filter" => match arg_types.get("values")
         {
             Some(Ty::List(elem)) => Ty::List(elem.clone()),
             _ => Ty::List(Box::new(Ty::Any)),

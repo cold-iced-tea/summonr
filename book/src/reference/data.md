@@ -44,6 +44,7 @@ The `data` reagent contains deterministic functions over explicit arguments. It 
 | `data.case` | `text`, `mode` (`lower`, `upper`) | Unicode lowercase or uppercase string. |
 | `data.lines` | `text`, optional integer `number_from` | Array of lines (`\n` or `\r\n`), up to 10,000 lines. With `number_from`, each line is prefixed `N: ` counting from that number, so a model can cite lines. |
 | `data.coalesce` | array `values` | First element that is not `null`, or `null` (so its type is nullable). Picks the output of whichever `if` branch ran. |
+| `data.unique_by` | array `values` of objects, string array `fields` (1–100) | The first object for each distinct combination of those fields' values, in input order. A non-object or a missing field fails. Equality as in `data.unique`. |
 | `data.flatten` | array `values` of arrays | The inner arrays concatenated, one level deep; any non-array element fails. At most 10,000 elements. |
 | `data.range` | integers `start`, `end`, optional `step` (≥ 1, default 1) | Integers from `start` up to but not including `end`; empty when `start ≥ end`. More than 10,000 elements fails. |
 | `data.index_of` | array `values`, `needle`, optional `match` (`equal` default, or `contains`) | Index of the first element equal to `needle` (or, with `contains`, the first string containing the string `needle`), else `null`. Equality is the same as `data.contains` and `data.unique` (JSON values, so `1.0` is not `1`), not `==` in conditions. |
