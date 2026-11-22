@@ -1,0 +1,23 @@
+{
+ "target": "35f37f0",
+ "source": "fix commits 4979f5c",
+ "total": 3,
+ "by_file": {
+  "src/reagent.rs": [
+   {
+    "id": "4979f5c:src/reagent.rs:1",
+    "text": ".tools\n.get(tool)\n.ok_or_else(|| Fail::Failed(format!(\"reagent `{reagent}` has no tool `{tool}`\")))?;\nif !auth\n.grants\n.iter()\n.any(|g| g.reagent == reagent && g.action == tool)\n{\nreturn Err(Fail::Denied(format!(\n\"{reagent}.{tool} is not authorized by any grant\"\n)));\n}\nOk(if t.effect == \"read\" { \"read\" } else { \"write\" })\n}"
+   },
+   {
+    "id": "4979f5c:src/reagent.rs:2",
+    "text": "let key = match reagent {\n\"file\" => \"root\",\n\"http\" => \"origin\",\n_ => return Ok(()),\n};\nif !into.is_empty() || on.len() != 1 || !on.contains_key(key) {"
+   }
+  ],
+  "src/reagents/mcp_reagent.rs": [
+   {
+    "id": "4979f5c:src/reagents/mcp_reagent.rs:3",
+    "text": "}\n}\n#[test]\nfn mcp_reagent_enforces_grants_and_calls_stdio_server() {\nlet cfg = mock_mcp_config();"
+   }
+  ]
+ }
+}

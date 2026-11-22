@@ -1,0 +1,98 @@
+language_version: 1
+ritual: bughunt-score
+description: >-
+  Score findings against a gold set of known-bug hunks. A finding hits a gold
+  hunk when it names the same file and its trimmed snippet (8+ characters)
+  appears in the hunk text. Pure.
+inputs:
+  findings: list
+  # {total, by_file: {FILE: [{id, text}]}}, made by benchmark/make_gold.py
+  gold: object
+essence: {requests: 0, time: 5m}
+steps:
+  - id: per_finding
+    each: found in inputs.findings
+    steps:
+      # JSON pointer escaping: ~ then / (file names contain /).
+      - id: esc_tilde
+        operation: data.replace
+        arguments: {text: "${found.file}", from: "~", to: "~0"}
+      - id: esc_slash
+        operation: data.replace
+        arguments: {text: "${steps.esc_tilde.output}", from: /, to: "~1"}
+      - id: hunks
+        operation: data.get
+        arguments: {value: "${inputs.gold.by_file}", path: "/${steps.esc_slash.output}", default: []}
+      - id: needle
+        operation: data.trim
+        arguments: {text: "${found.snippet}"}
+      - id: needle_len
+        operation: data.count
+        arguments: {value: "${steps.needle.output}"}
+      - id: long_enough
+        operation: data.compare
+        arguments: {left: "${steps.needle_len.output}", right: 8, operator: ge}
+      - id: per_hunk
+        each: hunk in steps.hunks.output
+        steps:
+          - id: inside
+            operation: data.contains
+            arguments: {value: "${hunk.text}", needle: "${steps.needle.output}"}
+          - id: counts
+            operation: data.logic
+            arguments: {operator: and, left: "${steps.inside.output}", right: "${steps.long_enough.output}"}
+          - id: hit
+            operation: data.select
+            arguments: {condition: "${steps.counts.output}", then: ["${hunk.id}"], else: []}
+      - id: ids
+        operation: data.fold
+        arguments:
+          values: "${steps.per_hunk.output}"
+          initial: []
+          operation: data.concat
+          arguments: {left: "${acc}", right: "${item.outputs.hit}"}
+      - id: n_ids
+        operation: data.count
+        arguments: {value: "${steps.ids.output}"}
+      - id: is_hit
+        operation: data.compare
+        arguments: {left: "${steps.n_ids.output}", right: 0, operator: gt}
+  - id: all_ids
+    operation: data.fold
+    arguments:
+      values: "${steps.per_finding.output}"
+      initial: []
+      operation: data.concat
+      arguments: {left: "${acc}", right: "${item.outputs.ids}"}
+  - id: hit_ids
+    operation: data.unique
+    arguments: {values: "${steps.all_ids.output}"}
+  - id: gold_hit
+    operation: data.count
+    arguments: {value: "${steps.hit_ids.output}"}
+  - id: flags
+    operation: data.fold
+    arguments:
+      values: "${steps.per_finding.output}"
+      initial: []
+      operation: data.concat
+      arguments: {left: "${acc}", right: ["${item.outputs.is_hit}"]}
+  - id: hit_flags
+    operation: data.filter
+    arguments: {values: "${steps.flags.output}", predicate: "item"}
+  - id: hits
+    operation: data.count
+    arguments: {value: "${steps.hit_flags.output}"}
+  - id: total
+    operation: data.count
+    arguments: {value: "${inputs.findings}"}
+  - id: noise
+    operation: data.arithmetic
+    arguments: {left: "${steps.total.output}", right: "${steps.hits.output}", operator: subtract}
+return:
+  gold_total: "${inputs.gold.total}"
+  gold_hit: "${steps.gold_hit.output}"
+  hit_ids: "${steps.hit_ids.output}"
+  findings: "${steps.total.output}"
+  hits: "${steps.hits.output}"
+  noise: "${steps.noise.output}"

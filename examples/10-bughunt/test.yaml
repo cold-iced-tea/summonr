@@ -24,10 +24,10 @@ essence: {requests: 200, time: 4h}
 defs:
   repro:
     type: object
-    required: [test_file]
+    required: [rust_source]
     additionalProperties: false
     properties:
-      test_file: {type: string, minLength: 1, maxLength: 20000}
+      rust_source: {type: string, minLength: 20, maxLength: 20000}
 bindings:
   harness:
     content: |
@@ -43,7 +43,9 @@ bindings:
         assert!(!bad, "BUGHUNT-CONFIRMED: <what happened>");
       If the code behaves correctly the test must pass. Use only the
       standard library and crates the project already uses. No network.
-      Answer with JSON: {"test_file": "<the whole file>"}.
+      You must call the real code under suspicion; a test that copies the
+      logic into itself proves nothing and is rejected.
+      Answer with JSON: {"rust_source": "<the whole Rust file, as code>"}.
 steps:
   - id: add
     operation: git.worktree_add
@@ -85,6 +87,16 @@ steps:
       - id: use_codex
         operation: data.logic
         arguments: {operator: and, left: "${steps.wants_codex.output}", right: "${steps.is_critical.output}"}
+      # src/reagents/x.rs -> crate::reagents::x; the repro must name it.
+      - id: mod_noext
+        operation: data.replace
+        arguments: {text: "${found.file}", from: ".rs", to: ""}
+      - id: mod_root
+        operation: data.replace
+        arguments: {text: "${steps.mod_noext.output}", from: "src/", to: "crate/"}
+      - id: mod_path
+        operation: data.replace
+        arguments: {text: "${steps.mod_root.output}", from: /, to: "::"}
       - id: brief
         operation: data.canonical_json
         arguments: {value: "${found}"}
@@ -127,7 +139,7 @@ steps:
       # A skipped branch leaves its outputs null; select the one that ran.
       - id: model_file
         operation: data.select
-        arguments: {condition: "${steps.is_big.output}", then: "${steps.write_big.output.test_file}", else: "${steps.write_small.output.test_file}"}
+        arguments: {condition: "${steps.is_big.output}", then: "${steps.write_big.output.rust_source}", else: "${steps.write_small.output.rust_source}"}
       - id: test_file
         operation: data.select
         arguments: {condition: "${steps.use_codex.output}", then: "${steps.codex.output.stdout}", else: "${steps.model_file.output}"}
@@ -137,9 +149,12 @@ steps:
       - id: run
         operation: trial.run
         arguments: {repo: bughunt-target, worktree: /absolute/path/to/target-repro}
+      - id: uses_code
+        operation: data.contains
+        arguments: {value: "${steps.test_file.output}", needle: "${steps.mod_path.output}"}
       - id: judged
         ritual: bughunt-verdict
-        arguments: {passed: "${steps.run.output.passed}", tail: "${steps.run.output.tail}"}
+        arguments: {uses_code: "${steps.uses_code.output}", passed: "${steps.run.output.passed}", tail: "${steps.run.output.tail}"}
       - id: build_failed
         operation: data.contains
         arguments: {value: "${steps.run.output.tail}", needle: "error["}
@@ -155,6 +170,8 @@ steps:
                 Code from ${found.file}, lines from ${found.start}:
                 ${steps.code.output}
 
+                It must use ${steps.mod_path.output}.
+
                 Your previous file did not compile:
                 ${steps.test_file.output}
 
@@ -163,13 +180,16 @@ steps:
               schema: {$ref: "#/$defs/repro"}
           - id: rewrite_write
             operation: file.write_text
-            arguments: {root: /absolute/path/to/target-repro, path: src/bughunt_repro.rs, text: "${steps.rewrite.output.test_file}"}
+            arguments: {root: /absolute/path/to/target-repro, path: src/bughunt_repro.rs, text: "${steps.rewrite.output.rust_source}"}
           - id: rerun
             operation: trial.run
             arguments: {repo: bughunt-target, worktree: /absolute/path/to/target-repro}
+          - id: reuses_code
+            operation: data.contains
+            arguments: {value: "${steps.rewrite.output.rust_source}", needle: "${steps.mod_path.output}"}
           - id: rejudged
             ritual: bughunt-verdict
-            arguments: {passed: "${steps.rerun.output.passed}", tail: "${steps.rerun.output.tail}"}
+            arguments: {uses_code: "${steps.reuses_code.output}", passed: "${steps.rerun.output.passed}", tail: "${steps.rerun.output.tail}"}
       - id: restore
         operation: file.write_text
         arguments: {root: /absolute/path/to/target-repro, path: src/bughunt_repro.rs, text: ""}
@@ -178,7 +198,7 @@ steps:
         arguments: {condition: "${steps.build_failed.output}", then: "${steps.rejudged.output.verdict}", else: "${steps.judged.output.verdict}"}
       - id: final_file
         operation: data.select
-        arguments: {condition: "${steps.build_failed.output}", then: "${steps.rewrite.output.test_file}", else: "${steps.test_file.output}"}
+        arguments: {condition: "${steps.build_failed.output}", then: "${steps.rewrite.output.rust_source}", else: "${steps.test_file.output}"}
       - id: final_tail
         operation: data.select
         arguments: {condition: "${steps.build_failed.output}", then: "${steps.rerun.output.tail}", else: "${steps.run.output.tail}"}

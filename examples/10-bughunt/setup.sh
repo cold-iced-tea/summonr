@@ -32,15 +32,22 @@ if ! grep -q '^mod bughunt_repro;' "$target/$entry"; then
   git -C "$target" commit -q -m "bughunt: repro harness"
 fi
 
+# git.worktree_add insists the trunk matches <remote>/<trunk>, so give the
+# clone a local bare remote holding the base branch (see LIMITS.md).
+if [ ! -d "$lab/remote.git" ]; then git init -q --bare "$lab/remote.git"; fi
+git -C "$target" remote remove lab 2>/dev/null || true
+git -C "$target" remote add lab "$lab/remote.git"
+git -C "$target" push -q --force lab bughunt-base
+
 export SUMMONR_HOME="$lab/home"
-mkdir -p "$SUMMONR_HOME"
-cat > "$SUMMONR_HOME/config.yaml" <<EOF
+mkdir -p "$SUMMONR_HOME/config"
+cat > "$SUMMONR_HOME/config/config.yaml" <<EOF
 ollama_url: "${OLLAMA_HOST:-http://127.0.0.1:11434}"
 repos:
   bughunt-target:
     path: $target
     trunk: bughunt-base
-    remote: origin
+    remote: lab
     test: env CARGO_TARGET_DIR=$lab/cargo-target cargo test --offline $only bughunt_repro
     disposable: [target/]
 # Optional cloud escalation (test.yaml, escalate=codex, critical findings
@@ -61,8 +68,10 @@ for name in verdict batch-ready gather hunt test score; do
   f="$here/$name.yaml"; [ -f "$f" ] || continue
   sed -e "s|/absolute/path/to/target-repro|$target-repro|g" \
       -e "s|/absolute/path/to/target|$target|g" "$f" > "$SUMMONR_HOME/$(basename "$f")"
-  "$bin" inscribe "$SUMMONR_HOME/$(basename "$f")" --json >/dev/null \
+  "$bin" inscribe "$SUMMONR_HOME/$(basename "$f")" --replace --json >/dev/null \
     || { echo "inscribe failed: $name" >&2; "$bin" inscribe "$SUMMONR_HOME/$(basename "$f")" --json >&2; exit 1; }
 done
 "$here/grant.sh" "$bin" "$target"
+# The core reads config.yaml at start.
+"$bin" core restart --json >/dev/null
 echo "lab ready: export SUMMONR_HOME=$SUMMONR_HOME"

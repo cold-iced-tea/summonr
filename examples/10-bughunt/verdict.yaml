@@ -3,8 +3,11 @@ ritual: bughunt-verdict
 description: >-
   Turn one repro test run into a verdict. confirmed: the test ran and failed
   with the BUGHUNT-CONFIRMED marker. refuted: exactly one test ran and passed.
-  untestable: anything else (did not compile, other panic, nothing ran).
+  untestable: anything else (did not compile, other panic, nothing ran, or
+  the test never names the module under suspicion, so it can only have
+  tested its own copy of the logic).
 inputs:
+  uses_code: boolean
   passed: boolean
   tail: string
 essence: {requests: 0, time: 10s}
@@ -18,18 +21,24 @@ steps:
   - id: one_passed
     operation: data.contains
     arguments: {value: "${inputs.tail}", needle: "test result: ok. 1 passed"}
-  - id: is_refuted
+  - id: ran_and_passed
     operation: data.logic
     arguments: {operator: and, left: "${inputs.passed}", right: "${steps.one_passed.output}"}
+  - id: is_refuted
+    operation: data.logic
+    arguments: {operator: and, left: "${steps.ran_and_passed.output}", right: "${inputs.uses_code}"}
   - id: not_passed
     operation: data.logic
     arguments: {operator: not, left: "${inputs.passed}"}
   - id: failed_with_marker
     operation: data.logic
     arguments: {operator: and, left: "${steps.marker.output}", right: "${steps.test_failed.output}"}
-  - id: is_confirmed
+  - id: failed_as_claimed
     operation: data.logic
     arguments: {operator: and, left: "${steps.not_passed.output}", right: "${steps.failed_with_marker.output}"}
+  - id: is_confirmed
+    operation: data.logic
+    arguments: {operator: and, left: "${steps.failed_as_claimed.output}", right: "${inputs.uses_code}"}
   - id: unless_refuted
     operation: data.select
     arguments: {condition: "${steps.is_confirmed.output}", then: confirmed, else: untestable}

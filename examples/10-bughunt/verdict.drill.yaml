@@ -4,26 +4,37 @@ ritual: bughunt-verdict
 cases:
   - id: marker-panic-confirms
     inputs:
+      uses_code: true
       passed: false
       tail: "error: test failed\n--- stdout ---\nthread 'bughunt_repro::t' panicked at src/bughunt_repro.rs:9:5:\nBUGHUNT-CONFIRMED: role passes\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored"
     expect: {outcome: returned, result: {verdict: confirmed}, model_calls: 0}
   - id: passing-test-refutes
     inputs:
+      uses_code: true
       passed: true
       tail: "--- stdout ---\nrunning 1 test\ntest bughunt_repro::t ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored"
     expect: {outcome: returned, result: {verdict: refuted}}
   - id: compile-error-quoting-marker-is-untestable
     inputs:
+      uses_code: true
       passed: false
       tail: "error[E0425]: cannot find function `nope`\n  |     panic!(\"BUGHUNT-CONFIRMED\")\nerror: could not compile `summonr`"
     expect: {outcome: returned, result: {verdict: untestable}}
   - id: other-panic-is-untestable
     inputs:
+      uses_code: true
       passed: false
       tail: "--- stdout ---\nthread 'bughunt_repro::t' panicked at src/bughunt_repro.rs:4:9:\ncalled `Option::unwrap()` on a `None` value\n\ntest result: FAILED. 0 passed; 1 failed"
     expect: {outcome: returned, result: {verdict: untestable}}
   - id: no-test-ran-is-untestable
     inputs:
+      uses_code: true
       passed: true
       tail: "--- stdout ---\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored"
+    expect: {outcome: returned, result: {verdict: untestable}}
+  - id: test-that-never-calls-the-code-cannot-confirm
+    inputs:
+      uses_code: false
+      passed: false
+      tail: "panicked at src/bughunt_repro.rs:9:5:\nBUGHUNT-CONFIRMED: copied logic\n\ntest result: FAILED. 0 passed; 1 failed"
     expect: {outcome: returned, result: {verdict: untestable}}
