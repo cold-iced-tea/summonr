@@ -46,7 +46,14 @@ how much they cost the build.
    the loop results; half of `src/` then failed and, because files are
    skipped on failure, looked like "no findings" (caught in review; the
    check now runs once per file).
-   *Proposal:* an `each` option to keep only named outputs (`keep: [x]`).
+   *Proposal:* an `each` option to keep only named outputs (`keep: [x]`)
+   (now on `feat/language-gaps`). Better still, the compiler already knows
+   which outputs are referenced later, so `each` could drop unreferenced
+   outputs by default. And the cap itself (1 MiB per data argument or
+   result, 10,000 list items, hardcoded in `src/stdlib.rs`) is the one
+   bound a ritual cannot declare; it could be an essence field (`bytes:`)
+   with today's value as the default, and checked at compile time where
+   the size is knowable.
 8. **Not a limit, a documentation bug:** `ritual-format.md` says
    "`parallel` greater than 1 is rejected", but `each` accepts
    `parallel: 1..32` and the executor runs items concurrently (with atomic
