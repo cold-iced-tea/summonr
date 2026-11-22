@@ -49,6 +49,12 @@ steps:
               condition: "${steps.wanted.output}"
               then: "${steps.scanned.output.findings}"
               else: []
+          - id: entry_chunks_failed
+            operation: data.select
+            arguments:
+              condition: "${steps.wanted.output}"
+              then: "${steps.scanned.output.chunks_failed}"
+              else: 0
       - id: entries_ok
         operation: data.filter
         arguments: {values: "${steps.per_entry.output}", predicate: 'item.status == "returned"'}
@@ -59,6 +65,26 @@ steps:
           initial: []
           operation: data.concat
           arguments: {left: "${acc}", right: "${item.outputs.entry_out}"}
+      - id: dir_chunks_failed
+        operation: data.fold
+        arguments:
+          values: "${steps.entries_ok.output}"
+          initial: 0
+          operation: data.arithmetic
+          arguments: {left: "${acc}", right: "${item.outputs.entry_chunks_failed}", operator: add}
+      # Files that were wanted (source files) but failed to scan.
+      - id: dir_files_failed_list
+        operation: data.filter
+        arguments: {values: "${steps.per_entry.output}", predicate: 'item.status != "returned"'}
+      - id: dir_files_failed
+        operation: data.count
+        arguments: {value: "${steps.dir_files_failed_list.output}"}
+      - id: dir_files_wanted_list
+        operation: data.filter
+        arguments: {values: "${steps.per_entry.output}", predicate: 'item.status != "returned" or item.outputs.wanted'}
+      - id: dir_files_wanted
+        operation: data.count
+        arguments: {value: "${steps.dir_files_wanted_list.output}"}
   - id: all_findings
     operation: data.fold
     arguments:
@@ -66,6 +92,44 @@ steps:
       initial: []
       operation: data.concat
       arguments: {left: "${acc}", right: "${item.outputs.dir_findings}"}
+  - id: chunks_failed
+    operation: data.fold
+    arguments:
+      values: "${steps.per_dir.output}"
+      initial: 0
+      operation: data.arithmetic
+      arguments: {left: "${acc}", right: "${item.outputs.dir_chunks_failed}", operator: add}
+  - id: files_failed
+    operation: data.fold
+    arguments:
+      values: "${steps.per_dir.output}"
+      initial: 0
+      operation: data.arithmetic
+      arguments: {left: "${acc}", right: "${item.outputs.dir_files_failed}", operator: add}
+  - id: files_wanted
+    operation: data.fold
+    arguments:
+      values: "${steps.per_dir.output}"
+      initial: 0
+      operation: data.arithmetic
+      arguments: {left: "${acc}", right: "${item.outputs.dir_files_wanted}", operator: add}
+  - id: some_wanted
+    operation: data.compare
+    arguments: {left: "${steps.files_wanted.output}", right: 0, operator: gt}
+  - id: every_file_failed
+    operation: data.compare
+    arguments: {left: "${steps.files_failed.output}", right: "${steps.files_wanted.output}", operator: eq}
+  - id: dead
+    operation: data.logic
+    arguments: {operator: and, left: "${steps.some_wanted.output}", right: "${steps.every_file_failed.output}"}
+  - id: alive
+    operation: data.logic
+    arguments: {operator: not, left: "${steps.dead.output}"}
+  - id: some_file_scanned
+    operation: data.assert
+    arguments: {condition: "${steps.alive.output}", message: "every source file failed to scan; is the model or backend available?"}
 return:
   angle: "${inputs.angle}"
   findings: "${steps.all_findings.output}"
+  files_failed: "${steps.files_failed.output}"
+  chunks_failed: "${steps.chunks_failed.output}"

@@ -16,6 +16,7 @@ cases:
       outcome: returned
       result:
         angles: [authority bypass, panics]
+        hunts_failed: 0
         raw: {gold_total: 1, gold_hit: 1, hit_ids: [g-auth], findings: 3, hits: 2, noise: 1}
         after_gather: {gold_total: 1, gold_hit: 1, hit_ids: [g-auth], findings: 2, hits: 2, noise: 0}
       model_calls: 2

@@ -87,3 +87,20 @@ cases:
       result:
         findings:
           - {kind: bug, severity: low, confidence: 0.9, claim: c, trigger: t, snippet: "}", file: src/auth.rs, start: 0, quoted: false}
+  - id: a-real-sized-file-stays-under-the-data-cap
+    # ~120 KB: 10 chunks of code are scanned; the 200-test module is not.
+    inputs: {dirs: [big], angle: panics}
+    model:
+      scan: [{findings: []}, {findings: []}, {findings: []}, {findings: []}, {findings: []}, {findings: []}, {findings: []}, {findings: []}, {findings: []}, {findings: []}]
+    expect:
+      outcome: returned
+      result: {angle: panics, findings: [], files_failed: 0, chunks_failed: 0}
+      model_calls: 10
+  - id: a-dead-backend-is-loud-not-empty
+    inputs: {dirs: [lib], angle: panics}
+    model:
+      scan:
+        - "not json"
+    expect:
+      outcome: invalid
+      model_calls: 1

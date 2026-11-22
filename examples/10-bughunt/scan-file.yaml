@@ -44,41 +44,35 @@ steps:
   - id: line_count
     operation: data.count
     arguments: {value: "${steps.lines.output}"}
+  # Where the test module starts, found once: the code is everything before
+  # the first line starting with stop_at. (No index_of exists, so split.)
+  - id: has_stop
+    operation: data.compare
+    arguments: {left: "${inputs.stop_at}", right: "", operator: ne}
+  - id: separator
+    operation: data.select
+    arguments: {condition: "${steps.has_stop.output}", then: "\n${inputs.stop_at}", else: "\n\0no stop line"}
+  - id: parts
+    operation: data.split
+    arguments: {text: "${steps.source.output.text}", separator: "${steps.separator.output}"}
+  - id: code
+    operation: data.get
+    arguments: {value: "${steps.parts.output}", path: /0}
+  - id: code_line_list
+    operation: data.lines
+    arguments: {text: "${steps.code.output}"}
+  - id: code_lines
+    operation: data.count
+    arguments: {value: "${steps.code_line_list.output}"}
   # A chunk the model chokes on (invalid JSON, runaway repetition)
   # is recorded and skipped, not fatal to the whole hunt.
   - id: per_chunk
     each: start in inputs.starts
     on_failure: continue
     steps:
-      - id: in_range
-        operation: data.compare
-        arguments: {left: "${start}", right: "${steps.line_count.output}", operator: lt}
-      # Everything before this chunk, to see whether the test module began.
-      # (No index_of exists, so each chunk re-joins its prefix.)
-      - id: before_end
-        operation: data.clamp
-        arguments: {value: "${start}", min: 0, max: "${steps.line_count.output}"}
-      - id: before
-        operation: data.slice
-        arguments: {values: "${steps.lines.output}", start: 0, end: "${steps.before_end.output}"}
-      - id: before_text
-        operation: data.join
-        arguments: {values: "${steps.before.output}", separator: "\n"}
-      - id: has_stop
-        operation: data.compare
-        arguments: {left: "${inputs.stop_at}", right: "", operator: ne}
-      - id: stop_seen
-        operation: data.contains
-        arguments: {value: "\n${steps.before_text.output}", needle: "\n${inputs.stop_at}"}
-      - id: in_tests
-        operation: data.logic
-        arguments: {operator: and, left: "${steps.has_stop.output}", right: "${steps.stop_seen.output}"}
-      - id: not_tests
-        operation: data.logic
-        arguments: {operator: not, left: "${steps.in_tests.output}"}
       - id: in_file
-        operation: data.logic
-        arguments: {operator: and, left: "${steps.in_range.output}", right: "${steps.not_tests.output}"}
+        operation: data.compare
+        arguments: {left: "${start}", right: "${steps.code_lines.output}", operator: lt}
       - if: steps.in_file.output
         then:
           - id: stop_raw
@@ -163,5 +157,36 @@ steps:
       initial: []
       operation: data.concat
       arguments: {left: "${acc}", right: "${item.outputs.chunk_out}"}
+  # Count chunks that were attempted and chunks that failed. A file whose
+  # every chunk failed is a failure, not "no findings": usually the model
+  # or backend is down.
+  - id: chunks_failed_list
+    operation: data.filter
+    arguments: {values: "${steps.per_chunk.output}", predicate: 'item.status != "returned"'}
+  - id: chunks_failed
+    operation: data.count
+    arguments: {value: "${steps.chunks_failed_list.output}"}
+  - id: chunks_tried_list
+    operation: data.filter
+    arguments: {values: "${steps.per_chunk.output}", predicate: 'item.status != "returned" or item.outputs.in_file'}
+  - id: chunks_tried
+    operation: data.count
+    arguments: {value: "${steps.chunks_tried_list.output}"}
+  - id: tried_some
+    operation: data.compare
+    arguments: {left: "${steps.chunks_tried.output}", right: 0, operator: gt}
+  - id: all_failed
+    operation: data.compare
+    arguments: {left: "${steps.chunks_failed.output}", right: "${steps.chunks_tried.output}", operator: eq}
+  - id: dead
+    operation: data.logic
+    arguments: {operator: and, left: "${steps.tried_some.output}", right: "${steps.all_failed.output}"}
+  - id: alive
+    operation: data.logic
+    arguments: {operator: not, left: "${steps.dead.output}"}
+  - id: some_chunk_worked
+    operation: data.assert
+    arguments: {condition: "${steps.alive.output}", message: "every chunk of ${inputs.path} failed; is the model or backend available?"}
 return:
   findings: "${steps.file_findings.output}"
+  chunks_failed: "${steps.chunks_failed.output}"

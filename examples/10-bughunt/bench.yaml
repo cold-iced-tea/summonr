@@ -27,6 +27,12 @@ steps:
   - id: hunts_ok
     operation: data.filter
     arguments: {values: "${steps.per_angle.output}", predicate: 'item.status == "returned"'}
+  - id: hunts_failed_list
+    operation: data.filter
+    arguments: {values: "${steps.per_angle.output}", predicate: 'item.status != "returned"'}
+  - id: hunts_failed
+    operation: data.count
+    arguments: {value: "${steps.hunts_failed_list.output}"}
   - id: hunts
     operation: data.fold
     arguments:
@@ -52,6 +58,8 @@ steps:
     arguments: {findings: "${steps.kept.output.findings}", gold: "${steps.gold.output.value}"}
 return:
   angles: "${inputs.angles}"
+  hunts_failed: "${steps.hunts_failed.output}"
+  hunts: "${steps.hunts.output}"
   raw: "${steps.raw.output}"
   after_gather: "${steps.filtered.output}"
   findings: "${steps.kept.output.findings}"
