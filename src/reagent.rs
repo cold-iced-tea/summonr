@@ -330,7 +330,35 @@ const DATA_TOOLS: &[ToolSpec] = &[
         name: "lines",
         effect: "pure",
         determinism: "deterministic",
-        description: "Split text into bounded lines",
+        description: "Split text into bounded lines, optionally numbered",
+    },
+    ToolSpec {
+        reagent: "data",
+        name: "coalesce",
+        effect: "pure",
+        determinism: "deterministic",
+        description: "First non-null element, or null",
+    },
+    ToolSpec {
+        reagent: "data",
+        name: "flatten",
+        effect: "pure",
+        determinism: "deterministic",
+        description: "Concatenate an array of arrays, one level",
+    },
+    ToolSpec {
+        reagent: "data",
+        name: "range",
+        effect: "pure",
+        determinism: "deterministic",
+        description: "Bounded integer sequence from start up to end by step",
+    },
+    ToolSpec {
+        reagent: "data",
+        name: "index_of",
+        effect: "pure",
+        determinism: "deterministic",
+        description: "Index of the first equal (or containing) element, or null",
     },
 ];
 const MAIL_TOOLS: &[ToolSpec] = &[

@@ -430,6 +430,67 @@ steps:
     }
 
     #[test]
+    fn static_types_for_gap_operations() {
+        let none = |_: &str, _: Option<u32>| None;
+        // range yields integers: looking inside a loop element is an error.
+        let range = parse_file(
+            r#"
+ritual: r
+steps:
+  - id: starts
+    operation: data.range
+    arguments: {start: 0, end: 10, step: 5}
+  - id: loop
+    each: n in steps.starts.output
+    steps:
+      - id: one
+        operation: data.trim
+        arguments: {text: "${n.field}"}
+"#,
+        )
+        .unwrap();
+        let errs = validate(&range, &none, &crate::reagent::tool, 3).unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("cannot look inside")), "{errs:?}");
+        // flatten keeps the inner element type; lines stays a list of strings.
+        let flat = parse_file(
+            r#"
+ritual: r
+steps:
+  - id: ls
+    operation: data.lines
+    arguments: {text: "a", number_from: 1}
+  - id: flat
+    operation: data.flatten
+    arguments: {values: ["${steps.ls.output}", ["b"]]}
+  - id: loop
+    each: line in steps.flat.output
+    steps:
+      - id: one
+        operation: data.trim
+        arguments: {text: "${line.field}"}
+"#,
+        )
+        .unwrap();
+        let errs = validate(&flat, &none, &crate::reagent::tool, 3).unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("cannot look inside")), "{errs:?}");
+        // index_of is a nullable integer.
+        let idx = parse_file(
+            r#"
+ritual: r
+steps:
+  - id: at
+    operation: data.index_of
+    arguments: {values: [a, b], needle: b}
+return:
+  bad: "${steps.at.output.field}"
+"#,
+        )
+        .unwrap();
+        let errs = validate(&idx, &none, &crate::reagent::tool, 3).unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("cannot look inside")), "{errs:?}");
+    }
+
+    #[test]
     fn static_type_checker_catches_argument_condition_and_return_type_mismatches() {
         let none = |_: &str, _: Option<u32>| None;
         // 1. Passing a string input to an integer tool argument, and an integer to `each` and `hold`

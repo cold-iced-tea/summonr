@@ -101,7 +101,19 @@ pub fn schema(name: &str) -> Option<Value> {
             json!({"text":text,"mode":{"enum":["lower","upper"]}}),
             vec!["text", "mode"],
         ),
-        "lines" => (json!({"text":text}), vec!["text"]),
+        "lines" => (
+            json!({"text":text,"number_from":{"type":"integer"}}),
+            vec!["text"],
+        ),
+        "coalesce" | "flatten" => (json!({"values":array}), vec!["values"]),
+        "range" => (
+            json!({"start":int,"end":int,"step":{"type":"integer","minimum":1}}),
+            vec!["start", "end"],
+        ),
+        "index_of" => (
+            json!({"values":array,"needle":{},"match":{"enum":["equal","contains"]}}),
+            vec!["values", "needle"],
+        ),
         _ => return None,
     };
     Some(json!({"type":"object","properties":p,"required":r,"additionalProperties":false}))
@@ -382,7 +394,72 @@ pub fn call(name: &str, a: &Value) -> Result<Value, String> {
         },
         "lines" => {
             let v: Vec<&str> = s("text").lines().take(10001).collect();
-            json!(v)
+            match a.get("number_from").and_then(Value::as_i64) {
+                None => json!(v),
+                Some(first) => {
+                    let mut out = Vec::with_capacity(v.len());
+                    for (i, line) in v.iter().enumerate() {
+                        let n = first
+                            .checked_add(i as i64)
+                            .ok_or("line number overflows signed 64-bit integer")?;
+                        out.push(format!("{n}: {line}"));
+                    }
+                    json!(out)
+                }
+            }
+        }
+        "coalesce" => values().iter().find(|v| !v.is_null()).cloned().unwrap_or(Value::Null),
+        "flatten" => {
+            let mut out = Vec::new();
+            for v in values() {
+                let inner = v.as_array().ok_or("flatten needs every element to be an array")?;
+                if out.len() + inner.len() > 10000 {
+                    return Err("array exceeds 10000 items".into());
+                }
+                out.extend(inner.iter().cloned());
+            }
+            json!(out)
+        }
+        "range" => {
+            let start = a["start"].as_i64().ok_or("start must fit signed 64-bit integer")?;
+            let end = a["end"].as_i64().ok_or("end must fit signed 64-bit integer")?;
+            let step = a.get("step").and_then(Value::as_i64).unwrap_or(1);
+            if step < 1 {
+                return Err("step must be at least 1".into());
+            }
+            let mut out = Vec::new();
+            let mut n = start;
+            while n < end {
+                if out.len() == 10000 {
+                    return Err("range exceeds 10000 items".into());
+                }
+                out.push(n);
+                n = match n.checked_add(step) {
+                    Some(next) => next,
+                    None => break,
+                };
+            }
+            json!(out)
+        }
+        "index_of" => {
+            let needle = &a["needle"];
+            let contains = a.get("match").and_then(Value::as_str) == Some("contains");
+            let mut found = Value::Null;
+            for (i, v) in values().iter().enumerate() {
+                let hit = if contains {
+                    let (Some(hay), Some(pin)) = (v.as_str(), needle.as_str()) else {
+                        return Err("index_of with match contains needs string values and a string needle".into());
+                    };
+                    hay.contains(pin)
+                } else {
+                    equality_key(v) == equality_key(needle)
+                };
+                if hit {
+                    found = json!(i);
+                    break;
+                }
+            }
+            found
         }
         _ => return Err(format!("unknown primitive data operation {name}")),
     };
@@ -745,6 +822,36 @@ mod tests {
         assert_eq!(
             run("lines", json!({"text":"a\nb\r\nc\n"})).unwrap(),
             json!(["a", "b", "c"])
+        );
+    }
+
+    #[test]
+    fn gap_operations_from_bughunt() {
+        // coalesce: first non-null, or null.
+        assert_eq!(run("coalesce", json!({"values":[null, "a", "b"]})).unwrap(), "a");
+        assert_eq!(run("coalesce", json!({"values":[null, null]})).unwrap(), Value::Null);
+        assert_eq!(run("coalesce", json!({"values":[]})).unwrap(), Value::Null);
+        // flatten: one level, every element an array.
+        assert_eq!(run("flatten", json!({"values":[[1], [], [2, [3]]]})).unwrap(), json!([1, 2, [3]]));
+        assert!(run("flatten", json!({"values":[[1], 2]})).is_err());
+        // range: start <= n < end by step.
+        assert_eq!(run("range", json!({"start":0, "end":10, "step":4})).unwrap(), json!([0, 4, 8]));
+        assert_eq!(run("range", json!({"start":2, "end":5})).unwrap(), json!([2, 3, 4]));
+        assert_eq!(run("range", json!({"start":5, "end":5})).unwrap(), json!([]));
+        assert!(run("range", json!({"start":0, "end":5, "step":0})).is_err());
+        assert!(run("range", json!({"start":0, "end":20000})).is_err());
+        // index_of: equal by default, contains for strings, null when absent.
+        assert_eq!(run("index_of", json!({"values":["a", "b", "b"], "needle":"b"})).unwrap(), 1);
+        assert_eq!(
+            run("index_of", json!({"values":["fn a() {", "    let x = 1;"], "needle":"let x", "match":"contains"})).unwrap(),
+            1
+        );
+        assert_eq!(run("index_of", json!({"values":[1, 2], "needle":3})).unwrap(), Value::Null);
+        assert!(run("index_of", json!({"values":[1], "needle":"1", "match":"contains"})).is_err());
+        // lines: optional numbering.
+        assert_eq!(
+            run("lines", json!({"text":"a\nb", "number_from":10})).unwrap(),
+            json!(["10: a", "11: b"])
         );
     }
 }

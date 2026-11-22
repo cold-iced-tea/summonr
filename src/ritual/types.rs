@@ -200,6 +200,19 @@ pub(super) fn operation_output_type(
         | "data.canonical_json"
         | "data.case" => Ty::Str,
         "data.keys" | "data.split" | "data.lines" => Ty::List(Box::new(Ty::Str)),
+        "data.range" => Ty::List(Box::new(Ty::Int)),
+        "data.index_of" => nullable(Ty::Int),
+        "data.coalesce" => match arg_types.get("values") {
+            Some(Ty::List(elem)) => (**elem).clone(),
+            _ => Ty::Any,
+        },
+        "data.flatten" => match arg_types.get("values") {
+            Some(Ty::List(elem)) => match &**elem {
+                Ty::List(inner) => Ty::List(inner.clone()),
+                _ => Ty::List(Box::new(Ty::Any)),
+            },
+            _ => Ty::List(Box::new(Ty::Any)),
+        },
         "data.min" | "data.max" => match arg_types.get("values") {
             Some(Ty::List(elem)) => (**elem).clone(),
             _ => Ty::Any,
