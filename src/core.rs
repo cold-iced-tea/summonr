@@ -634,6 +634,36 @@ impl Core {
                 params![id, fin.outcome.as_str(), now_ms(), fin.result.to_string(), fin.error, cleanup.to_string()])?;
             // No run ends without its epitaph: both commit together or not at all.
             epitaphs::write_epitaph(&tx, &self.key, id)?;
+            // Cross-anchor every completed execution record into the hash-chained audit_log.
+            let (ritual_name, familiar): (String, Option<String>) = tx
+                .query_row(
+                    "SELECT ritual, familiar FROM summons WHERE id=?1",
+                    params![id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap_or_else(|_| (String::new(), None));
+            let (ep_seq, ep_hash): (i64, String) = tx
+                .query_row(
+                    "SELECT seq, hash FROM epitaphs WHERE run=?1",
+                    params![id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap_or_else(|_| (0, String::new()));
+            let actor = familiar.unwrap_or_else(audit::current_actor);
+            audit::append_audit_tx(
+                &tx,
+                &self.key,
+                &actor,
+                "summon.finished",
+                id,
+                fin.outcome.as_str(),
+                &json!({
+                    "ritual": ritual_name,
+                    "epitaph_seq": ep_seq,
+                    "epitaph_hash": ep_hash,
+                    "error": fin.error,
+                }),
+            )?;
             tx.commit()?;
             Ok(n)
         })();

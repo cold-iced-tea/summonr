@@ -151,10 +151,13 @@ struct AuditListArgs {
     limit: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct AuditExportArgs {
-    file: String,
+    #[serde(default)]
+    file: Option<String>,
+    #[serde(default)]
+    format: Option<String>,
     #[serde(default)]
     from_ms: Option<i64>,
     #[serde(default)]
@@ -408,8 +411,17 @@ impl Core {
     /// containing the `audit_log`, `epitaphs` chain + Merkle root, peer witnessings,
     /// RFC 3161 timestamps, and active governance controls summary.
     pub(super) fn audit_export(&self, p: Value) -> Result<Value, RpcErr> {
-        let args: AuditExportArgs =
-            serde_json::from_value(p).map_err(|e| RpcErr::invalid(e.to_string()))?;
+        let args: AuditExportArgs = if p.is_object() && p.as_object().unwrap().is_empty() {
+            AuditExportArgs::default()
+        } else {
+            serde_json::from_value(p).map_err(|e| RpcErr::invalid(e.to_string()))?
+        };
+        let fmt = args.format.as_deref().unwrap_or("json");
+        if !matches!(fmt, "json" | "ndjson") {
+            return Err(RpcErr::invalid(format!(
+                "unknown export format `{fmt}`; use `json` or `ndjson`"
+            )));
+        }
         let audit_ver = self.audit_verify()?;
         let chain_ver = self.chain_verify(json!({}))?;
         let exported_at = now_ms();
@@ -571,25 +583,76 @@ impl Core {
             "bundle_hash": bundle_hash,
             "signature": sig,
         });
-        std::fs::write(
-            &args.file,
-            serde_json::to_string_pretty(&envelope).unwrap_or_default() + "\n",
-        )
-        .map_err(|e| RpcErr::invalid(format!("cannot write {}: {e}", args.file)))?;
+        let audit_count = body["audit_log"].as_array().map(|a| a.len()).unwrap_or(0);
+        let epitaph_count = body["epitaphs"].as_array().map(|a| a.len()).unwrap_or(0);
 
-        self.record_audit(
-            "audit.export",
-            &args.file,
-            "ok",
-            json!({"bundle_hash": bundle_hash, "audit_entries": body["audit_log"].as_array().map(|a| a.len()).unwrap_or(0), "epitaphs": body["epitaphs"].as_array().map(|a| a.len()).unwrap_or(0)}),
-        );
-        Ok(json!({
-            "file": args.file,
-            "bundle_hash": bundle_hash,
-            "audit_entries": body["audit_log"].as_array().map(|a| a.len()).unwrap_or(0),
-            "epitaphs": body["epitaphs"].as_array().map(|a| a.len()).unwrap_or(0),
-            "epitaph_merkle_root": merkle_root,
-        }))
+        let rendered_ndjson = if fmt == "ndjson" {
+            let mut lines = Vec::with_capacity(audit_count + 1);
+            if let Some(entries) = body["audit_log"].as_array() {
+                for entry in entries {
+                    lines.push(serde_json::to_string(entry).unwrap_or_default());
+                }
+            }
+            lines.push(
+                serde_json::to_string(&json!({
+                    "record_type": "summonr-siem-manifest-v1",
+                    "core_id": body["core_id"],
+                    "exported_at": exported_at,
+                    "audit_entries": audit_count,
+                    "epitaphs": epitaph_count,
+                    "epitaph_merkle_root": merkle_root,
+                    "bundle_hash": bundle_hash,
+                    "signature": sig,
+                }))
+                .unwrap_or_default(),
+            );
+            Some(lines.join("\n") + "\n")
+        } else {
+            None
+        };
+
+        if let Some(ref file) = args.file {
+            let content = match &rendered_ndjson {
+                Some(nd) => nd.clone(),
+                None => serde_json::to_string_pretty(&envelope).unwrap_or_default() + "\n",
+            };
+            std::fs::write(file, content)
+                .map_err(|e| RpcErr::invalid(format!("cannot write {file}: {e}")))?;
+
+            self.record_audit(
+                "audit.export",
+                file,
+                "ok",
+                json!({"format": fmt, "bundle_hash": bundle_hash, "audit_entries": audit_count, "epitaphs": epitaph_count}),
+            );
+            Ok(json!({
+                "file": file,
+                "format": fmt,
+                "bundle_hash": bundle_hash,
+                "audit_entries": audit_count,
+                "epitaphs": epitaph_count,
+                "epitaph_merkle_root": merkle_root,
+            }))
+        } else {
+            self.record_audit(
+                "audit.export",
+                "stdout",
+                "ok",
+                json!({"format": fmt, "bundle_hash": bundle_hash, "audit_entries": audit_count, "epitaphs": epitaph_count}),
+            );
+            if let Some(nd) = rendered_ndjson {
+                Ok(json!({
+                    "format": "ndjson",
+                    "ndjson": nd,
+                    "bundle_hash": bundle_hash,
+                    "audit_entries": audit_count,
+                    "epitaphs": epitaph_count,
+                    "epitaph_merkle_root": merkle_root,
+                }))
+            } else {
+                Ok(envelope)
+            }
+        }
     }
 
     /// Prune plaintext elegy payloads (`summons`, `events`, `epitaph_salts`) for
@@ -938,6 +1001,72 @@ mod tests {
         assert_eq!(cv["ok"], true, "chain_verify must remain ok after pruning: {cv}");
         assert_eq!(cv["not_checkable"].as_array().unwrap().len(), 1);
         assert_eq!(core.audit_verify().unwrap()["ok"], true);
+
+        drop(core);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn execution_record_chaining_siem_export_and_tamper_detection() {
+        let p = test_paths("siem-tamper");
+        let core = Core::open(p.clone()).unwrap();
+        let dir = p.state.parent().unwrap().to_path_buf();
+
+        // 1. Run a ritual so `finish_summon` cross-anchors `summon.finished` into `audit_log`.
+        let rf = dir.join("pure.yaml");
+        std::fs::write(
+            &rf,
+            "ritual: pure-audit\nessence: {requests: 0, time: 1m}\nsteps:\n  - id: s\n    operation: data.trim\n    arguments: {text: \"  ok  \"}\nreturn:\n  out: \"${steps.s.output}\"\n",
+        )
+        .unwrap();
+        core.inscribe(json!({"path": rf.to_str().unwrap()})).unwrap();
+        let started = core.invoke(json!({"target": "pure-audit", "cwd": "/"})).unwrap();
+        let sid = started["summon"].as_str().unwrap().to_string();
+        let ended = core.wait(json!({"summon": sid, "timeout_ms": 10_000})).unwrap();
+        assert_eq!(ended["outcome"], "returned");
+
+        // 2. Also record a policy denial so both execution records & denials are chained.
+        core.record_audit_as(
+            "operator:eve",
+            "rbac.reagent_denied",
+            "mail.send",
+            "denied",
+            json!({"reason": "no write permission"}),
+        );
+
+        let before = core.audit_verify().unwrap();
+        assert_eq!(before["ok"], true, "{before}");
+
+        // 3. Export clean JSON (stdout mode) & NDJSON (SIEM mode) and verify contents.
+        let json_out = core.audit_export(json!({"format": "json"})).unwrap();
+        let entries = json_out["bundle"]["audit_log"].as_array().unwrap();
+        let exec_entry = entries
+            .iter()
+            .find(|e| e["action"] == "summon.finished" && e["target"] == sid)
+            .expect("summon.finished must be hash-chained in audit_log");
+        assert_eq!(exec_entry["outcome"], "returned");
+        assert!(!exec_entry["detail"]["epitaph_hash"].as_str().unwrap_or("").is_empty());
+        assert!(entries.iter().any(|e| e["action"] == "rbac.reagent_denied" && e["outcome"] == "denied"));
+        let exec_seq = exec_entry["seq"].as_i64().unwrap();
+
+        let ndjson_out = core.audit_export(json!({"format": "ndjson"})).unwrap();
+        let lines: Vec<&str> = ndjson_out["ndjson"].as_str().unwrap().lines().collect();
+        assert!(lines.len() >= 3);
+        let manifest: Value = serde_json::from_str(lines.last().unwrap()).unwrap();
+        assert_eq!(manifest["record_type"], "summonr-siem-manifest-v1");
+
+        // 4. Simulate tampering with the execution record row in SQLite and verify detection.
+        {
+            let db = core.db.lock().unwrap();
+            db.execute_batch(&format!(
+                "DROP TRIGGER IF EXISTS audit_log_no_update;
+                 UPDATE audit_log SET outcome='failed' WHERE seq={exec_seq};"
+            ))
+            .unwrap();
+        }
+        let after = core.audit_verify().unwrap();
+        assert_eq!(after["ok"], false, "expected tamper detection: {after}");
+        assert_eq!(after["problem"]["seq"], exec_seq, "{after}");
 
         drop(core);
         let _ = std::fs::remove_dir_all(dir);

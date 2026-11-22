@@ -55,6 +55,7 @@ pub struct Op {
     pub file: Option<String>,
     pub schema: Option<String>,
     pub session: Option<String>,
+    pub format: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -473,6 +474,7 @@ pub const CLAUSES: &[(&str, &str, &str)] = &[
     ("file PATH", "--file PATH", "Input file for bind, soul, or inscribe"),
     ("schema JSON", "--schema JSON", "Output JSON schema for bid"),
     ("session ID", "--session ID", "Live summon session ID for inscribe"),
+    ("format FMT", "--format FMT", "Output format (json or ndjson) for audit export"),
     ("to TASK", "--task TASK", "Prompt or task text for an interactive bid"),
 ];
 
@@ -507,6 +509,7 @@ const KEYWORDS: &[&str] = &[
     "file",
     "schema",
     "session",
+    "format",
 ];
 
 pub fn canonical_verb(word: &str) -> Option<&'static str> {
@@ -739,6 +742,7 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
                 "file" => "file",
                 "schema" => "schema",
                 "session" => "session",
+                "format" => "format",
                 _ => {
                     return Err(cur.err(pos, "unknown flag", "summonr help"));
                 }
@@ -813,6 +817,10 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
             "session" => {
                 let v = value(&mut cur, pos, attached, is_flag, "session m-1234")?;
                 set_once(&mut op.session, v, &cur, pos, "the session ID")?;
+            }
+            "format" => {
+                let v = value(&mut cur, pos, attached, is_flag, "--format json")?;
+                set_once(&mut op.format, v, &cur, pos, "the output format")?;
             }
             "against" => {
                 let v = value(&mut cur, pos, attached, is_flag, "against ./set.yaml")?;

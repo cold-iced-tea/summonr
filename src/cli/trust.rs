@@ -581,12 +581,18 @@ pub(crate) fn audit_command(op: &Op, client: &mut Client) -> i32 {
     let res = match (sub, p.len()) {
         ("list", 0 | 1) => client.call("audit_list", json!({})),
         ("verify", 1) => client.call("audit_verify", json!({})),
-        ("export", 2) => {
+        ("export", 1 | 2) => {
             let from_ms = op.args.get("from").and_then(|v| v.parse::<i64>().ok());
             let to_ms = op.args.get("to").and_then(|v| v.parse::<i64>().ok());
+            let file = if p.len() == 2 { Some(abs(&arg(1))) } else { None };
             client.call(
                 "audit_export",
-                json!({"file": abs(&arg(1)), "from_ms": from_ms, "to_ms": to_ms}),
+                json!({
+                    "file": file,
+                    "format": op.format,
+                    "from_ms": from_ms,
+                    "to_ms": to_ms,
+                }),
             )
         }
         ("verify-bundle", 2) => {
@@ -603,7 +609,7 @@ pub(crate) fn audit_command(op: &Op, client: &mut Client) -> i32 {
             None => Err(RpcErr::invalid("give retention days: audit prune given days=30 [--dry-run]")),
         },
         _ => Err(RpcErr::invalid(
-            "use: audit [list | verify | export FILE [given from=MS to=MS] | verify-bundle FILE [key K] | prune given days=N [--dry-run]]",
+            "use: audit [list | verify | export [FILE] [--format json|ndjson] [given from=MS to=MS] | verify-bundle FILE [key K] | prune given days=N [--dry-run]]",
         )),
     };
     let failed_verify = sub == "verify" && res.as_ref().is_ok_and(|d| d["ok"] != true);
@@ -635,13 +641,19 @@ pub(crate) fn audit_command(op: &Op, client: &mut Client) -> i32 {
             );
         }
         "export" => {
-            println!(
-                "Exported evidence bundle to {} ({} audit entries, {} epitaphs, hash {})",
-                bold(Ink::Bone, s(d, "file")),
-                d["audit_entries"],
-                d["epitaphs"],
-                short(s(d, "bundle_hash"))
-            );
+            if let Some(nd) = d["ndjson"].as_str() {
+                print!("{nd}");
+            } else if d["file"].is_string() {
+                println!(
+                    "Exported evidence bundle to {} ({} audit entries, {} epitaphs, hash {})",
+                    bold(Ink::Bone, s(d, "file")),
+                    d["audit_entries"],
+                    d["epitaphs"],
+                    short(s(d, "bundle_hash"))
+                );
+            } else {
+                println!("{}", serde_json::to_string_pretty(d).unwrap_or_default());
+            }
         }
         "prune" => {
             if d["dry_run"] == true {
@@ -679,7 +691,7 @@ pub(crate) fn audit_command(op: &Op, client: &mut Client) -> i32 {
 pub(crate) fn operator_command(op: &Op, client: &mut Client) -> i32 {
     let p = &op.positionals;
     let arg = |i: usize| p.get(i).cloned().unwrap_or_default();
-    let usage = "use: operator list | new NAME ROLE | add NAME ROLE key K | revoke NAME\n  roles: author, security_admin, reviewer, auditor, admin";
+    let usage = "use: operator list | new NAME ROLE | add NAME ROLE key K | revoke NAME\n  roles: admin, policy_author, agent_runner, security_admin, reviewer, auditor, author";
     let res = match (p.first().map(String::as_str), p.len()) {
         (None | Some("list"), 0 | 1) => client.call("operator_list", json!({})),
         (Some("new"), 3) => client.call("operator_new", json!({"name": arg(1), "role": arg(2)})),
