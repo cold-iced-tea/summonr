@@ -1213,9 +1213,7 @@ impl Run {
                     format!("{sid}: {e}"),
                     json!({"model": model}),
                 );
-                self.check_live()
-                    .err()
-                    .unwrap_or_else(|| Fail::Failed(format!("step {sid}: {e}")))
+                self.check_live().err().unwrap_or_else(|| chat_failure(sid, &e))
             })?;
         let tokens = resp.prompt_tokens + resp.output_tokens;
         let (turn_cost, cost_source) = match &pricing {
@@ -1706,8 +1704,27 @@ impl Env for AbstainEnv<'_> {
     }
 }
 
+/// A model call that failed. A model that degenerated into repeating
+/// itself (Ollama aborts with "token repeat limit") gave a bad answer, like
+/// malformed JSON: `invalid`, so `on_failure`, `abstain` and retries treat it
+/// as output, not as a backend that is down.
+fn chat_failure(sid: &str, e: &str) -> Fail {
+    if e.contains("token repeat limit") {
+        Fail::Invalid(format!("step {sid}: the model repeated itself until it was stopped ({e})"))
+    } else {
+        Fail::Failed(format!("step {sid}: {e}"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_model_that_loops_is_invalid_output_not_a_failed_backend() {
+        let looped = "backend returned 500: {\"error\":\"prediction aborted, token repeat limit reached\"}";
+        assert!(matches!(super::chat_failure("scan", looped), crate::reagent::Fail::Invalid(_)));
+        let down = "backend unreachable at http://127.0.0.1:11434/api/chat: Connection refused";
+        assert!(matches!(super::chat_failure("scan", down), crate::reagent::Fail::Failed(_)));
+    }
     use super::*;
     use crate::util::Paths;
     use std::path::PathBuf;
