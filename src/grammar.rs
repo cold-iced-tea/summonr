@@ -213,6 +213,12 @@ pub const VERBS: &[(&str, &str, bool, &str)] = &[
         "Multi-stage rites with gates and assumptions: rehearse, start, advance, list, show, events, falsify, assert",
     ),
     (
+        "audit",
+        "",
+        false,
+        "Inspect or verify the tamper-evident administrative audit log",
+    ),
+    (
         "daemon",
         "panel",
         false,

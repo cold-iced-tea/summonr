@@ -2,6 +2,7 @@
 //! thin clients of its socket. Closing a client never stops work.
 
 mod assays;
+mod audit;
 mod drills;
 mod experiments;
 mod job_service;
@@ -202,6 +203,23 @@ CREATE TABLE IF NOT EXISTS rite_events (
   ts INTEGER NOT NULL,
   kind TEXT NOT NULL,
   detail_json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS audit_log (
+  seq INTEGER PRIMARY KEY,
+  ts INTEGER NOT NULL,
+  actor TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  detail TEXT NOT NULL,
+  prev_hash TEXT NOT NULL,
+  hash TEXT NOT NULL,
+  sig TEXT NOT NULL);
+CREATE TRIGGER IF NOT EXISTS audit_log_no_update
+  BEFORE UPDATE ON audit_log
+  BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS audit_log_no_delete
+  BEFORE DELETE ON audit_log
+  BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
 ";
 
 pub(crate) enum FenceAcquire {
@@ -465,7 +483,18 @@ impl Core {
             let _ = core.settle_if_pact(&id);
         }
         core.storage_health().map_err(|e| e.message)?;
+        core.verify_integrity_on_startup();
+        if core.storage_health().is_ok() {
+            core.anchor_config_on_boot();
+        }
         Ok(core)
+    }
+
+    pub(super) fn note_storage_error(&self, msg: String) {
+        let mut fault = self.storage_error.lock().unwrap();
+        if fault.is_none() {
+            *fault = Some(msg);
+        }
     }
 
     fn persisted(&self, result: rusqlite::Result<usize>) {
@@ -2046,6 +2075,12 @@ impl Core {
                 params![def.ritual, version, hash, ritual::canonical_json(def), now_ms()],
             )
             .map_err(storage_error)?;
+        self.record_audit(
+            "ritual.inscribe",
+            &def.ritual,
+            "ok",
+            json!({"version": version, "hash": hash}),
+        );
         Ok(json!({
             "ritual": def.ritual, "version": version, "hash": hash,
             "unchanged": false, "effects": effects,
@@ -2153,17 +2188,20 @@ impl Core {
             )));
         }
         let atoms = self.grant_atoms(&p)?;
-        let db = self.db.lock().unwrap();
-        for g in &atoms {
-            self.persisted(db.execute(
-                "INSERT OR IGNORE INTO grants (ritual, grant_json, created) VALUES (?1, ?2, ?3)",
-                params![
-                    ritual,
-                    serde_json::to_string(g).unwrap_or_default(),
-                    now_ms()
-                ],
-            ));
+        {
+            let db = self.db.lock().unwrap();
+            for g in &atoms {
+                self.persisted(db.execute(
+                    "INSERT OR IGNORE INTO grants (ritual, grant_json, created) VALUES (?1, ?2, ?3)",
+                    params![
+                        ritual,
+                        serde_json::to_string(g).unwrap_or_default(),
+                        now_ms()
+                    ],
+                ));
+            }
         }
+        self.record_audit("grant.add", ritual, "ok", json!({"granted": atoms}));
         Ok(json!({"ritual": ritual, "granted": atoms}))
     }
 
@@ -2184,13 +2222,16 @@ impl Core {
                 })
             })
             .collect();
-        let db = self.db.lock().unwrap();
-        for g in &hit {
-            self.persisted(db.execute(
-                "DELETE FROM grants WHERE ritual=?1 AND grant_json=?2",
-                params![ritual, serde_json::to_string(g).unwrap_or_default()],
-            ));
+        {
+            let db = self.db.lock().unwrap();
+            for g in &hit {
+                self.persisted(db.execute(
+                    "DELETE FROM grants WHERE ritual=?1 AND grant_json=?2",
+                    params![ritual, serde_json::to_string(g).unwrap_or_default()],
+                ));
+            }
         }
+        self.record_audit("grant.revoke", ritual, "ok", json!({"revoked": hit}));
         Ok(json!({"ritual": ritual, "revoked": hit}))
     }
 
@@ -2229,7 +2270,11 @@ impl Core {
     }
 
     pub(crate) fn dispatch(self: &Arc<Self>, method: &str, p: Value) -> Result<Value, RpcErr> {
-        if method != "shutdown" {
+        let diagnostic_method = matches!(
+            method,
+            "shutdown" | "chain_verify" | "audit_verify" | "audit_list"
+        );
+        if !diagnostic_method {
             self.storage_health()?;
         }
         let result = match method {
@@ -2285,6 +2330,8 @@ impl Core {
             "epitaph_prove" => self.epitaph_prove(p),
             "chain_head" => self.chain_head(),
             "chain_verify" => self.chain_verify(p),
+            "audit_list" => self.audit_list(p),
+            "audit_verify" => self.audit_verify(),
             "witness_accept" => self.witness_accept(p),
             "witness_list" => self.witness_list(),
             "witness_drop" => self.witness_drop(p),
@@ -2429,7 +2476,7 @@ impl Core {
             }
             other => Err(RpcErr::invalid(format!("unknown method `{other}`"))),
         };
-        if method != "shutdown" {
+        if !diagnostic_method {
             self.storage_health()?;
         }
         result
@@ -2553,6 +2600,7 @@ impl Core {
                     let core = self.clone();
                     stream.set_nonblocking(false).ok();
                     std::thread::spawn(move || {
+                        let _actor = audit::ActorGuard::enter(audit::peer_cred_actor(&stream));
                         while let Ok(Some(req)) = read_frame(&mut stream) {
                             let id = req["id"].clone();
                             if req.get("signed").is_some() {

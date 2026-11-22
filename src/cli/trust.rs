@@ -559,3 +559,55 @@ pub(crate) fn key_command(op: &Op) -> i32 {
         }
     })
 }
+
+pub(crate) fn audit_command(op: &Op, client: &mut Client) -> i32 {
+    let p = &op.positionals;
+    let verify = p.first().map(String::as_str) == Some("verify");
+    let res = match (p.first().map(String::as_str), p.len()) {
+        (None | Some("list"), 0 | 1) => client.call("audit_list", json!({})),
+        (Some("verify"), 1) => client.call("audit_verify", json!({})),
+        _ => Err(RpcErr::invalid("use: audit [list | verify] [--json]")),
+    };
+    let failed_verify = verify && res.as_ref().is_ok_and(|d| d["ok"] != true);
+    let code = finish(res, op.json, |d| {
+        if verify {
+            if d["ok"] == true {
+                println!(
+                    "{} audit_log verified ({} entries, head {})",
+                    paint(Ink::Verdigris, "✓"),
+                    d["checked"],
+                    short(s(d, "head"))
+                );
+            } else {
+                println!(
+                    "{} audit_log FAILED at seq {}: {}",
+                    paint(Ink::Rubric, "✕"),
+                    d["problem"]["seq"],
+                    s(&d["problem"], "reason")
+                );
+            }
+        } else {
+            let items = d.as_array().cloned().unwrap_or_default();
+            if items.is_empty() {
+                println!("{}", paint(Ink::Dim, "No audit entries."));
+            }
+            for e in items {
+                println!(
+                    "  #{} {} {} {} ({}) [{}] {}",
+                    e["seq"],
+                    bold(Ink::Bone, s(&e, "action")),
+                    s(&e, "target"),
+                    paint(Ink::Dim, s(&e, "actor")),
+                    s(&e, "outcome"),
+                    short(s(&e, "hash")),
+                    fmt_ago(e["ts"].as_i64().unwrap_or(0))
+                );
+            }
+        }
+    });
+    if failed_verify && code == 0 {
+        15
+    } else {
+        code
+    }
+}

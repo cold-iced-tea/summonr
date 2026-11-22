@@ -135,6 +135,7 @@ impl Core {
             return Err(RpcErr::new("storage_failed", 11, format!("cannot place key file {}: {e}", file.display())));
         }
         let public = k.public();
+        self.record_audit("familiar.new", &name, "ok", json!({"id": public.id(), "kind": "local"}));
         Ok(json!({"name": name, "key": public.text(), "id": public.id(), "key_file": file}))
     }
 
@@ -148,6 +149,7 @@ impl Core {
             )));
         }
         self.insert_familiar(&name, "remote", &key)?;
+        self.record_audit("familiar.add", &name, "ok", json!({"id": key.id(), "kind": "remote"}));
         Ok(json!({"name": name, "id": key.id()}))
     }
 
@@ -340,6 +342,12 @@ impl Core {
         }
         allowed.sort();
         self.set_allowed(&name, &allowed)?;
+        self.record_audit(
+            if allow { "familiar.allow" } else { "familiar.disallow" },
+            &name,
+            "ok",
+            json!({"allowed": allowed}),
+        );
         Ok(json!({"name": name, "allowed": allowed}))
     }
 
@@ -354,6 +362,7 @@ impl Core {
         if n == 0 {
             return Err(RpcErr::not_found(format!("no active familiar `{name}`")));
         }
+        self.record_audit("familiar.revoke", &name, "ok", json!({"revoked": true}));
         Ok(json!({"name": name, "revoked": true}))
     }
 
@@ -397,6 +406,7 @@ impl Core {
         if n == 0 {
             return Err(RpcErr::conflict(format!("a peer named `{name}` already exists; remove it first")));
         }
+        self.record_audit("peer.add", &name, "ok", json!({"url": url, "id": key.id()}));
         Ok(json!({"name": name, "url": url, "id": key.id()}))
     }
 
@@ -418,6 +428,7 @@ impl Core {
         if n == 0 {
             return Err(RpcErr::not_found(format!("no peer `{name}`")));
         }
+        self.record_audit("peer.remove", &name, "ok", json!({"removed": true}));
         Ok(json!({"name": name, "removed": true}))
     }
 }

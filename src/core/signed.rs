@@ -111,6 +111,13 @@ impl Core {
         let reason = format!("{} (claimed key {short}…, unverified)", r.reason());
         eprintln!("signed request refused: {reason}");
         *self.last_refusal.lock().unwrap() = Some(reason);
+        self.record_audit_as(
+            &format!("unverified:{short}"),
+            "auth.refused",
+            "signed_request",
+            "denied",
+            json!({"reason": r.reason()}),
+        );
     }
 
     /// The most recent refusal reason; the caller only ever sees a generic one.
