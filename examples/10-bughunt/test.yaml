@@ -9,7 +9,7 @@ description: >-
 inputs:
   findings: list
   chunk: {type: integer, default: 150, min: 1, max: 2000}
-  escalate: {type: string, enum: [none, codex], default: none}
+  escalate: {type: string, enum: [none, codex, gemini], default: none}
   # Each finding costs one or two model calls and one or two builds; the
   # rest are reported as untested rather than left to exhaust the run.
   max_batch: {type: integer, default: 25, min: 1, max: 200}
@@ -106,6 +106,15 @@ steps:
       - id: use_codex
         operation: data.logic
         arguments: {operator: and, left: "${steps.wants_codex.output}", right: "${steps.is_critical.output}"}
+      - id: wants_gemini
+        operation: data.compare
+        arguments: {left: "${inputs.escalate}", right: gemini, operator: eq}
+      - id: use_gemini
+        operation: data.logic
+        arguments: {operator: and, left: "${steps.wants_gemini.output}", right: "${steps.is_critical.output}"}
+      - id: use_cloud
+        operation: data.logic
+        arguments: {operator: or, left: "${steps.use_codex.output}", right: "${steps.use_gemini.output}"}
       - id: brief
         operation: data.canonical_json
         arguments: {value: "${found}"}
@@ -115,7 +124,7 @@ steps:
       # (see AGENT-NOTES 32).
       - id: not_codex
         operation: data.logic
-        arguments: {operator: not, left: "${steps.use_codex.output}"}
+        arguments: {operator: not, left: "${steps.use_cloud.output}"}
       - id: not_big
         operation: data.logic
         arguments: {operator: not, left: "${steps.is_big.output}"}
@@ -131,6 +140,26 @@ steps:
             operation: cmd.read
             arguments:
               command: bughunt-codex
+              params:
+                # cmd parameters may not contain newlines, so this prompt is
+                # one folded line (see AGENT-NOTES 30).
+                # Worded as a regression test for the maintainer's own code
+                # (user's decision, 2026-11-22): assert the safe behaviour.
+                prompt: >-
+                  We maintain this Rust project and want a regression test for a suspected
+                  defect in our own code. Write the file src/bughunt_repro.rs and print only its
+                  contents, no markdown fences. It is a #[cfg(test)] module at the crate root:
+                  use crate:: paths and call the real function under suspicion. One #[test] that
+                  asserts the correct, safe behaviour; when the code misbehaves the assertion
+                  must fail with a short message starting BUGHUNT-CONFIRMED. Never
+                  #[should_panic]; files only under std::env::temp_dir(). Suspected defect:
+                  ${steps.brief.output}
+      - if: steps.use_gemini.output
+        then:
+          - id: gemini
+            operation: cmd.read
+            arguments:
+              command: bughunt-gemini
               params:
                 # cmd parameters may not contain newlines, so this prompt is
                 # one folded line (see AGENT-NOTES 30).
@@ -172,9 +201,12 @@ steps:
       - id: model_file
         operation: data.select
         arguments: {condition: "${steps.is_big.output}", then: "${steps.write_big.output.rust_source}", else: "${steps.write_small.output.rust_source}"}
-      - id: test_file
+      - id: codex_or_model
         operation: data.select
         arguments: {condition: "${steps.use_codex.output}", then: "${steps.codex.output.stdout}", else: "${steps.model_file.output}"}
+      - id: test_file
+        operation: data.select
+        arguments: {condition: "${steps.use_gemini.output}", then: "${steps.gemini.output.stdout}", else: "${steps.codex_or_model.output}"}
       - id: write
         operation: file.write_text
         arguments: {root: /absolute/path/to/target-repro, path: src/bughunt_repro.rs, text: "${steps.test_file.output}"}
@@ -187,8 +219,56 @@ steps:
       - id: build_failed
         operation: data.get
         arguments: {value: "${steps.judged.output}", path: /build_failed}
-      # One retry, with the compiler's complaint, on the small model.
-      - if: steps.build_failed.output
+      # One retry when the test did not build, by the model that wrote it
+      # (cloud models get the compiler output as one line: cmd parameters
+      # may not contain newlines). Routes are sibling ifs (AGENT-NOTES 32).
+      - id: not_cloud
+        operation: data.logic
+        arguments: {operator: not, left: "${steps.use_cloud.output}"}
+      - id: retry_gemini
+        operation: data.logic
+        arguments: {operator: and, left: "${steps.build_failed.output}", right: "${steps.use_gemini.output}"}
+      - id: retry_codex
+        operation: data.logic
+        arguments: {operator: and, left: "${steps.build_failed.output}", right: "${steps.use_codex.output}"}
+      - id: retry_local
+        operation: data.logic
+        arguments: {operator: and, left: "${steps.build_failed.output}", right: "${steps.not_cloud.output}"}
+      - id: error_line
+        operation: data.replace
+        arguments: {text: "${steps.run.output.tail}", from: "\n", to: " | "}
+      - id: first_try_line
+        operation: data.replace
+        arguments: {text: "${steps.test_file.output}", from: "\n", to: " | "}
+      - if: steps.retry_gemini.output
+        then:
+          - id: gemini_retry
+            operation: cmd.read
+            arguments:
+              command: bughunt-gemini
+              params:
+                prompt: >-
+                  Your previous src/bughunt_repro.rs (newlines shown as " | ") did not compile.
+                  Print a corrected complete file only, no markdown fences, same rules as
+                  before: #[cfg(test)] module at the crate root, crate:: paths, call the real
+                  code, assert the safe behaviour, fail with BUGHUNT-CONFIRMED otherwise, never
+                  #[should_panic]. Previous file: ${steps.first_try_line.output} Compiler
+                  output: ${steps.error_line.output} Suspected defect: ${steps.brief.output}
+      - if: steps.retry_codex.output
+        then:
+          - id: codex_retry
+            operation: cmd.read
+            arguments:
+              command: bughunt-codex
+              params:
+                prompt: >-
+                  Your previous src/bughunt_repro.rs (newlines shown as " | ") did not compile.
+                  Print a corrected complete file only, no markdown fences, same rules as
+                  before: #[cfg(test)] module at the crate root, crate:: paths, call the real
+                  code, assert the safe behaviour, fail with BUGHUNT-CONFIRMED otherwise, never
+                  #[should_panic]. Previous file: ${steps.first_try_line.output} Compiler
+                  output: ${steps.error_line.output} Suspected defect: ${steps.brief.output}
+      - if: steps.retry_local.output
         then:
           - id: rewrite
             model:
@@ -205,15 +285,23 @@ steps:
                 Compiler output (tail):
                 ${steps.run.output.tail}
               schema: {$ref: "#/$defs/repro"}
+      - id: retry_cloud_text
+        operation: data.select
+        arguments: {condition: "${steps.retry_gemini.output}", then: "${steps.gemini_retry.output.stdout}", else: "${steps.codex_retry.output.stdout}"}
+      - id: retry_text
+        operation: data.select
+        arguments: {condition: "${steps.retry_local.output}", then: "${steps.rewrite.output.rust_source}", else: "${steps.retry_cloud_text.output}"}
+      - if: steps.build_failed.output
+        then:
           - id: rewrite_write
             operation: file.write_text
-            arguments: {root: /absolute/path/to/target-repro, path: src/bughunt_repro.rs, text: "${steps.rewrite.output.rust_source}"}
+            arguments: {root: /absolute/path/to/target-repro, path: src/bughunt_repro.rs, text: "${steps.retry_text.output}"}
           - id: rerun
             operation: trial.run
             arguments: {repo: bughunt-target, worktree: /absolute/path/to/target-repro}
           - id: rejudged
             ritual: bughunt-verdict
-            arguments: {file: "${found.file}", test_file: "${steps.rewrite.output.rust_source}", passed: "${steps.rerun.output.passed}", tail: "${steps.rerun.output.tail}"}
+            arguments: {file: "${found.file}", test_file: "${steps.retry_text.output}", passed: "${steps.rerun.output.passed}", tail: "${steps.rerun.output.tail}"}
       - id: restore
         operation: file.write_text
         arguments: {root: /absolute/path/to/target-repro, path: src/bughunt_repro.rs, text: ""}
@@ -222,7 +310,7 @@ steps:
         arguments: {condition: "${steps.build_failed.output}", then: "${steps.rejudged.output.verdict}", else: "${steps.judged.output.verdict}"}
       - id: final_file
         operation: data.select
-        arguments: {condition: "${steps.build_failed.output}", then: "${steps.rewrite.output.rust_source}", else: "${steps.test_file.output}"}
+        arguments: {condition: "${steps.build_failed.output}", then: "${steps.retry_text.output}", else: "${steps.test_file.output}"}
       - id: final_tail
         operation: data.select
         arguments: {condition: "${steps.build_failed.output}", then: "${steps.rerun.output.tail}", else: "${steps.run.output.tail}"}

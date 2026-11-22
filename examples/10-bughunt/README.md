@@ -65,9 +65,12 @@ summonr rite advance RITE_ID      # after the gate passes, runs the test stage
 summonr run bughunt-bench --arg 'dirs=["src"]' --arg 'angles=["panics on hostile input"]' --arg gold=fix-c06fd86.json --wait --json
 ```
 
-Optional Codex escalation for critical findings: `--arg escalate=codex` on
-the test stage (or the rite). It runs `codex exec` in a read-only sandbox
-through the `bughunt-codex` command that `setup.sh` configures.
+Optional cloud escalation for critical findings, on the test stage (or the
+rite): `--arg escalate=codex` runs `codex exec` in its read-only sandbox;
+`--arg escalate=gemini` runs Gemini 4 Neon through the Antigravity CLI
+(`agy -p`) in a read-only snapshot of the source (`LAB/readonly-src`), since
+agy's own file tools are not limited by `--sandbox`. A build failure is
+retried once by the same model.
 
 ## Gold sets
 

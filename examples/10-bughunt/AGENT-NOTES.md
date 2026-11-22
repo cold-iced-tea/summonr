@@ -163,6 +163,34 @@ guide already says `result` is a subset match. The rest are open.
     correctness bugs more than with security findings, which stay with the
     local models. The Codex path itself now works (12 s per finding).
 
+34. **A `read` command can write, if it wraps an agent.** The Gemini path
+    runs the Antigravity CLI (`agy -p`, `--sandbox`) as a `cmd` command
+    declared `effect: read`. Neon answered well, and also used its own
+    file tools to write `src/bughunt_repro.rs` into the lab's main
+    checkout; `--sandbox` restricts its terminal, not its edits. Summonr
+    recorded a read. Nothing in Summonr can see or stop what a wrapped
+    agent does with its own tools; the declared effect is the operator's
+    claim. *Workaround:* agent CLIs run in a read-only snapshot of the
+    source (`setup.sh` makes `LAB/readonly-src`). *Suggestion:* document
+    that `cmd` effects are declarations, and offer a filesystem sandbox for
+    commands (read-only binds, a private writable temp), or a
+    command-backed model backend that runs the CLI in such a sandbox.
+
+35. **Neon versus Codex on the same finding.** Codex declined the CRLF
+    finding twice. Gemini 4 Neon (via `agy`) wrote a real test against
+    Summonr's own `reagent::authorize(…, "http.post", …)`; its first
+    version did not compile, the retry went back to Neon (the retry now
+    uses the model that wrote the first attempt), and the second version
+    failed with the marker: authorization accepted a CR/LF header value
+    (`Ok(())`). The verdict was still `untestable`, because the honesty
+    guard wants the suspect module's name (`http_reagent::`) and this test
+    reached it through the generic dispatcher. The guard was written to
+    stop copied-logic tests and here rejected an honest one; loosening it
+    (e.g. also accepting the tool's dispatch name) is a trust decision left
+    to the owner. Also: confirming that authorize does not check header
+    values is not the same as an exploit; the HTTP client may still refuse
+    CR/LF when sending. 87 s for the finding, including two builds.
+
 ## Reflections after the build
 
 What it was like to build a real multi-ritual workflow, beyond single

@@ -39,6 +39,15 @@ git -C "$target" remote remove lab 2>/dev/null || true
 git -C "$target" remote add lab "$lab/remote.git"
 git -C "$target" push -q --force lab bughunt-base
 
+# A read-only snapshot of the source for agent CLIs (Gemini via agy): they
+# have their own file tools, so they get a copy they cannot write to, never
+# the checkout (AGENT-NOTES 34).
+snap="$lab/readonly-src"
+if [ -d "$snap" ]; then chmod -R u+w "$snap"; rm -rf "$snap"; fi
+mkdir -p "$snap"
+git -C "$target" archive HEAD | tar -x -C "$snap"
+chmod -R a-w "$snap"
+
 export SUMMONR_HOME="$lab/home"
 mkdir -p "$SUMMONR_HOME/config"
 cat > "$SUMMONR_HOME/config/config.yaml" <<EOF
@@ -56,6 +65,14 @@ repos:
 # only). Needs the codex CLI on PATH and logged in. Read-only sandbox: codex
 # prints the test file; Summonr writes it.
 commands:
+  bughunt-gemini:
+    # Gemini 4 Neon through the Antigravity CLI, print mode, sandboxed.
+    program: env
+    args: ["HOME=$HOME", "PATH=$PATH", agy, -p, "\${prompt}", --model, gemini-4-neon-medium, --sandbox, --disable-slash-commands, --print-timeout, 600s]
+    cwd: $snap
+    effect: read
+    params:
+      prompt: {max_length: 20000}
   bughunt-codex:
     # cmd starts commands with an empty environment; codex (and wrappers
     # around it) need HOME and PATH, so env passes exactly those.
