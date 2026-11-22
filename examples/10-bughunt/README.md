@@ -82,3 +82,14 @@ examples/10-bughunt/drill.sh "$PWD/target/release/summonr"
 Runs every `*.drill.yaml` offline with scripted model answers against
 `fixtures/`. The git/trial path of `bughunt-test` cannot be drilled (writes
 are simulated, so no worktree exists); it is checked live.
+
+## If a test run is interrupted
+
+`bughunt-test` adds a `repro` worktree beside the target and removes it at
+the end. If a run dies half way, the next one refuses to start (`branch
+repro already exists`). Clean up by hand:
+
+```bash
+git -C ~/bughunt-lab/target worktree remove --force ~/bughunt-lab/target-repro
+git -C ~/bughunt-lab/target branch -D repro
+```
