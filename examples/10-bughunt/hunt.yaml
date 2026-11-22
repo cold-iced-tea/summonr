@@ -14,7 +14,8 @@ inputs:
     type: list
     default: [0, 150, 300, 450, 600, 750, 900, 1050, 1200, 1350, 1500, 1650, 1800, 1950, 2100, 2250, 2400, 2550, 2700, 2850, 3000, 3150, 3300, 3450, 3600, 3750, 3900, 4050, 4200, 4350]
 model: ollama/qwen3:4b
-settings: {temperature: 0, num_ctx: 16384}
+# num_predict caps a runaway answer so it fails fast instead of looping.
+settings: {temperature: 0, num_ctx: 16384, num_predict: 2048}
 requires:
   - {reagent: file, action: list, on: {root: /absolute/path/to/target}}
   - {reagent: file, action: read_text, on: {root: /absolute/path/to/target}}
@@ -38,8 +39,10 @@ steps:
       - id: listing
         operation: file.list
         arguments: {root: /absolute/path/to/target, path: "${dir}"}
+      # An unreadable file (not UTF-8, over 1 MiB) is skipped, not fatal.
       - id: per_entry
         each: entry in steps.listing.output.entries
+        on_failure: continue
         steps:
           - id: is_source
             operation: data.ends_with
@@ -61,8 +64,11 @@ steps:
               - id: line_count
                 operation: data.count
                 arguments: {value: "${steps.lines.output}"}
+              # A chunk the model chokes on (invalid JSON, runaway repetition)
+              # is recorded and skipped, not fatal to the whole hunt.
               - id: per_chunk
                 each: start in inputs.starts
+                on_failure: continue
                 steps:
                   - id: in_file
                     operation: data.compare
@@ -131,10 +137,13 @@ steps:
                       condition: "${steps.in_file.output}"
                       then: "${steps.chunk_findings.output}"
                       else: []
+              - id: chunks_ok
+                operation: data.filter
+                arguments: {values: "${steps.per_chunk.output}", predicate: 'item.status == "returned"'}
               - id: file_findings
                 operation: data.fold
                 arguments:
-                  values: "${steps.per_chunk.output}"
+                  values: "${steps.chunks_ok.output}"
                   initial: []
                   operation: data.concat
                   arguments: {left: "${acc}", right: "${item.outputs.chunk_out}"}
@@ -144,10 +153,13 @@ steps:
               condition: "${steps.wanted.output}"
               then: "${steps.file_findings.output}"
               else: []
+      - id: entries_ok
+        operation: data.filter
+        arguments: {values: "${steps.per_entry.output}", predicate: 'item.status == "returned"'}
       - id: dir_findings
         operation: data.fold
         arguments:
-          values: "${steps.per_entry.output}"
+          values: "${steps.entries_ok.output}"
           initial: []
           operation: data.concat
           arguments: {left: "${acc}", right: "${item.outputs.entry_out}"}

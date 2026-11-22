@@ -52,3 +52,17 @@ cases:
         angle: panics
         findings:
           - {kind: bug, severity: high, confidence: 0.9, claim: c, trigger: t, snippet: "let status = loop { ... }", file: src/auth.rs, start: 0, quoted: false}
+  - id: one-bad-chunk-does-not-sink-the-hunt
+    inputs: {dirs: [src], angle: panics, chunk: 3, starts: [0, 3]}
+    model:
+      scan:
+        - "not json at all"
+        - findings:
+            - {kind: bug, severity: low, confidence: 0.5, claim: c, trigger: t, snippet: // end}
+    expect:
+      outcome: returned
+      result:
+        angle: panics
+        findings:
+          - {kind: bug, severity: low, confidence: 0.5, claim: c, trigger: t, snippet: // end, file: src/auth.rs, start: 3, quoted: true}
+      model_calls: 2
