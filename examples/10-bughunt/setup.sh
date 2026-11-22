@@ -64,14 +64,17 @@ commands:
 EOF
 
 # Children before parents: a ritual step needs its child already inscribed.
-for name in verdict batch-ready gather hunt test score; do
+for name in verdict batch-ready gather hunt test score bench; do
   f="$here/$name.yaml"; [ -f "$f" ] || continue
-  sed -e "s|/absolute/path/to/target-repro|$target-repro|g" \
+  sed -e "s|/absolute/path/to/lab|$lab|g" \
+      -e "s|/absolute/path/to/target-repro|$target-repro|g" \
       -e "s|/absolute/path/to/target|$target|g" "$f" > "$SUMMONR_HOME/$(basename "$f")"
   "$bin" inscribe "$SUMMONR_HOME/$(basename "$f")" --replace --json >/dev/null \
     || { echo "inscribe failed: $name" >&2; "$bin" inscribe "$SUMMONR_HOME/$(basename "$f")" --json >&2; exit 1; }
 done
-"$here/grant.sh" "$bin" "$target"
+"$here/grant.sh" "$bin" "$target" "$lab"
+mkdir -p "$lab/benchmark"
+cp "$here"/benchmark/*.json "$lab/benchmark/" 2>/dev/null || true
 # The core reads config.yaml at start.
 "$bin" core restart --json >/dev/null
 echo "lab ready: export SUMMONR_HOME=$SUMMONR_HOME"

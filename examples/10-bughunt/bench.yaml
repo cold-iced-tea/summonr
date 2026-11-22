@@ -1,0 +1,36 @@
+language_version: 1
+ritual: bughunt-bench
+description: >-
+  Run one hunt and score it against a gold set in the lab's benchmark
+  folder, then report recall and noise. Large inputs never cross the command
+  line: the gold set is read from a file.
+inputs:
+  dirs: {type: list, default: [src]}
+  angle: string
+  gold: {type: string, default: gold.json}
+requires:
+  - {reagent: file, action: list, on: {root: /absolute/path/to/target}}
+  - {reagent: file, action: read_text, on: {root: /absolute/path/to/target}}
+  - {reagent: file, action: read_json, on: {root: /absolute/path/to/lab/benchmark}}
+essence: {requests: 400, time: 3h}
+steps:
+  - id: gold
+    operation: file.read_json
+    arguments: {root: /absolute/path/to/lab/benchmark, path: "${inputs.gold}"}
+  - id: hunt
+    ritual: bughunt-hunt
+    arguments: {dirs: "${inputs.dirs}", angle: "${inputs.angle}"}
+  - id: kept
+    ritual: bughunt-gather
+    arguments: {hunts: ["${steps.hunt.output}"], min_batch: 1}
+  - id: raw
+    ritual: bughunt-score
+    arguments: {findings: "${steps.hunt.output.findings}", gold: "${steps.gold.output.value}"}
+  - id: filtered
+    ritual: bughunt-score
+    arguments: {findings: "${steps.kept.output.findings}", gold: "${steps.gold.output.value}"}
+return:
+  angle: "${inputs.angle}"
+  raw: "${steps.raw.output}"
+  after_gather: "${steps.filtered.output}"
+  findings: "${steps.kept.output.findings}"
