@@ -10,7 +10,8 @@ not say is in [LIMITS.md](LIMITS.md).
 
 | Ritual | Does | Model |
 | --- | --- | --- |
-| `bughunt-hunt` | Lists source files in `dirs`, reads them in chunks, asks for findings from one `angle`; marks each finding `quoted` when its snippet really appears in the code | `qwen3:4b`, one call per chunk |
+| `bughunt-hunt` | Lists source files in `dirs` and runs `bughunt-scan-file` on each; unreadable files are skipped | |
+| `bughunt-scan-file` | Reads one file in chunks, asks for findings from one `angle`; marks each finding `quoted` when its snippet really appears in the code; a chunk the model chokes on is skipped | `qwen3:4b`, one call per chunk |
 | `bughunt-gather` | Merges hunts, drops unquoted and low-confidence findings, collapses duplicates, `pass` when `count ≥ min_batch` | none |
 | `bughunt-batch-ready` | Touchstone gate on gather's `pass` | none |
 | `bughunt-test` | Per finding: model writes `src/bughunt_repro.rs`, `trial` runs it in a throwaway worktree, one retry with compiler output | `qwen3:4b` for low/medium, `Qwen3.6-35B-A3B` for high/critical, optional Codex for critical |
@@ -32,7 +33,7 @@ export SUMMONR_HOME=~/bughunt-lab/home
 
 `setup.sh` clones the project into `~/bughunt-lab/target` at `COMMIT` on a
 `bughunt-base` branch with the repro harness committed, gives it a local
-bare remote (see LIMITS.md, 12), writes the lab's `config/config.yaml`
+bare remote (see LIMITS.md, 13), writes the lab's `config/config.yaml`
 (set `OLLAMA_HOST` first if Ollama is not on `127.0.0.1:11434`), rewrites
 the rituals' roots to the lab, inscribes and grants them, and copies the
 gold sets into `~/bughunt-lab/benchmark/`. Warm the build once so the first

@@ -64,7 +64,7 @@ commands:
 EOF
 
 # Children before parents: a ritual step needs its child already inscribed.
-for name in verdict batch-ready gather hunt test score bench; do
+for name in verdict batch-ready gather scan-file hunt test score bench; do
   f="$here/$name.yaml"; [ -f "$f" ] || continue
   sed -e "s|/absolute/path/to/lab|$lab|g" \
       -e "s|/absolute/path/to/target-repro|$target-repro|g" \

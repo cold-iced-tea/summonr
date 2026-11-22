@@ -35,19 +35,26 @@ how much they cost the build.
    a verbatim `snippet` instead, which also turned into the best
    deterministic filter (see Results). *Proposal:* `data.lines` with an
    `numbered: true` option, or `data.enumerate`.
-7. **`each` is sequential** (`parallel > 1` is rejected). A hunt is one
+7. **Loop results keep every step's output, and data arguments are capped
+   at 1 MiB.** A hunt over `src/` carried each file's text (`read_text`,
+   `lines`) inside its loop results, so the fold that collects findings
+   failed after 213 model calls ("data value exceeds 1 MiB encoded JSON").
+   *Workaround:* per-file work moved into a child ritual,
+   `bughunt-scan-file`, whose only output is its findings.
+   *Proposal:* an `each` option to keep only named outputs (`keep: [x]`).
+8. **`each` is sequential** (`parallel > 1` is rejected). A hunt is one
    model call per chunk, one after another.
 
 ## Pointing a ritual at a project
 
-8. **File roots are fixed at inscription.** `requires.on.root` is a
+9. **File roots are fixed at inscription.** `requires.on.root` is a
    literal, so a ritual cannot be "pointed at" a project. *Workaround:*
    `setup.sh`/`drill.sh` rewrite `/absolute/path/to/...` placeholders and
    re-inscribe (the same trick example 08 uses). *Proposal:* a root input
    whose value must fall inside a granted root, checked at run time.
-9. **`file.list` is not recursive.** Directories to hunt are an input
+10. **`file.list` is not recursive.** Directories to hunt are an input
    list. *Proposal:* `file.walk` with depth and entry bounds.
-10. **The CLI cannot read an input from a file.** A 98-finding list or a
+11. **The CLI cannot read an input from a file.** A 98-finding list or a
     gold set overflows the command line ("Argument list too long").
     *Workaround:* `bughunt-bench` reads the gold set with `file.read_json`
     and runs hunt and score in one summon; the rite passes findings between
@@ -55,10 +62,10 @@ how much they cost the build.
 
 ## Running tests
 
-11. **`trial.run` runs the repository's single `test` command.** No test
+12. **`trial.run` runs the repository's single `test` command.** No test
     selection. *Workaround:* a dedicated repo entry, `bughunt-target`, whose
     `test` is `cargo test --offline --bins bughunt_repro`.
-12. **`git.worktree_add` starts only from an up-to-date trunk and needs
+13. **`git.worktree_add` starts only from an up-to-date trunk and needs
     `<remote>/<trunk>` to exist.** *Workaround:* `setup.sh` checks the
     target commit out as a `bughunt-base` branch and pushes it to a local
     bare remote in the lab.
@@ -67,7 +74,7 @@ how much they cost the build.
     (`git rev-list: 'git <command> [<revision>...] -- [<file>...]'`), not
     a message saying the remote branch is missing
     (`src/reagents/git_reagent.rs`, `worktree_add`).
-13. **Summonr is a binary crate**, so a repro in `tests/` could reach no
+14. **Summonr is a binary crate**, so a repro in `tests/` could reach no
     internals. *Workaround:* the base branch commits an empty
     `src/bughunt_repro.rs` declared as `#[cfg(test)] mod bughunt_repro;`.
     This harness is Rust-specific; nothing in the language describes "how
@@ -75,11 +82,11 @@ how much they cost the build.
 
 ## Models
 
-14. **Model names are fixed per step.** Routing by severity means one
+15. **Model names are fixed per step.** Routing by severity means one
     model step per model in `if` branches, with the prompt duplicated.
     *Proposal:* a step-level `model: {one_of: [...], choose: EXPR}` that
     keeps the set of model sites static.
-15. **Codex is not a model backend.** It can only be a `cmd` command
+16. **Codex is not a model backend.** It can only be a `cmd` command
     (`bughunt-codex`, read-only sandbox), so its answer is unvalidated
     stdout: no schema, no fingerprint, no token essence.
     *Proposal:* a command-backed model backend, or an output schema on
@@ -87,11 +94,11 @@ how much they cost the build.
 
 ## Rites
 
-16. **A rite has a fixed number of stages**, so "one hunt per angle" is
+17. **A rite has a fixed number of stages**, so "one hunt per angle" is
     three hard-coded stages; angles are inputs, the count is not.
-17. **A touchstone gate sees only the stage's output**, so `gather` has to
+18. **A touchstone gate sees only the stage's output**, so `gather` has to
     return `min_batch` and `pass` for `batch-ready` to read.
-18. **Assumptions are not checkable in the language.** `target-commit` is
+19. **Assumptions are not checkable in the language.** `target-commit` is
     a statement; nothing reads the lab's HEAD (the hunt has no `git`
     authority, and adding it only for this would widen the grant).
 
