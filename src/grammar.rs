@@ -50,6 +50,8 @@ pub struct Op {
     pub baseline: bool,
     /// An assay that performs its writes for real.
     pub live: bool,
+    /// Only the outcome, result, usage and child runs (`brief` / `--brief`).
+    pub brief: bool,
     /// `all` outside a reagent scope: every pending petition.
     pub all: bool,
     pub scopes: Vec<ReagentScope>,
@@ -452,6 +454,11 @@ pub const CLAUSES: &[(&str, &str, &str)] = &[
         "Answer writes with what they would do, changing nothing",
     ),
     (
+        "brief",
+        "--brief",
+        "Show only outcome, result, usage and child runs (always fits one reply)",
+    ),
+    (
         "key K",
         "--key K",
         "A public key (ed25519:…) for familiar add or peer add",
@@ -515,6 +522,7 @@ const KEYWORDS: &[&str] = &[
     "simulating",
     "baseline",
     "live",
+    "brief",
     "key",
     "url",
     "via",
@@ -717,7 +725,7 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
         // Normalize flag names onto the keyword they spell.
         let clause = if is_flag {
             match name {
-                "json" | "wait" | "dry-run" | "replace" | "simulate" | "baseline" | "live" | "all"
+                "json" | "wait" | "dry-run" | "replace" | "simulate" | "baseline" | "live" | "brief" | "all"
                     if attached.is_some() =>
                 {
                     return Err(cur.err(
@@ -749,6 +757,7 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
                 "simulate" => "simulating",
                 "baseline" => "baseline",
                 "live" => "live",
+                "brief" => "brief",
                 "key" => "key",
                 "url" => "url",
                 "via" => "via",
@@ -924,6 +933,12 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
                     return Err(cur.err(pos, "live mode is given more than once", ""));
                 }
                 op.live = true;
+            }
+            "brief" => {
+                if op.brief {
+                    return Err(cur.err(pos, "brief is given more than once", ""));
+                }
+                op.brief = true;
             }
             "from" => {
                 let v = value(&mut cur, pos, attached, is_flag, "from mail selecting read")?;
@@ -1144,6 +1159,9 @@ pub fn render(op: &Op, style: Style) -> Vec<String> {
     if op.live {
         out.push(if kw { "live".into() } else { "--live".into() });
     }
+    if op.brief {
+        out.push(if kw { "brief".into() } else { "--brief".into() });
+    }
     if op.replace {
         out.push(if kw {
             "replacement".into()
@@ -1258,6 +1276,8 @@ mod tests {
         ("glean classify-message 10 against ./set.yaml", "sample classify-message 10 --against ./set.yaml"),
         ("drill route-form against ./d.yaml", "cases route-form --against ./d.yaml"),
         ("invoke bench reading gold=./g.json", "run bench --arg-file gold=./g.json"),
+        ("invoke bench then return json brief", "run bench --wait --json --brief"),
+        ("elegy s-1 brief returning json", "record s-1 --brief --json"),
         ("rite start ./r.yaml reading hunts=./h.json given n=2", "workflow start ./r.yaml --arg-file hunts=./h.json --arg n=2"),
     ];
 

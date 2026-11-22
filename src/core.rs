@@ -2001,6 +2001,35 @@ impl Core {
         }))
     }
 
+    /// A summon without its bulk (effects, fences, cleanup detail): what an
+    /// agent needs to act, and small enough to always fit in one frame.
+    /// Child runs are listed by id so their own records can be read.
+    fn brief(&self, s: Value) -> Result<Value, RpcErr> {
+        const KEEP: &[&str] = &[
+            "id", "parent", "ritual", "version", "hash", "model", "status", "outcome", "started",
+            "ended", "done", "total", "requests", "tokens", "inputs", "essence", "result", "error",
+            "warnings", "petitions", "familiar", "cost_microusd",
+        ];
+        let mut out = serde_json::Map::new();
+        for k in KEEP {
+            if let Some(v) = s.get(*k) {
+                out.insert((*k).to_string(), v.clone());
+            }
+        }
+        let id = s["id"].as_str().unwrap_or_default();
+        let children = self.summons("parent = ?1 ORDER BY started", id, 10_000, false)?;
+        out.insert(
+            "children".into(),
+            Value::Array(
+                children
+                    .iter()
+                    .map(|c| json!({"id": c["id"], "ritual": c["ritual"], "outcome": c["outcome"], "requests": c["requests"], "error": c["error"]}))
+                    .collect(),
+            ),
+        );
+        Ok(Value::Object(out))
+    }
+
     fn wait(&self, p: Value) -> Result<Value, RpcErr> {
         let p: requests::Wait = decode(p)?;
         let id = p.summon;
@@ -2010,7 +2039,7 @@ impl Core {
         loop {
             let s = self.summon(&id)?;
             if s["status"] == "ended" {
-                return Ok(s);
+                return if p.brief { self.brief(s) } else { Ok(s) };
             }
             if deadline.is_some_and(|d| Instant::now() >= d) {
                 return Err(RpcErr::new(
@@ -2481,7 +2510,12 @@ impl Core {
             "wait" => self.wait(p),
             "get" => {
                 let p: requests::Summon = decode(p)?;
-                self.summon(&p.summon)
+                let s = self.summon(&p.summon)?;
+                if p.brief {
+                    self.brief(s)
+                } else {
+                    Ok(s)
+                }
             }
             "events" => self.events(p),
             "cancel" => self.cancel(p),

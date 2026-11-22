@@ -342,6 +342,9 @@ impl Validate for FenceResolve {
 pub struct Summon {
     #[serde(deserialize_with = "nonempty")]
     pub summon: String,
+    /// Only the outcome, result, usage and child runs; no effects or fences.
+    #[serde(default)]
+    pub brief: bool,
 }
 impl Validate for Summon {}
 #[derive(Deserialize)]
@@ -367,6 +370,8 @@ pub struct Wait {
     #[serde(deserialize_with = "nonempty")]
     pub summon: String,
     pub timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub brief: bool,
 }
 impl Validate for Wait {
     fn validate(&self) -> Result<(), String> {

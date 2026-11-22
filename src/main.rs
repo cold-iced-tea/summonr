@@ -721,6 +721,9 @@ fn run(op: Op, paths: &Paths, style: Style) -> i32 {
         }
         "elegy" => {
             let res = target(&op, "a summon ID").and_then(|id| {
+                if op.brief {
+                    return client.call("get", json!({"summon": id, "brief": true}));
+                }
                 let mut d = client.call("get", json!({"summon": id}))?;
                 d["events"] = client.call(
                     "events",

@@ -12,7 +12,7 @@ pub(crate) fn wait_for(client: &mut Client, id: &str, op: &Op) -> Result<Value, 
         None => None,
     };
     if op.json || !theme::tty() {
-        return client.call("wait", json!({"summon": id, "timeout_ms": timeout}));
+        return client.call("wait", json!({"summon": id, "timeout_ms": timeout, "brief": op.brief}));
     }
     // In a terminal, show the summon at work while waiting.
     let started = std::time::Instant::now();
@@ -21,6 +21,9 @@ pub(crate) fn wait_for(client: &mut Client, id: &str, op: &Op) -> Result<Value, 
         let d = client.call("get", json!({"summon": id}))?;
         if d["status"] == "ended" {
             print!("\r\x1b[2K");
+            if op.brief {
+                return client.call("get", json!({"summon": id, "brief": true}));
+            }
             return Ok(d);
         }
         if timeout.is_some_and(|t| started.elapsed().as_millis() as u64 >= t) {

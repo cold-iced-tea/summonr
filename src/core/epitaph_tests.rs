@@ -440,3 +440,22 @@ fn merkle_inclusion_proofs_verify_and_detect_tampering() {
         ));
     }
 }
+
+#[test]
+fn brief_wait_and_get_drop_the_bulk_but_keep_the_result() {
+    let (h, _mail) = Home::triage();
+    let started = h.call("invoke", json!({"target":"inbox-triage","model":"mock/keyword","args":{"count":1,"apply":false}})).unwrap();
+    let full = h.call("wait", json!({"summon": started["summon"], "timeout_ms": 10000})).unwrap();
+    assert!(full.get("effects").is_some());
+    for brief in [
+        h.call("wait", json!({"summon": started["summon"], "timeout_ms": 10000, "brief": true})).unwrap(),
+        h.call("get", json!({"summon": started["summon"], "brief": true})).unwrap(),
+    ] {
+        assert_eq!(brief["id"], full["id"]);
+        assert_eq!(brief["outcome"], full["outcome"]);
+        assert_eq!(brief["result"], full["result"]);
+        assert_eq!(brief["requests"], full["requests"]);
+        assert!(brief.get("effects").is_none(), "{brief}");
+        assert!(brief.get("children").is_some(), "child run ids are listed");
+    }
+}
