@@ -75,3 +75,88 @@ suggestion. Most recent last.
     `parallel` > 1 is rejected; it works. I designed around a limit that
     was not there. *Suggestion:* a doc test that compiles each documented
     "rejected" example and expects the rejection.
+
+## Reflections after the build
+
+What it was like to build a real multi-ritual workflow, beyond single
+annoyances.
+
+18. **Structural failures show up late and live.** The 1 MiB data cap hit
+    twice, each time after 10–15 minutes of GPU work, on runs that had
+    compiled and drilled cleanly. Static analysis already knows the step
+    kinds: a `file.read_text` (or `data.lines` of it) inside an `each` whose
+    results are later passed to a data operation is an obvious size risk.
+    *Suggestion:* a compile-time warning for "large read inside a loop
+    without `keep`", and an estimate of loop result size in `rehearse`.
+19. **Drills gave false confidence on size.** Every drill passed with
+    tiny fixtures while half the real files failed. What finally caught it
+    was a reviewer drilling `scan-file` against the *real* source tree
+    with scripted answers, which drills already allow; I never thought to.
+    *Suggestion:* document "drill against real data" as a pattern, and add
+    a default scripted answer (`model: {scan: {default: {findings: []}}}`)
+    so a drill over 40 files does not need 400 listed answers.
+20. **The write path cannot be drilled.** `bughunt-test` (worktree, write,
+    trial, cleanup) has no drill: writes are simulated, so the worktree
+    never exists and `trial` fails. The most fragile ritual is the
+    untested one; every bug in it was found live. *Suggestion:* a drill
+    mode that runs writes for real inside a disposable copy (a temp
+    clone, a temp file root), since the runtime already knows which roots
+    and repos a ritual touches.
+21. **Factoring into child rituals is expensive, so I put it off.** A child
+    ritual is the language's only abstraction, but each one costs its own
+    file, its own `requires`, a parent that repeats those `requires`,
+    grants for both, and a place in the inscribe order. I kept logic
+    inline in 5-level-deep YAML until the data cap forced the split, and
+    the deep nesting cost me YAML indentation errors and string-surgery
+    edits. The splits that did happen (`scan-file`, `verdict`) made things
+    clearly better, and `verdict` became drillable because it was pure.
+    *Suggestion:* make a child ritual cheap: inherit `requires` from the
+    parent's declaration when the child asks for no more, and inscribe
+    a directory in dependency order (entry 7).
+22. **Pure rituals are where Summonr shines, and it rewards pushing logic
+    into them.** gather, verdict, score and batch-ready were quick to write,
+    were drilled exhaustively, and never failed live. The static checker
+    caught real mistakes before any run (a loop item has no field for its
+    loop variable; a misspelt output). Worth saying in the docs as the
+    recommended shape: model steps small, everything else pure and drilled.
+23. **Run health is hard to see while it runs.** For a 15-minute bench
+    I could not tell from the CLI whether it was progressing, stuck, or
+    quietly failing files; I inferred it from request counts in `list`.
+    I never discovered whether `follow` shows child summons. *Suggestion:*
+    one-line live progress for `run --wait` on a TTY (files, chunks,
+    failures), and a mention of `follow` in `run --help`.
+24. **Every lab home starts its own core, and cores outlive the work.**
+    Four bench labs mean four cores; stopping a run meant stopping each
+    summon, then each core, per home. *Suggestion:* cores for temp homes
+    that exit when idle, and `core stop --all-homes`.
+25. **Model honesty needs deterministic guards, and Summonr is good at
+    them.** The 35B model twice "confirmed" a bug by testing its own copy
+    of the logic; the 4B model invented ~40% of its quoted snippets and
+    gave uniform 0.6–0.95 confidence. Every fix was a pure check (snippet
+    really in the chunk, test names the real module, no
+    `#[should_panic]`), not a better prompt. This is the product's core
+    idea working as intended and worth a docs page of patterns.
+
+## My own mistakes (lessons for an agent building with Summonr)
+
+Not Summonr's fault, but a Summonr user that is an agent will make them too.
+
+- **Fanning out before one worst-case smoke.** I launched multi-file,
+  multi-angle benchmarks three times before running one hunt on the
+  single largest real file; two of those runs were wasted on the data cap.
+  Lesson: before any fan-out, run the smallest unit on the biggest real
+  input.
+- **Trusting the docs over the code.** I designed around "`parallel` > 1
+  is rejected" without checking `compile`; one offline compile would have
+  shown it works.
+- **Writing config by guess.** I wrote `config.yaml` where I assumed it
+  lived instead of reading `config.md` first.
+- **A fix that reintroduced the bug it was near.** The test-module skip
+  re-joined the file prefix per chunk, recreating the 1 MiB problem I had
+  just fixed, and the drills could not see it. I tested the behaviour
+  (chunks skipped) but not the cost (data carried).
+- **A test before the code, mostly.** Most rituals got their drill first
+  and failed first; `bench.yaml` did not, and `test.yaml` could not.
+- **A process kill that matched my own shell.** `pkill -f` on a pattern
+  that appeared in the killing command line ended that shell; harmless,
+  but it hid whether the stop worked.
