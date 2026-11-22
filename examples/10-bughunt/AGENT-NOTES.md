@@ -65,3 +65,13 @@ suggestion. Most recent last.
     so all lab work went through the CLI with `SUMMONR_HOME` set per command;
     the compact MCP results (entry 1) were not available there.
     *Suggestion:* let an MCP call name a home, or `summonr mcp` per lab.
+16. **`on_failure: continue` makes failures invisible by default.** I used
+    it so one bad file or chunk would not sink a hunt, and it hid that half
+    the files were failing (the data-cap bug). The counts exist
+    (`steps.X.counts.failed`) but nothing surfaces them unless the ritual
+    author adds steps to. *Suggestion:* a run-level warning in the envelope
+    whenever an `each` finished with failed items, with the first error.
+17. **The docs told me a feature did not exist.** `ritual-format.md` says
+    `parallel` > 1 is rejected; it works. I designed around a limit that
+    was not there. *Suggestion:* a doc test that compiles each documented
+    "rejected" example and expects the rejection.
