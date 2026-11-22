@@ -422,6 +422,25 @@ impl Core {
                 "unknown export format `{fmt}`; use `json` or `ndjson`"
             )));
         }
+        if args.file.is_some() {
+            let actor = current_actor();
+            if actor.starts_with("operator:")
+                && !actor.ends_with("(admin)")
+                && !actor.ends_with("(security_admin)")
+            {
+                self.record_audit(
+                    "rbac.denied",
+                    "audit_export.file",
+                    "denied",
+                    json!({"reason": "non-admin operators must omit `file` and stream audit exports inline"}),
+                );
+                return Err(RpcErr::new(
+                    "not_authorized",
+                    4,
+                    "non-admin operators may not write audit exports to arbitrary host paths; omit `file` to stream inline",
+                ));
+            }
+        }
         let audit_ver = self.audit_verify()?;
         let chain_ver = self.chain_verify(json!({}))?;
         let exported_at = now_ms();
@@ -661,11 +680,12 @@ impl Core {
     pub(super) fn audit_prune(&self, p: Value) -> Result<Value, RpcErr> {
         let args: AuditPruneArgs =
             serde_json::from_value(p).map_err(|e| RpcErr::invalid(e.to_string()))?;
-        let window_ms = args
+        let window_ms: i64 = args
             .days
             .checked_mul(86_400_000)
+            .and_then(|w| i64::try_from(w).ok())
             .ok_or_else(|| RpcErr::invalid("days overflow"))?;
-        let cutoff_ms = now_ms().saturating_sub(window_ms as i64);
+        let cutoff_ms = now_ms().saturating_sub(window_ms);
 
         let victims: Vec<String> = {
             let db = self.db.lock().unwrap();
@@ -1155,6 +1175,66 @@ mod tests {
             "expected sequence gap error, got: {}",
             err.message
         );
+
+        drop(core);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn audit_prune_rejects_i64_overflow_days_and_auditor_cannot_write_host_files() {
+        let p = test_paths("prune-overflow-auditor-file");
+        let core = Core::open(p.clone()).unwrap();
+        let dir = p.state.parent().unwrap().to_path_buf();
+
+        // 1. days * 86_400_000 fits in u64 but exceeds i64::MAX -> must fail with days overflow.
+        let err = core
+            .audit_prune(json!({"days": 106_751_991_168_u64}))
+            .unwrap_err();
+        assert_eq!(err.code, "invalid_invocation");
+        assert!(err.message.contains("days overflow"), "{err:?}");
+
+        // 2. Read-only auditor must NOT be able to overwrite arbitrary host files via audit_export.
+        let victim = dir.join("do-not-overwrite.txt");
+        std::fs::write(&victim, "original-secret-config").unwrap();
+        let aud_key = crate::keys::generate();
+        core.operator_add(json!({
+            "name": "carol",
+            "role": "auditor",
+            "key": aud_key.public().text()
+        }))
+        .unwrap();
+
+        let nonce = crate::envelope::new_nonce();
+        let req = crate::envelope::seal_request(
+            &aud_key,
+            &core.key.public().id(),
+            "audit_export",
+            &json!({"file": victim.to_str().unwrap()}),
+            now_ms(),
+            &nonce,
+        );
+        let rep = core.handle_signed(&req);
+        let denied = crate::envelope::open_reply(&rep, &core.key.public(), &nonce)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(denied.code, "not_authorized", "{denied:?}");
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "original-secret-config");
+
+        // Streaming inline (without `file`) must still succeed for auditor.
+        let nonce2 = crate::envelope::new_nonce();
+        let req2 = crate::envelope::seal_request(
+            &aud_key,
+            &core.key.public().id(),
+            "audit_export",
+            &json!({"format": "json"}),
+            now_ms(),
+            &nonce2,
+        );
+        let rep2 = core.handle_signed(&req2);
+        let ok = crate::envelope::open_reply(&rep2, &core.key.public(), &nonce2)
+            .unwrap()
+            .unwrap();
+        assert!(ok["bundle"]["audit_log"].is_array());
 
         drop(core);
         let _ = std::fs::remove_dir_all(dir);

@@ -2700,14 +2700,10 @@ impl Core {
                                 continue;
                             }
                             let method = req["method"].as_str().unwrap_or("").to_string();
-                            if method == "subscribe" {
-                                core.serve_subscribe(&mut stream, id, &req["params"]);
-                                break;
-                            }
                             if core.cfg.rbac.enforce
                                 && !matches!(
                                     method.as_str(),
-                                    "ping" | "identity" | "chain_verify" | "audit_verify" | "shutdown"
+                                    "ping" | "identity" | "chain_verify" | "audit_verify"
                                 )
                             {
                                 core.record_audit(
@@ -2726,6 +2722,10 @@ impl Core {
                                     break;
                                 }
                                 continue;
+                            }
+                            if method == "subscribe" {
+                                core.serve_subscribe(&mut stream, id, &req["params"]);
+                                break;
                             }
                             let reply = match core.dispatch(&method, req["params"].clone()) {
                                 Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
