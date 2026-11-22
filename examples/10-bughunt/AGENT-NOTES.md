@@ -98,6 +98,21 @@ suggestion. Most recent last.
     of a failed bench needed the record, which was unreadable (26), so
     again the database. *Suggestion:* `history --children ID`.
 
+29. **Pure work is slow because every step is a durable, fully recorded
+    event.** Rescoring 1,135 findings against 2 gold hunks took 156 s in
+    `score` (~137 ms per finding, ~28 events each); the lab database
+    reached 338 MB, of which 291 MB is 83,571 events (`scan-file` alone:
+    222 MB, ~5 KB per event, since events carry whole arguments and
+    outputs such as chunk text). Checkpoints were small (3.4 MB, replaced
+    per item, though rewritten whole each time). *Suggestions:* batch pure
+    steps' events into one transaction per loop item (they are
+    deterministic and recomputable); record pure steps by hash and size
+    rather than full payload; append to `each` checkpoints instead of
+    rewriting them. The same change fixes entry 26 at its source.
+    Language side: `data.unique_by {values, fields}` and a lookup/join
+    operation would turn `gather`'s dedupe loop and `score`'s nested loops
+    into one call each.
+
 ## Reflections after the build
 
 What it was like to build a real multi-ritual workflow, beyond single
