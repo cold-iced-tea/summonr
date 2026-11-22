@@ -1,0 +1,219 @@
+language_version: 1
+ritual: bughunt-test
+description: >-
+  Try to prove each finding: a model writes a Rust test module that panics
+  with BUGHUNT-CONFIRMED only if the bug is real, trial runs it in a
+  throwaway worktree, and the result becomes confirmed, refuted or
+  untestable. One retry with the compiler output when the first test does
+  not build.
+inputs:
+  findings: list
+  chunk: {type: integer, default: 150, min: 1, max: 2000}
+  escalate: {type: string, enum: [none, codex], default: none}
+model: ollama/qwen3:4b
+settings: {temperature: 0, num_ctx: 16384}
+requires:
+  - {reagent: file, action: read_text, on: {root: /absolute/path/to/target}}
+  - {reagent: file, action: write_text, on: {root: /absolute/path/to/target-repro}}
+  - {reagent: git, action: worktree_add}
+  - {reagent: git, action: remove_worktree}
+  - {reagent: git, action: delete_branch}
+  - {reagent: trial, action: run}
+  - {reagent: cmd, action: read}
+essence: {requests: 200, time: 4h}
+defs:
+  repro:
+    type: object
+    required: [test_file]
+    additionalProperties: false
+    properties:
+      test_file: {type: string, minLength: 1, maxLength: 20000}
+bindings:
+  harness:
+    content: |
+      You write one Rust test that proves or disproves a suspected bug.
+      Your file becomes src/bughunt_repro.rs, a #[cfg(test)] module declared
+      at the crate root, so reach code with crate:: paths (for
+      src/reagents/file_reagent.rs that is crate::reagents::file_reagent).
+      Private items are reachable only if their module and the item are
+      visible to the crate; prefer pub(crate) functions you can see.
+      Write the complete file: use lines, then exactly one #[test] function.
+      The test must panic with a message starting BUGHUNT-CONFIRMED only when
+      the bug really happens, for example:
+        assert!(!bad, "BUGHUNT-CONFIRMED: <what happened>");
+      If the code behaves correctly the test must pass. Use only the
+      standard library and crates the project already uses. No network.
+      Answer with JSON: {"test_file": "<the whole file>"}.
+steps:
+  - id: add
+    operation: git.worktree_add
+    arguments: {repo: bughunt-target, branch: repro}
+  - id: per_finding
+    each: found in inputs.findings
+    on_failure: continue
+    steps:
+      - id: source
+        operation: file.read_text
+        arguments: {root: /absolute/path/to/target, path: "${found.file}"}
+      - id: lines
+        operation: data.lines
+        arguments: {text: "${steps.source.output.text}"}
+      - id: line_count
+        operation: data.count
+        arguments: {value: "${steps.lines.output}"}
+      - id: stop_raw
+        operation: data.arithmetic
+        arguments: {left: "${found.start}", right: "${inputs.chunk}", operator: add}
+      - id: stop
+        operation: data.clamp
+        arguments: {value: "${steps.stop_raw.output}", min: 0, max: "${steps.line_count.output}"}
+      - id: window
+        operation: data.slice
+        arguments: {values: "${steps.lines.output}", start: "${found.start}", end: "${steps.stop.output}"}
+      - id: code
+        operation: data.join
+        arguments: {values: "${steps.window.output}", separator: "\n"}
+      - id: is_big
+        operation: data.contains
+        arguments: {value: [high, critical], needle: "${found.severity}"}
+      - id: is_critical
+        operation: data.compare
+        arguments: {left: "${found.severity}", right: critical, operator: eq}
+      - id: wants_codex
+        operation: data.compare
+        arguments: {left: "${inputs.escalate}", right: codex, operator: eq}
+      - id: use_codex
+        operation: data.logic
+        arguments: {operator: and, left: "${steps.wants_codex.output}", right: "${steps.is_critical.output}"}
+      - id: brief
+        operation: data.canonical_json
+        arguments: {value: "${found}"}
+      # Model names are fixed per step, so routing by severity is a branch.
+      - if: steps.use_codex.output
+        then:
+          - id: codex
+            operation: cmd.read
+            arguments:
+              command: bughunt-codex
+              params:
+                prompt: |
+                  Write src/bughunt_repro.rs to test this suspected bug. Print only the file.
+                  Rules: a #[cfg(test)] module at the crate root, crate:: paths, one #[test]
+                  that panics with BUGHUNT-CONFIRMED only if the bug is real.
+                  Finding: ${steps.brief.output}
+        else:
+          - if: steps.is_big.output
+            then:
+              - id: write_big
+                model:
+                  name: ollama/hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M
+                  bind: [harness]
+                  prompt: |
+                    Suspected bug: ${steps.brief.output}
+
+                    Code from ${found.file}, lines from ${found.start}:
+                    ${steps.code.output}
+                  schema: {$ref: "#/$defs/repro"}
+            else:
+              - id: write_small
+                model:
+                  bind: [harness]
+                  prompt: |
+                    Suspected bug: ${steps.brief.output}
+
+                    Code from ${found.file}, lines from ${found.start}:
+                    ${steps.code.output}
+                  schema: {$ref: "#/$defs/repro"}
+      # A skipped branch leaves its outputs null; select the one that ran.
+      - id: model_file
+        operation: data.select
+        arguments: {condition: "${steps.is_big.output}", then: "${steps.write_big.output.test_file}", else: "${steps.write_small.output.test_file}"}
+      - id: test_file
+        operation: data.select
+        arguments: {condition: "${steps.use_codex.output}", then: "${steps.codex.output.stdout}", else: "${steps.model_file.output}"}
+      - id: write
+        operation: file.write_text
+        arguments: {root: /absolute/path/to/target-repro, path: src/bughunt_repro.rs, text: "${steps.test_file.output}"}
+      - id: run
+        operation: trial.run
+        arguments: {repo: bughunt-target, worktree: /absolute/path/to/target-repro}
+      - id: judged
+        ritual: bughunt-verdict
+        arguments: {passed: "${steps.run.output.passed}", tail: "${steps.run.output.tail}"}
+      - id: build_failed
+        operation: data.contains
+        arguments: {value: "${steps.run.output.tail}", needle: "error["}
+      # One retry, with the compiler's complaint, on the small model.
+      - if: steps.build_failed.output
+        then:
+          - id: rewrite
+            model:
+              bind: [harness]
+              prompt: |
+                Suspected bug: ${steps.brief.output}
+
+                Code from ${found.file}, lines from ${found.start}:
+                ${steps.code.output}
+
+                Your previous file did not compile:
+                ${steps.test_file.output}
+
+                Compiler output (tail):
+                ${steps.run.output.tail}
+              schema: {$ref: "#/$defs/repro"}
+          - id: rewrite_write
+            operation: file.write_text
+            arguments: {root: /absolute/path/to/target-repro, path: src/bughunt_repro.rs, text: "${steps.rewrite.output.test_file}"}
+          - id: rerun
+            operation: trial.run
+            arguments: {repo: bughunt-target, worktree: /absolute/path/to/target-repro}
+          - id: rejudged
+            ritual: bughunt-verdict
+            arguments: {passed: "${steps.rerun.output.passed}", tail: "${steps.rerun.output.tail}"}
+      - id: restore
+        operation: file.write_text
+        arguments: {root: /absolute/path/to/target-repro, path: src/bughunt_repro.rs, text: ""}
+      - id: verdict
+        operation: data.select
+        arguments: {condition: "${steps.build_failed.output}", then: "${steps.rejudged.output.verdict}", else: "${steps.judged.output.verdict}"}
+      - id: final_file
+        operation: data.select
+        arguments: {condition: "${steps.build_failed.output}", then: "${steps.rewrite.output.test_file}", else: "${steps.test_file.output}"}
+      - id: final_tail
+        operation: data.select
+        arguments: {condition: "${steps.build_failed.output}", then: "${steps.rerun.output.tail}", else: "${steps.run.output.tail}"}
+      - id: result
+        operation: data.merge
+        arguments:
+          left: "${found}"
+          right: {verdict: "${steps.verdict.output}", test_file: "${steps.final_file.output}", tail: "${steps.final_tail.output}"}
+  # Leave the worktree clean even if the last item stopped half way.
+  - id: clean
+    operation: file.write_text
+    arguments: {root: /absolute/path/to/target-repro, path: src/bughunt_repro.rs, text: ""}
+  - id: remove
+    operation: git.remove_worktree
+    arguments: {repo: bughunt-target, path: /absolute/path/to/target-repro}
+  - id: drop_branch
+    operation: git.delete_branch
+    arguments: {repo: bughunt-target, branch: repro}
+  - id: finished
+    operation: data.filter
+    arguments: {values: "${steps.per_finding.output}", predicate: 'item.status == "returned"'}
+  - id: results
+    operation: data.fold
+    arguments:
+      values: "${steps.finished.output}"
+      initial: []
+      operation: data.concat
+      arguments: {left: "${acc}", right: ["${item.outputs.result}"]}
+  - id: confirmed
+    operation: data.filter
+    arguments: {values: "${steps.results.output}", predicate: 'item.verdict == "confirmed"'}
+  - id: confirmed_count
+    operation: data.count
+    arguments: {value: "${steps.confirmed.output}"}
+return:
+  results: "${steps.results.output}"
+  confirmed: "${steps.confirmed_count.output}"
+  tested: "${steps.per_finding.counts}"

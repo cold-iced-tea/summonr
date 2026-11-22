@@ -106,11 +106,18 @@ steps:
                       - id: per_finding
                         each: found in steps.scan.output.findings
                         steps:
+                          # Deterministic check: was the snippet really copied from this chunk?
+                          - id: needle
+                            operation: data.trim
+                            arguments: {text: "${found.snippet}"}
+                          - id: quoted
+                            operation: data.contains
+                            arguments: {value: "${steps.text.output}", needle: "${steps.needle.output}"}
                           - id: placed
                             operation: data.merge
                             arguments:
                               left: "${found}"
-                              right: {file: "${dir}/${entry.name}", start: "${start}"}
+                              right: {file: "${dir}/${entry.name}", start: "${start}", quoted: "${steps.quoted.output}"}
                       - id: chunk_findings
                         operation: data.fold
                         arguments:

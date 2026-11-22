@@ -23,7 +23,8 @@ git -C "$target" -c advice.detachedHead=false checkout -q -B bughunt-base "$comm
 git -C "$target" config user.name bughunt
 git -C "$target" config user.email bughunt@localhost
 
-entry=src/main.rs; [ -f "$target/src/lib.rs" ] && entry=src/lib.rs
+entry=src/main.rs; only=--bins
+[ -f "$target/src/lib.rs" ] && { entry=src/lib.rs; only=--lib; }
 if ! grep -q '^mod bughunt_repro;' "$target/$entry"; then
   : > "$target/src/bughunt_repro.rs"
   printf '\n#[cfg(test)]\nmod bughunt_repro;\n' >> "$target/$entry"
@@ -40,15 +41,28 @@ repos:
     path: $target
     trunk: bughunt-base
     remote: origin
-    test: env CARGO_TARGET_DIR=$lab/cargo-target cargo test --offline bughunt_repro
+    test: env CARGO_TARGET_DIR=$lab/cargo-target cargo test --offline $only bughunt_repro
     disposable: [target/]
+# Optional cloud escalation (test.yaml, escalate=codex, critical findings
+# only). Needs the codex CLI on PATH and logged in. Read-only sandbox: codex
+# prints the test file; Summonr writes it.
+commands:
+  bughunt-codex:
+    program: codex
+    args: [exec, --sandbox, read-only, --skip-git-repo-check, -C, $target, "\${prompt}"]
+    cwd: $target
+    effect: read
+    params:
+      prompt: {max_length: 20000}
 EOF
 
-for f in "$here"/*.yaml; do
-  case "$f" in *.drill.yaml|*.rite.yaml) continue ;; esac
+# Children before parents: a ritual step needs its child already inscribed.
+for name in verdict batch-ready gather hunt test score; do
+  f="$here/$name.yaml"; [ -f "$f" ] || continue
   sed -e "s|/absolute/path/to/target-repro|$target-repro|g" \
       -e "s|/absolute/path/to/target|$target|g" "$f" > "$SUMMONR_HOME/$(basename "$f")"
-  "$bin" inscribe "$SUMMONR_HOME/$(basename "$f")" --json >/dev/null
+  "$bin" inscribe "$SUMMONR_HOME/$(basename "$f")" --json >/dev/null \
+    || { echo "inscribe failed: $name" >&2; "$bin" inscribe "$SUMMONR_HOME/$(basename "$f")" --json >&2; exit 1; }
 done
 "$here/grant.sh" "$bin" "$target"
 echo "lab ready: export SUMMONR_HOME=$SUMMONR_HOME"

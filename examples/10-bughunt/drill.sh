@@ -11,11 +11,13 @@ export SUMMONR_HOME="$home"
 trap '"$bin" core stop --json >/dev/null 2>&1 || true; rm -rf "$home"' EXIT
 
 fixture="$here/fixtures/target"
-for f in "$here"/*.yaml; do
-  case "$f" in *.drill.yaml|*.rite.yaml) continue ;; esac
+# Children before parents: a ritual step needs its child already inscribed.
+for name in verdict batch-ready gather hunt test score; do
+  f="$here/$name.yaml"; [ -f "$f" ] || continue
   sed -e "s|/absolute/path/to/target-repro|$fixture-repro|g" \
       -e "s|/absolute/path/to/target|$fixture|g" "$f" > "$home/$(basename "$f")"
-  "$bin" inscribe "$home/$(basename "$f")" --json >/dev/null
+  "$bin" inscribe "$home/$(basename "$f")" --json >/dev/null \
+    || { echo "inscribe failed: $name" >&2; "$bin" inscribe "$SUMMONR_HOME/$(basename "$f")" --json >&2; exit 1; }
 done
 
 "$here/grant.sh" "$bin" "$fixture"

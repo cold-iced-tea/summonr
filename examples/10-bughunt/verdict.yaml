@@ -1,0 +1,40 @@
+language_version: 1
+ritual: bughunt-verdict
+description: >-
+  Turn one repro test run into a verdict. confirmed: the test ran and failed
+  with the BUGHUNT-CONFIRMED marker. refuted: exactly one test ran and passed.
+  untestable: anything else (did not compile, other panic, nothing ran).
+inputs:
+  passed: boolean
+  tail: string
+essence: {requests: 0, time: 10s}
+steps:
+  - id: marker
+    operation: data.contains
+    arguments: {value: "${inputs.tail}", needle: BUGHUNT-CONFIRMED}
+  - id: test_failed
+    operation: data.contains
+    arguments: {value: "${inputs.tail}", needle: "test result: FAILED"}
+  - id: one_passed
+    operation: data.contains
+    arguments: {value: "${inputs.tail}", needle: "test result: ok. 1 passed"}
+  - id: is_refuted
+    operation: data.logic
+    arguments: {operator: and, left: "${inputs.passed}", right: "${steps.one_passed.output}"}
+  - id: not_passed
+    operation: data.logic
+    arguments: {operator: not, left: "${inputs.passed}"}
+  - id: failed_with_marker
+    operation: data.logic
+    arguments: {operator: and, left: "${steps.marker.output}", right: "${steps.test_failed.output}"}
+  - id: is_confirmed
+    operation: data.logic
+    arguments: {operator: and, left: "${steps.not_passed.output}", right: "${steps.failed_with_marker.output}"}
+  - id: unless_refuted
+    operation: data.select
+    arguments: {condition: "${steps.is_confirmed.output}", then: confirmed, else: untestable}
+  - id: verdict
+    operation: data.select
+    arguments: {condition: "${steps.is_refuted.output}", then: refuted, else: "${steps.unless_refuted.output}"}
+return:
+  verdict: "${steps.verdict.output}"

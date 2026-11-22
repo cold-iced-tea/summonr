@@ -8,11 +8,11 @@ cases:
       hunts:
         - angle: a
           findings:
-            - {kind: bug, severity: high, confidence: 0.9, claim: first, trigger: t, snippet: x(), file: src/a.rs, start: 0}
+            - {kind: bug, severity: high, confidence: 0.9, claim: first, trigger: t, snippet: x(), file: src/a.rs, start: 0, quoted: true}
         - angle: b
           findings:
-            - {kind: bug, severity: high, confidence: 0.8, claim: second, trigger: t, snippet: x(), file: src/a.rs, start: 0}
-            - {kind: bypass, severity: low, confidence: 0.8, claim: other, trigger: t, snippet: x(), file: src/a.rs, start: 0}
+            - {kind: bug, severity: high, confidence: 0.8, claim: second, trigger: t, snippet: x(), file: src/a.rs, start: 0, quoted: true}
+            - {kind: bypass, severity: low, confidence: 0.8, claim: other, trigger: t, snippet: x(), file: src/a.rs, start: 0, quoted: true}
     expect:
       outcome: returned
       result: {count: 2, pass: true}
@@ -23,7 +23,7 @@ cases:
       hunts:
         - angle: a
           findings:
-            - {kind: bug, severity: high, confidence: 0.1, claim: weak, trigger: t, snippet: y(), file: src/a.rs, start: 0}
+            - {kind: bug, severity: high, confidence: 0.1, claim: weak, trigger: t, snippet: y(), file: src/a.rs, start: 0, quoted: true}
     expect:
       outcome: returned
       result: {count: 0, findings: [], pass: false}
@@ -33,7 +33,7 @@ cases:
       hunts:
         - angle: a
           findings:
-            - {kind: bug, severity: high, confidence: 0.9, claim: c, trigger: t, snippet: z(), file: src/a.rs, start: 0}
+            - {kind: bug, severity: high, confidence: 0.9, claim: c, trigger: t, snippet: z(), file: src/a.rs, start: 0, quoted: true}
     expect:
       outcome: returned
       result: {count: 1, min_batch: 3, pass: false}
@@ -42,3 +42,13 @@ cases:
     expect:
       outcome: returned
       result: {count: 0, pass: false}
+  - id: unquoted-snippet-dropped
+    inputs:
+      min_batch: 1
+      hunts:
+        - angle: a
+          findings:
+            - {kind: bug, severity: high, confidence: 0.9, claim: made up, trigger: t, snippet: "{ ... }", file: src/a.rs, start: 0, quoted: false}
+    expect:
+      outcome: returned
+      result: {count: 0, findings: [], pass: false}

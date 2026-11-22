@@ -15,7 +15,7 @@ cases:
       result:
         angle: authority bypass
         findings:
-          - {kind: bypass, severity: high, confidence: 0.9, claim: Any role starting with admin passes, trigger: role "administrator-ish", snippet: 'role.starts_with("admin")', file: src/auth.rs, start: 0}
+          - {kind: bypass, severity: high, confidence: 0.9, claim: Any role starting with admin passes, trigger: role "administrator-ish", snippet: 'role.starts_with("admin")', file: src/auth.rs, start: 0, quoted: true}
       model_calls: 1
   - id: nothing-found-is-fine
     inputs: {dirs: [src], angle: panics}
@@ -38,5 +38,17 @@ cases:
       result:
         angle: panics
         findings:
-          - {kind: bug, severity: low, confidence: 0.5, claim: c, trigger: t, snippet: // end, file: src/auth.rs, start: 3}
+          - {kind: bug, severity: low, confidence: 0.5, claim: c, trigger: t, snippet: // end, file: src/auth.rs, start: 3, quoted: true}
       model_calls: 2
+  - id: invented-snippet-is-marked-unquoted
+    inputs: {dirs: [src], angle: panics}
+    model:
+      scan:
+        - findings:
+            - {kind: bug, severity: high, confidence: 0.9, claim: c, trigger: t, snippet: "let status = loop { ... }"}
+    expect:
+      outcome: returned
+      result:
+        angle: panics
+        findings:
+          - {kind: bug, severity: high, confidence: 0.9, claim: c, trigger: t, snippet: "let status = loop { ... }", file: src/auth.rs, start: 0, quoted: false}

@@ -16,11 +16,12 @@ steps:
       initial: []
       operation: data.concat
       arguments: {left: "${acc}", right: "${item.findings}"}
+  # Drop findings whose snippet was not found in the code (made up).
   # Predicates cannot take a parameter (no ${...} inside them), so the
   # confidence floor is fixed here. See LIMITS.md.
   - id: confident
     operation: data.filter
-    arguments: {values: "${steps.all.output}", predicate: "item.confidence >= 0.3"}
+    arguments: {values: "${steps.all.output}", predicate: "item.quoted and item.confidence >= 0.3"}
   - id: keyed
     each: found in steps.confident.output
     steps:
