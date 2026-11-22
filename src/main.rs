@@ -77,12 +77,15 @@ fn main() {
         || args
             .windows(3)
             .any(|w| w[0] == "then" && w[1] == "return" && w[2] == "json");
-    let op = match grammar::parse(&args) {
+    let mut op = match grammar::parse(&args) {
         Ok(op) => op,
         Err(e) => {
             std::process::exit(finish(Err(RpcErr::invalid(e.to_string())), wants_json, |_| {}));
         }
     };
+    if let Err(e) = read_arg_files(&mut op) {
+        std::process::exit(finish(Err(e), wants_json, |_| {}));
+    }
     let style = if typed_flags {
         Style::Flag
     } else {
@@ -92,6 +95,23 @@ fn main() {
         }
     };
     std::process::exit(run(op, &paths, style));
+}
+
+/// `reading k=PATH` / `--arg-file k=PATH`: the file's text becomes input
+/// `k`, exactly as if it had been typed after `given k=`. Read here, by the
+/// CLI, so the request carries values, never paths the core would open.
+fn read_arg_files(op: &mut grammar::Op) -> Result<(), RpcErr> {
+    const MAX: u64 = 1_048_576;
+    for (k, path) in std::mem::take(&mut op.arg_files) {
+        let too_big = std::fs::metadata(&path).map(|m| m.len() > MAX).unwrap_or(false);
+        if too_big {
+            return Err(RpcErr::invalid(format!("input `{k}`: {path} is over 1 MiB")));
+        }
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| RpcErr::invalid(format!("input `{k}`: cannot read {path}: {e}")))?;
+        op.args.insert(k, text);
+    }
+    Ok(())
 }
 
 /// Print one result. JSON output is exactly one versioned envelope on stdout;
@@ -940,4 +960,33 @@ mod result_tests {
         handle.join().unwrap().unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+#[cfg(test)]
+mod arg_file_tests {
+    use super::read_arg_files;
+
+    #[test]
+    fn reading_puts_file_text_into_args() {
+        let dir = std::env::temp_dir().join(format!("summonr-argfile-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("gold.json");
+        std::fs::write(&f, "{\"total\": 1}\n").unwrap();
+        let mut op = grammar::parse(&["run".into(), "r".into(), "--arg-file".into(), format!("gold={}", f.display())]).unwrap();
+        read_arg_files(&mut op).unwrap();
+        assert_eq!(op.args["gold"], "{\"total\": 1}\n");
+        assert!(op.arg_files.is_empty());
+
+        let missing = dir.join("nope.json");
+        let mut op = grammar::parse(&["run".into(), "r".into(), "--arg-file".into(), format!("gold={}", missing.display())]).unwrap();
+        let err = read_arg_files(&mut op).unwrap_err().message;
+        assert!(err.contains("gold") && err.contains("nope.json"), "{err}");
+
+        let big = dir.join("big.json");
+        std::fs::write(&big, vec![b'x'; 1_048_577]).unwrap();
+        let mut op = grammar::parse(&["run".into(), "r".into(), "--arg-file".into(), format!("gold={}", big.display())]).unwrap();
+        assert!(read_arg_files(&mut op).unwrap_err().message.contains("1 MiB"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+    use crate::grammar;
 }

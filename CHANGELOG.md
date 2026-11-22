@@ -2,6 +2,15 @@
 
 All notable changes to Summonr are documented in this file.
 
+## [Unreleased]
+
+### Language gaps found building `examples/10-bughunt`
+- New pure operations: `data.coalesce` (first non-null), `data.flatten` (one level), `data.range` (bounded integer sequence), `data.index_of` (first equal or containing element, else null), and `data.lines` with optional `number_from` for numbered lines. Each has a static output type.
+- `each` takes `keep: [step ids]` so items keep only the outputs later steps need; loop results are data and data is capped at 1 MiB.
+- CLI clause `reading k=PATH` / `--arg-file k=PATH`: an input's value is read from a file (large lists and objects no longer overflow the command line).
+- `git.worktree_add` explains a remote that lacks the trunk branch instead of passing through git's `rev-list` usage text.
+- Docs: `ritual-format.md` no longer says `parallel` above 1 is rejected; `each` has supported `parallel: 1..32`.
+
 ## [0.2.0] — 2026-11-22
 
 ### Enterprise Governance & Compliance

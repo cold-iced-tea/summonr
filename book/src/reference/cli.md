@@ -59,6 +59,7 @@ Scripts and agents should use the flag spelling with `--json`. `summonr help` li
 | `through M` | `--model M` | Model override for this run and its children |
 | `at k=v ...` | `--set k=v ...` | Runtime settings |
 | `given k=v ...` | `--arg k=v ...` | Ritual inputs |
+| `reading k=PATH ...` | `--arg-file k=PATH ...` | Ritual inputs whose values are a file's text, read by the CLI (at most 1 MiB each), converted like `given` values; an input may not come from both |
 | `as NAME` | `--name NAME` | Assign a name (for example, when inscribing) |
 | `returning json` | `--json` | Answer as a JSON envelope |
 | `then return [json]` | `--wait [--json]` | Wait for completion |

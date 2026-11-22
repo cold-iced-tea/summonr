@@ -20,6 +20,9 @@ pub struct Op {
     pub model: Option<String>,
     pub settings: BTreeMap<String, String>,
     pub args: BTreeMap<String, String>,
+    /// Inputs whose values are read from files (`reading k=PATH`), merged
+    /// into `args` by the CLI before the request is sent.
+    pub arg_files: BTreeMap<String, String>,
     pub name: Option<String>,
     pub task: Option<String>,
     pub wait: bool,
@@ -393,6 +396,11 @@ pub const CLAUSES: &[(&str, &str, &str)] = &[
     ("through M", "--model M", "Model override"),
     ("at k=v ...", "--set k=v ...", "Runtime settings"),
     ("given k=v ...", "--arg k=v ...", "Typed ritual inputs"),
+    (
+        "reading k=PATH ...",
+        "--arg-file k=PATH ...",
+        "Ritual inputs whose values are a file's text (at most 1 MiB)",
+    ),
     ("as NAME", "--name NAME", "Assign a name"),
     (
         "returning json",
@@ -498,6 +506,7 @@ const KEYWORDS: &[&str] = &[
     "all",
     "on",
     "into",
+    "reading",
     "version",
     "replacement",
     "against",
@@ -720,6 +729,7 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
                 "model" => "through",
                 "set" => "at",
                 "arg" => "given",
+                "arg-file" => "reading",
                 "name" => "as",
                 "task" => "to",
                 "json" => "json",
@@ -772,6 +782,7 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
                 "at temperature=0.2",
             )?,
             "given" => assignments(&mut cur, pos, attached, &mut op.args, "given count=100")?,
+            "reading" => assignments(&mut cur, pos, attached, &mut op.arg_files, "reading gold=./gold.json")?,
             "on" => assignments(&mut cur, pos, attached, &mut op.on, "on folder=Inbox")?,
             "into" => assignments(
                 &mut cur,
@@ -1022,6 +1033,13 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
     if op.reason.is_some() && !matches!(op.verb.as_str(), "pact" | "reliquary" | "rite") {
         return Err(cur.err(last, "`because` gives a reason only to pact, reliquary, or rite commands", "pact reject order-parts 3 because late"));
     }
+    if let Some(k) = op.arg_files.keys().find(|k| op.args.contains_key(*k)) {
+        return Err(cur.err(
+            last,
+            format!("`{k}` is given both on the command line and from a file"),
+            "",
+        ));
+    }
     Ok(op)
 }
 
@@ -1068,6 +1086,7 @@ pub fn render(op: &Op, style: Style) -> Vec<String> {
     }
     pair(&mut out, "through", "model", &op.model);
     push_assignments(&mut out, if kw { "at" } else { "--set" }, &op.settings);
+    push_assignments(&mut out, if kw { "reading" } else { "--arg-file" }, &op.arg_files);
     push_assignments(&mut out, if kw { "given" } else { "--arg" }, &op.args);
     pair(&mut out, "as", "name", &op.name);
     pair(&mut out, "to", "task", &op.task);
@@ -1238,6 +1257,8 @@ mod tests {
         ("petition deny p-1 p-2", "approval deny p-1 p-2"),
         ("glean classify-message 10 against ./set.yaml", "sample classify-message 10 --against ./set.yaml"),
         ("drill route-form against ./d.yaml", "cases route-form --against ./d.yaml"),
+        ("invoke bench reading gold=./g.json", "run bench --arg-file gold=./g.json"),
+        ("rite start ./r.yaml reading hunts=./h.json given n=2", "workflow start ./r.yaml --arg-file hunts=./h.json --arg n=2"),
     ];
 
     #[test]
@@ -1283,6 +1304,9 @@ mod tests {
     fn duplicates_across_spellings_are_errors() {
         assert!(p("invoke r through a --model b").is_err());
         assert!(p("invoke r given count=1 --arg count=2").is_err());
+        // An input comes from the command line or from a file, never both.
+        assert!(p("invoke r given gold=1 reading gold=./g.json").is_err());
+        assert!(p("invoke r --arg-file gold=./a.json --arg-file gold=./b.json").is_err());
         assert!(p("invoke r returning json then return json").is_err());
         assert!(p("invoke r --wait then return").is_err());
     }
