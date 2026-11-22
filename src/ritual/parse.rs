@@ -214,6 +214,7 @@ fn normalize_steps(
                 || s.fallback.is_some()
                 || s.parallel.is_some()
                 || s.on_failure.is_some()
+                || s.keep.is_some()
                 || s.version.is_some()
                 || s.hash.is_some()
             {

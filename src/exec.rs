@@ -1437,9 +1437,11 @@ impl Run {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn record_batch_item(
         &mut self,
         id: &str,
+        keep: Option<&[String]>,
         top_level: bool,
         keep_going: bool,
         items: &mut Vec<BatchItem>,
@@ -1451,6 +1453,7 @@ impl Run {
             .steps
             .iter()
             .filter(|(_, v)| v.kind.produces_result())
+            .filter(|(k, _)| keep.is_none_or(|ks| ks.iter().any(|x| x == *k)))
             .map(|(k, v)| (k.clone(), v.output.clone()))
             .collect();
         let steps_run: BTreeMap<String, StepStatus> = frame
@@ -1568,7 +1571,7 @@ impl Run {
                 self.fence_prefix = prev_prefix;
                 let frame = scope.frames.pop().unwrap();
                 if let Some(f) =
-                    self.record_batch_item(&id, top_level, keep_going, &mut items, label, frame, ran)
+                    self.record_batch_item(&id, s.keep.as_deref(), top_level, keep_going, &mut items, label, frame, ran)
                 {
                     stop = Some(f);
                     break;
@@ -1649,6 +1652,7 @@ impl Run {
                     };
                     if let Some(f) = self.record_batch_item(
                         &id,
+                        s.keep.as_deref(),
                         top_level,
                         keep_going,
                         &mut items,
@@ -2226,6 +2230,34 @@ mod tests {
         assert_eq!(petition_count(&f), 0);
         assert!(mailbox.join("Inbox/001.eml").exists());
         assert!(!mailbox.join("Receipts/001.eml").exists());
+    }
+
+    #[test]
+    fn each_keep_limits_item_outputs_to_named_steps() {
+        let f = Fixture::new();
+        let def = definition(json!({
+            "ritual": "keep-some",
+            "reagents": {"data": {"select": ["arithmetic", "trim"]}},
+            "essence": {"requests": 0, "tool_calls": 20, "time": "10s"},
+            "steps": [{
+                "id": "batch",
+                "each": "x in [1, 2]",
+                "keep": ["mul"],
+                "steps": [
+                    {"id": "big", "operation": "data.trim", "arguments": {"text": "  lots of text  "}},
+                    {"id": "mul", "operation": "data.arithmetic",
+                     "arguments": {"left": "${x}", "right": 10, "operator": "multiply"}}
+                ]
+            }],
+            "return": {"items": "${steps.batch.output}"}
+        }));
+        let fin = f.run(def, None).execute();
+        assert_eq!(fin.outcome, Outcome::Returned, "{:?}", fin.error);
+        for (it, want) in fin.result["items"].as_array().unwrap().iter().zip([10, 20]) {
+            assert_eq!(it["outputs"], json!({"mul": want}));
+            // Step statuses are still recorded for every step.
+            assert!(it["steps"].get("big").is_some());
+        }
     }
 
     #[test]

@@ -1021,9 +1021,19 @@ impl V<'_> {
             .filter(|s| s.each.is_some())
             .filter_map(|s| s.id.as_deref())
             .collect();
+        if let Some(keep) = &s.keep {
+            for k in keep {
+                if !body_all.contains_key(k) || nested_each_ids.contains(k.as_str()) {
+                    self.errors.push(format!(
+                        "step {at}: `keep` names `{k}`, which is not a result-producing step in this loop's body"
+                    ));
+                }
+            }
+        }
         let body_outputs = body_all
             .into_iter()
             .filter(|(k, _)| !nested_each_ids.contains(k.as_str()))
+            .filter(|(k, _)| s.keep.as_ref().is_none_or(|ks| ks.contains(k)))
             .collect();
         Ty::List(Box::new(closed_obj([
             ("item", Ty::Str),

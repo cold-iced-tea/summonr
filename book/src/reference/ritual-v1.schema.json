@@ -657,6 +657,19 @@
             }
           ]
         },
+        "keep": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "parallel": {
           "anyOf": [
             {
@@ -821,6 +834,9 @@
             "on_failure": {
               "type": "null"
             },
+            "keep": {
+              "type": "null"
+            },
             "parallel": {
               "type": "null"
             },
@@ -909,6 +925,9 @@
               "type": "null"
             },
             "on_failure": {
+              "type": "null"
+            },
+            "keep": {
               "type": "null"
             },
             "parallel": {
@@ -1025,6 +1044,9 @@
             "on_failure": {
               "type": "null"
             },
+            "keep": {
+              "type": "null"
+            },
             "parallel": {
               "type": "null"
             },
@@ -1110,6 +1132,19 @@
                     "stop",
                     "continue"
                   ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "keep": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 },
                 {
                   "type": "null"
@@ -1203,6 +1238,9 @@
             "on_failure": {
               "type": "null"
             },
+            "keep": {
+              "type": "null"
+            },
             "parallel": {
               "type": "null"
             },
@@ -1294,6 +1332,9 @@
             "on_failure": {
               "type": "null"
             },
+            "keep": {
+              "type": "null"
+            },
             "parallel": {
               "type": "null"
             },
@@ -1369,6 +1410,9 @@
               "type": "null"
             },
             "on_failure": {
+              "type": "null"
+            },
+            "keep": {
               "type": "null"
             },
             "parallel": {

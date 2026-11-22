@@ -430,6 +430,51 @@ steps:
     }
 
     #[test]
+    fn each_keep_is_checked() {
+        let none = |_: &str, _: Option<u32>| None;
+        let src = |keep: &str, ret: &str| {
+            format!(
+                r#"
+ritual: r
+steps:
+  - id: loop
+    each: x in [1]
+    keep: {keep}
+    steps:
+      - id: a
+        operation: data.trim
+        arguments: {{text: " a "}}
+      - id: b
+        operation: data.trim
+        arguments: {{text: " b "}}
+return:
+  out: "${{steps.loop.output.0.outputs.{ret}}}"
+"#
+            )
+        };
+        assert!(validate(&parse_file(&src("[a]", "a")).unwrap(), &none, &crate::reagent::tool, 3).is_ok());
+        let errs = validate(&parse_file(&src("[nope]", "b")).unwrap(), &none, &crate::reagent::tool, 3).unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("`keep` names `nope`")), "{errs:?}");
+        let errs = validate(&parse_file(&src("[a]", "b")).unwrap(), &none, &crate::reagent::tool, 3).unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("has no field `b`")), "{errs:?}");
+        let not_each = parse_file(
+            r#"
+ritual: r
+steps:
+  - id: a
+    operation: data.trim
+    arguments: {text: " a "}
+    keep: [a]
+"#,
+        )
+        .unwrap();
+        assert!(
+            validate(&not_each, &none, &crate::reagent::tool, 3).is_err(),
+            "keep outside each must be rejected"
+        );
+    }
+
+    #[test]
     fn static_types_for_gap_operations() {
         let none = |_: &str, _: Option<u32>| None;
         // range yields integers: looking inside a loop element is an error.

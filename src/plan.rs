@@ -45,6 +45,8 @@ pub struct Each {
     pub steps: Vec<Step>,
     pub keep_going: bool,
     pub parallel: u32,
+    /// When set, items keep only these steps' outputs.
+    pub keep: Option<Vec<String>>,
 }
 #[derive(Clone, Debug)]
 pub struct Branch {
@@ -142,6 +144,7 @@ impl TryFrom<&RawStep> for Step {
                     literal,
                     steps: compile(s.steps.as_deref().unwrap_or_default())?,
                     keep_going: s.on_failure.as_deref() == Some("continue"),
+                    keep: s.keep.clone(),
                     parallel,
                 })
             }

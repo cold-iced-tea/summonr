@@ -416,6 +416,9 @@ pub struct Step {
     pub steps: Option<Vec<Step>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_failure: Option<String>,
+    /// `each` only: keep just these body steps' outputs in each item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallel: Option<u32>,
     // condition
@@ -517,7 +520,8 @@ impl Step {
                     && (self.each.is_some()
                         || self.steps.is_some()
                         || self.parallel.is_some()
-                        || self.on_failure.is_some()))
+                        || self.on_failure.is_some()
+                        || self.keep.is_some()))
                 || (!matches!(k, Kind::Operation | Kind::Model)
                     && (self.retry.is_some() || self.fallback.is_some()))
                 || (k != Kind::If && (self.then.is_some() || self.otherwise.is_some()));

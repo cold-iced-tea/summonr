@@ -56,7 +56,7 @@ def build():
     properties = {'id': nullable(string), 'operation': nullable(string), 'arguments': nullable(mapping({})),
         'verify': nullable(ref('verify')), 'hold': {'type':['boolean','string','null']}, 'model': nullable(ref('model')), 'ritual': nullable(string),
         'version': nullable(u32), 'hash': nullable(string), 'each': nullable(string), 'steps': nullable(arr(ref('step'))),
-        'on_failure': nullable({'enum':['stop','continue']}), 'parallel': nullable({'type':'integer','minimum':1,'maximum':32}),
+        'on_failure': nullable({'enum':['stop','continue']}), 'keep': nullable(arr(string)), 'parallel': nullable({'type':'integer','minimum':1,'maximum':32}),
         'if': nullable(string), 'then': nullable(arr(ref('step'))), 'else': nullable(arr(ref('step'))),
         'fail': nullable(string), 'assert': nullable(string), 'message': nullable(string),
         'retry': nullable(u32), 'fallback': nullable(arr(ref('step')))}
@@ -64,7 +64,7 @@ def build():
     for kind, fields in [('operation', ['arguments','verify','hold','retry','fallback']),
                          ('model', ['retry','fallback']),
                          ('ritual',['arguments','version','hash']),
-                         ('each',['steps','on_failure','parallel']),
+                         ('each',['steps','on_failure','keep','parallel']),
                          ('if',['then','else']),
                          ('fail', []),
                          ('assert', ['message'])]:

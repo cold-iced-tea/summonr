@@ -42,7 +42,11 @@ The `data` reagent contains deterministic functions over explicit arguments. It 
 | `data.contains` | string or array `value`, `needle` | Substring check on strings (with string `needle`), or element equality check on arrays. |
 | `data.starts_with` / `data.ends_with` | `text`, `prefix` / `suffix` | Boolean prefix or suffix check. |
 | `data.case` | `text`, `mode` (`lower`, `upper`) | Unicode lowercase or uppercase string. |
-| `data.lines` | `text` | Array of lines (`\n` or `\r\n`), up to 10,000 lines. |
+| `data.lines` | `text`, optional integer `number_from` | Array of lines (`\n` or `\r\n`), up to 10,000 lines. With `number_from`, each line is prefixed `N: ` counting from that number, so a model can cite lines. |
+| `data.coalesce` | array `values` | First element that is not `null`, or `null`. Picks the output of whichever `if` branch ran. |
+| `data.flatten` | array `values` of arrays | The inner arrays concatenated, one level deep; any non-array element fails. At most 10,000 elements. |
+| `data.range` | integers `start`, `end`, optional `step` (≥ 1, default 1) | Integers from `start` up to but not including `end`; empty when `start ≥ end`. More than 10,000 elements fails. |
+| `data.index_of` | array `values`, `needle`, optional `match` (`equal` default, or `contains`) | Index of the first element equal to `needle` (or, with `contains`, the first string containing the string `needle`), else `null`. |
 
 `data.assert.condition` is a boolean value or a reference to one; it does not evaluate an expression string. Use `if` for expression-based control flow. All operations reject unknown arguments. Input schema checks apply before execution; the optional schema passed to `parse_json` uses the [supported subset](../guides/validation.md).
 
