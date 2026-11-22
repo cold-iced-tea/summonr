@@ -11,6 +11,13 @@ All notable changes to Summonr are documented in this file.
 - `git.worktree_add` explains a remote that lacks the trunk branch instead of passing through git's `rev-list` usage text.
 - Docs: `ritual-format.md` no longer says `parallel` above 1 is rejected; `each` has supported `parallel: 1..32`.
 
+### Agent experience (from bughunt's AGENT-NOTES.md)
+- `brief` / `--brief` on `run --wait` and `record`: outcome, result, usage and child run ids only. Large runs' full records could exceed the 64 MiB RPC frame, making `run --wait --json`, `record` and `logs` fail with "frame too large".
+- A failed validation's `error.message` names the first problem instead of only "definition does not satisfy its contract".
+- A model that repeats itself until the backend stops it (Ollama "token repeat limit") is `invalid` output, not a failed backend, so `on_failure` and abstention treat it as an answer.
+- A `config.yaml` written beside `config/` in a `SUMMONR_HOME` is reported in stderr and every envelope's `warnings` instead of being silently ignored.
+- Drills take `model_default: {step: answer}` for every call after a step's listed answers.
+
 ## [0.2.0] — 2026-11-22
 
 ### Enterprise Governance & Compliance

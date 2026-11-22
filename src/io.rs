@@ -134,6 +134,8 @@ impl Io for Simulate {
 /// model backend.
 pub struct Scripted {
     answers: Mutex<HashMap<String, VecDeque<Value>>>,
+    /// Served for a step once its listed answers run out.
+    defaults: HashMap<String, Value>,
     missed: Mutex<Vec<String>>,
     tools: Arc<dyn Io>,
 }
@@ -142,9 +144,15 @@ impl Scripted {
     pub fn new(answers: BTreeMap<String, Vec<Value>>, tools: Arc<dyn Io>) -> Self {
         Scripted {
             answers: Mutex::new(answers.into_iter().map(|(k, v)| (k, v.into())).collect()),
+            defaults: HashMap::new(),
             missed: Mutex::new(Vec::new()),
             tools,
         }
+    }
+
+    pub fn with_defaults(mut self, defaults: BTreeMap<String, Value>) -> Self {
+        self.defaults = defaults.into_iter().collect();
+        self
     }
 
     /// Steps with answers left over, and how many, sorted by step.
@@ -188,7 +196,8 @@ impl Io for Scripted {
             .lock()
             .unwrap()
             .get_mut(step)
-            .and_then(VecDeque::pop_front);
+            .and_then(VecDeque::pop_front)
+            .or_else(|| self.defaults.get(step).cloned());
         let Some(answer) = answer else {
             self.missed.lock().unwrap().push(step.to_string());
             return Err(format!("drill gave no answer for model step `{step}`"));
@@ -966,6 +975,14 @@ mod tests {
         assert_eq!(e, "drill gave no answer for model step `a`");
         assert_eq!(s.missed(), vec!["a".to_string()]);
         assert_eq!(s.unused(), vec![("b".to_string(), 1)]);
+        // A default answer serves every call after the listed ones run out.
+        let d = Scripted::new(BTreeMap::from([("a".to_string(), vec![json!("first")])]), Arc::new(Live))
+            .with_defaults(BTreeMap::from([("a".to_string(), json!("again"))]));
+        for want in ["first", "again", "again"] {
+            let r = d.chat("u", "ollama/m", "a", scripted_req(&schema, &settings)).unwrap();
+            assert_eq!(r.content, want);
+        }
+        assert!(d.missed().is_empty() && d.unused().is_empty());
         assert!(!Scripted::new(BTreeMap::new(), Arc::new(Live)).offline());
         let sim = Simulate::new(Arc::new(Scripted::new(BTreeMap::new(), Arc::new(Live))));
         assert!(sim.scripted() && !sim.offline());

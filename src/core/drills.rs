@@ -127,7 +127,9 @@ impl Core {
         let series = new_id("series");
         let mut cases = Vec::new();
         for (case, r, tools) in prepared {
-            let script = Arc::new(Scripted::new(case.model.clone(), tools));
+            let script = Arc::new(
+                Scripted::new(case.model.clone(), tools).with_defaults(case.model_default.clone()),
+            );
             let io: Arc<dyn Io> = Arc::new(Simulate::new(script.clone()));
             // The same admission as `invoke`: a case is a run like any other.
             let (id, run, _) = {

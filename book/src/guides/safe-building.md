@@ -155,7 +155,7 @@ cases:
       model_calls: 1
 ```
 
-`model` maps a step id to its answers in call order. A string is used verbatim, any other value is serialized as JSON, and `{error: "text"}` simulates a backend failure. `expect.outcome` defaults to `returned`. `result` is a dotted-path subset match, `counts` matches effect counts across the whole run tree (`applied`, `simulated`, `held`, `observed`, `unverified`), and `model_calls` counts every model request in the tree. The complete file is `examples/04-route-form/route-form.drill.yaml`.
+`model` maps a step id to its answers in call order; `model_default` maps a step id to one answer used for every call after the listed ones run out, so a drill over many real files (which drills read for real) needs no long list of identical answers. A string is used verbatim, any other value is serialized as JSON, and `{error: "text"}` simulates a backend failure. `expect.outcome` defaults to `returned`. `result` is a dotted-path subset match, `counts` matches effect counts across the whole run tree (`applied`, `simulated`, `held`, `observed`, `unverified`), and `model_calls` counts every model request in the tree. The complete file is `examples/04-route-form/route-form.drill.yaml`.
 
 ```console
 $ summonr drill route-form against route-form.drill.yaml

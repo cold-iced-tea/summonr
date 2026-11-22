@@ -31,6 +31,9 @@ pub struct Case {
     /// Model step id -> answers in call order.
     #[serde(default)]
     pub model: BTreeMap<String, Vec<Value>>,
+    /// Model step id -> the answer for every call after its listed ones.
+    #[serde(default)]
+    pub model_default: BTreeMap<String, Value>,
     /// Tools are replayed from this cassette, relative to the drill file.
     pub cassette: Option<String>,
     pub expect: Expect,
