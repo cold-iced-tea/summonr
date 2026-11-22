@@ -2,7 +2,7 @@
 //! thin clients of its socket. Closing a client never stops work.
 
 mod assays;
-mod audit;
+pub(crate) mod audit;
 mod drills;
 mod experiments;
 mod job_service;
@@ -2341,6 +2341,8 @@ impl Core {
             "chain_verify" => self.chain_verify(p),
             "audit_list" => self.audit_list(p),
             "audit_verify" => self.audit_verify(),
+            "audit_export" => self.audit_export(p),
+            "audit_prune" => self.audit_prune(p),
             "witness_accept" => self.witness_accept(p),
             "witness_list" => self.witness_list(),
             "witness_drop" => self.witness_drop(p),

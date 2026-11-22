@@ -72,6 +72,7 @@ impl OperatorRole {
                 | "chain_verify"
                 | "audit_list"
                 | "audit_verify"
+                | "audit_export"
                 | "witness_list"
                 | "witness_compare"
                 | "job_status"
@@ -149,6 +150,7 @@ impl OperatorRole {
                             | "witness_to"
                             | "witness_tsa"
                             | "fence_resolve"
+                            | "audit_prune"
                     )
             }
             Self::Reviewer => {

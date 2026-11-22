@@ -562,15 +562,53 @@ pub(crate) fn key_command(op: &Op) -> i32 {
 
 pub(crate) fn audit_command(op: &Op, client: &mut Client) -> i32 {
     let p = &op.positionals;
-    let verify = p.first().map(String::as_str) == Some("verify");
-    let res = match (p.first().map(String::as_str), p.len()) {
-        (None | Some("list"), 0 | 1) => client.call("audit_list", json!({})),
-        (Some("verify"), 1) => client.call("audit_verify", json!({})),
-        _ => Err(RpcErr::invalid("use: audit [list | verify] [--json]")),
+    let arg = |i: usize| p.get(i).cloned().unwrap_or_default();
+    let abs = |f: &str| {
+        std::fs::canonicalize(f)
+            .map(|x| x.display().to_string())
+            .unwrap_or_else(|_| {
+                let path = std::path::Path::new(f);
+                if path.is_absolute() {
+                    f.to_string()
+                } else {
+                    std::env::current_dir()
+                        .map(|d| d.join(path).display().to_string())
+                        .unwrap_or_else(|_| f.to_string())
+                }
+            })
     };
-    let failed_verify = verify && res.as_ref().is_ok_and(|d| d["ok"] != true);
-    let code = finish(res, op.json, |d| {
-        if verify {
+    let sub = p.first().map(String::as_str).unwrap_or("list");
+    let res = match (sub, p.len()) {
+        ("list", 0 | 1) => client.call("audit_list", json!({})),
+        ("verify", 1) => client.call("audit_verify", json!({})),
+        ("export", 2) => {
+            let from_ms = op.args.get("from").and_then(|v| v.parse::<i64>().ok());
+            let to_ms = op.args.get("to").and_then(|v| v.parse::<i64>().ok());
+            client.call(
+                "audit_export",
+                json!({"file": abs(&arg(1)), "from_ms": from_ms, "to_ms": to_ms}),
+            )
+        }
+        ("verify-bundle", 2) => {
+            let key_res = match &op.key {
+                Some(k) => keys::PublicKey::parse(k).map_err(RpcErr::invalid),
+                None => client.call("identity", json!({})).and_then(|me| {
+                    keys::PublicKey::parse(me["key"].as_str().unwrap_or("")).map_err(RpcErr::invalid)
+                }),
+            };
+            key_res.and_then(|pk| crate::core::audit::verify_evidence_bundle(&abs(&arg(1)), &pk))
+        }
+        ("prune", 1) => match op.args.get("days").and_then(|v| v.parse::<u64>().ok()) {
+            Some(days) => client.call("audit_prune", json!({"days": days, "dry_run": op.dry_run})),
+            None => Err(RpcErr::invalid("give retention days: audit prune given days=30 [--dry-run]")),
+        },
+        _ => Err(RpcErr::invalid(
+            "use: audit [list | verify | export FILE [given from=MS to=MS] | verify-bundle FILE [key K] | prune given days=N [--dry-run]]",
+        )),
+    };
+    let failed_verify = sub == "verify" && res.as_ref().is_ok_and(|d| d["ok"] != true);
+    let code = finish(res, op.json, |d| match sub {
+        "verify" => {
             if d["ok"] == true {
                 println!(
                     "{} audit_log verified ({} entries, head {})",
@@ -586,7 +624,33 @@ pub(crate) fn audit_command(op: &Op, client: &mut Client) -> i32 {
                     s(&d["problem"], "reason")
                 );
             }
-        } else {
+        }
+        "verify-bundle" => {
+            println!(
+                "{} evidence bundle verified ({} audit entries, {} epitaphs, merkle {})",
+                paint(Ink::Verdigris, "✓"),
+                d["audit_entries"],
+                d["epitaphs"],
+                short(s(d, "epitaph_merkle_root"))
+            );
+        }
+        "export" => {
+            println!(
+                "Exported evidence bundle to {} ({} audit entries, {} epitaphs, hash {})",
+                bold(Ink::Bone, s(d, "file")),
+                d["audit_entries"],
+                d["epitaphs"],
+                short(s(d, "bundle_hash"))
+            );
+        }
+        "prune" => {
+            if d["dry_run"] == true {
+                println!("Dry run: would prune {} ended summon(s).", d["would_prune"]);
+            } else {
+                println!("Pruned {} ended summon(s); epitaph chain preserved.", d["pruned"]);
+            }
+        }
+        _ => {
             let items = d.as_array().cloned().unwrap_or_default();
             if items.is_empty() {
                 println!("{}", paint(Ink::Dim, "No audit entries."));

@@ -6,6 +6,7 @@ use base64::Engine as _;
 use std::cell::RefCell;
 
 pub const AUDIT_DOMAIN: &[u8] = b"summonr-audit-v1\0";
+pub const BUNDLE_DOMAIN: &[u8] = b"summonr-bundle-v1\0";
 const ZEROS: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
 thread_local! {
@@ -148,6 +149,24 @@ struct AuditListArgs {
     actor: Option<String>,
     #[serde(default)]
     limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuditExportArgs {
+    file: String,
+    #[serde(default)]
+    from_ms: Option<i64>,
+    #[serde(default)]
+    to_ms: Option<i64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuditPruneArgs {
+    days: u64,
+    #[serde(default)]
+    dry_run: bool,
 }
 
 impl Core {
@@ -383,6 +402,394 @@ impl Core {
             .map_err(storage_error)?;
         Ok(Value::Array(rows))
     }
+
+    /// Export a self-contained, Ed25519-signed compliance evidence bundle
+    /// containing the `audit_log`, `epitaphs` chain + Merkle root, peer witnessings,
+    /// RFC 3161 timestamps, and active governance controls summary.
+    pub(super) fn audit_export(&self, p: Value) -> Result<Value, RpcErr> {
+        let args: AuditExportArgs =
+            serde_json::from_value(p).map_err(|e| RpcErr::invalid(e.to_string()))?;
+        let audit_ver = self.audit_verify()?;
+        let chain_ver = self.chain_verify(json!({}))?;
+        let exported_at = now_ms();
+
+        let (audit_rows, epitaph_rows, epitaph_hashes, witnessings, timestamps, controls) = {
+            let db = self.db.lock().unwrap();
+            let mut ast = db
+                .prepare(
+                    "SELECT seq, ts, actor, action, target, outcome, detail, prev_hash, hash, sig
+                     FROM audit_log ORDER BY seq",
+                )
+                .map_err(storage_error)?;
+            let audit_rows: Vec<Value> = ast
+                .query_map([], |r| {
+                    let ts: i64 = r.get(1)?;
+                    let d: String = r.get(6)?;
+                    Ok((
+                        ts,
+                        json!({
+                            "seq": r.get::<_, i64>(0)?,
+                            "ts": ts,
+                            "actor": r.get::<_, String>(2)?,
+                            "action": r.get::<_, String>(3)?,
+                            "target": r.get::<_, String>(4)?,
+                            "outcome": r.get::<_, String>(5)?,
+                            "detail": serde_json::from_str::<Value>(&d).unwrap_or(Value::Null),
+                            "prev_hash": r.get::<_, String>(7)?,
+                            "hash": r.get::<_, String>(8)?,
+                            "sig": r.get::<_, String>(9)?,
+                        }),
+                    ))
+                })
+                .map_err(storage_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(storage_error)?
+                .into_iter()
+                .filter(|(ts, _)| {
+                    args.from_ms.is_none_or(|f| *ts >= f) && args.to_ms.is_none_or(|t| *ts <= t)
+                })
+                .map(|(_, v)| v)
+                .collect();
+
+            let mut est = db
+                .prepare("SELECT seq, run, link, body, sig, hash FROM epitaphs ORDER BY seq")
+                .map_err(storage_error)?;
+            let mut ep_rows = Vec::new();
+            let mut ep_hashes = Vec::new();
+            for row in est
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?,
+                        r.get::<_, String>(5)?,
+                    ))
+                })
+                .map_err(storage_error)?
+            {
+                let (seq, run, link, body, sig, hash) = row.map_err(storage_error)?;
+                ep_hashes.push(hash.clone());
+                ep_rows.push(json!({
+                    "seq": seq,
+                    "run": run,
+                    "link": link,
+                    "body": body,
+                    "sig": sig,
+                    "hash": hash,
+                }));
+            }
+
+            let mut wst = db
+                .prepare("SELECT peer, seq, hash, time, sig FROM witnessings ORDER BY seq, peer")
+                .map_err(storage_error)?;
+            let witnessings: Vec<Value> = wst
+                .query_map([], |r| {
+                    Ok(json!({
+                        "peer": r.get::<_, String>(0)?,
+                        "seq": r.get::<_, i64>(1)?,
+                        "hash": r.get::<_, String>(2)?,
+                        "time": r.get::<_, i64>(3)?,
+                        "sig": r.get::<_, String>(4)?,
+                    }))
+                })
+                .map_err(storage_error)?
+                .collect::<Result<_, _>>()
+                .map_err(storage_error)?;
+
+            let mut tst = db
+                .prepare("SELECT seq, hash, url, time FROM timestamps ORDER BY seq")
+                .map_err(storage_error)?;
+            let timestamps: Vec<Value> = tst
+                .query_map([], |r| {
+                    Ok(json!({
+                        "seq": r.get::<_, i64>(0)?,
+                        "hash": r.get::<_, String>(1)?,
+                        "url": r.get::<_, String>(2)?,
+                        "time": r.get::<_, i64>(3)?,
+                    }))
+                })
+                .map_err(storage_error)?
+                .collect::<Result<_, _>>()
+                .map_err(storage_error)?;
+
+            let operators: i64 = db
+                .query_row(
+                    "SELECT COUNT(*) FROM operators WHERE revoked IS NULL",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            let familiars: i64 = db
+                .query_row(
+                    "SELECT COUNT(*) FROM familiars WHERE revoked IS NULL",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            let grants: i64 = db
+                .query_row("SELECT COUNT(*) FROM grants", [], |r| r.get(0))
+                .unwrap_or(0);
+            let cfg_hash = std::fs::read(self.paths.config.join("config.yaml"))
+                .map(|b| sha256_hex(&b))
+                .unwrap_or_else(|_| sha256_hex(b""));
+            let controls = json!({
+                "rbac_enforce": self.cfg.rbac.enforce,
+                "require_independent_reviewer": self.cfg.rbac.require_independent_reviewer,
+                "active_operators": operators,
+                "active_familiars": familiars,
+                "active_grants": grants,
+                "config_sha256": cfg_hash,
+            });
+            (audit_rows, ep_rows, ep_hashes, witnessings, timestamps, controls)
+        };
+
+        let merkle_root = crate::epitaph::merkle_root(&epitaph_hashes);
+        let body = json!({
+            "format": "summonr-evidence-bundle-v1",
+            "core_key": self.key.public().text(),
+            "core_id": self.key.public().id(),
+            "exported_at": exported_at,
+            "window": {"from_ms": args.from_ms, "to_ms": args.to_ms},
+            "controls": controls,
+            "audit_verification": audit_ver,
+            "chain_verification": chain_ver,
+            "epitaph_merkle_root": merkle_root,
+            "audit_log": audit_rows,
+            "epitaphs": epitaph_rows,
+            "witnessings": witnessings,
+            "timestamps": timestamps,
+        });
+        let canonical = crate::util::canonical_json(&body);
+        let bundle_hash = sha256_hex(canonical.as_bytes());
+        let sig_bytes = self.key.sign(BUNDLE_DOMAIN, canonical.as_bytes());
+        let sig = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig_bytes);
+        let envelope = json!({
+            "bundle": body,
+            "bundle_hash": bundle_hash,
+            "signature": sig,
+        });
+        std::fs::write(
+            &args.file,
+            serde_json::to_string_pretty(&envelope).unwrap_or_default() + "\n",
+        )
+        .map_err(|e| RpcErr::invalid(format!("cannot write {}: {e}", args.file)))?;
+
+        self.record_audit(
+            "audit.export",
+            &args.file,
+            "ok",
+            json!({"bundle_hash": bundle_hash, "audit_entries": body["audit_log"].as_array().map(|a| a.len()).unwrap_or(0), "epitaphs": body["epitaphs"].as_array().map(|a| a.len()).unwrap_or(0)}),
+        );
+        Ok(json!({
+            "file": args.file,
+            "bundle_hash": bundle_hash,
+            "audit_entries": body["audit_log"].as_array().map(|a| a.len()).unwrap_or(0),
+            "epitaphs": body["epitaphs"].as_array().map(|a| a.len()).unwrap_or(0),
+            "epitaph_merkle_root": merkle_root,
+        }))
+    }
+
+    /// Prune plaintext elegy payloads (`summons`, `events`, `epitaph_salts`) for
+    /// ended runs older than `days` that have no pending petitions, while preserving
+    /// the signed `epitaphs` chain, Merkle root, and `audit_log` intact.
+    pub(super) fn audit_prune(&self, p: Value) -> Result<Value, RpcErr> {
+        let args: AuditPruneArgs =
+            serde_json::from_value(p).map_err(|e| RpcErr::invalid(e.to_string()))?;
+        let window_ms = args
+            .days
+            .checked_mul(86_400_000)
+            .ok_or_else(|| RpcErr::invalid("days overflow"))?;
+        let cutoff_ms = now_ms().saturating_sub(window_ms as i64);
+
+        let victims: Vec<String> = {
+            let db = self.db.lock().unwrap();
+            let mut st = db
+                .prepare(
+                    "SELECT s.id FROM summons s
+                     WHERE s.status = 'ended' AND s.ended IS NOT NULL AND s.ended <= ?1
+                       AND NOT EXISTS (
+                         SELECT 1 FROM petitions p WHERE p.summon = s.id AND p.status = 'pending'
+                       )
+                     ORDER BY s.ended",
+                )
+                .map_err(storage_error)?;
+            let rows = st
+                .query_map(params![cutoff_ms], |r| r.get::<_, String>(0))
+                .map_err(storage_error)?;
+            rows.collect::<Result<_, _>>().map_err(storage_error)?
+        };
+
+        if args.dry_run {
+            return Ok(json!({
+                "dry_run": true,
+                "cutoff_ms": cutoff_ms,
+                "would_prune": victims.len(),
+                "summons": victims,
+            }));
+        }
+
+        {
+            let mut db = self.db.lock().unwrap();
+            let tx = db.transaction().map_err(storage_error)?;
+            for id in &victims {
+                tx.execute("DELETE FROM events WHERE summon=?1", params![id])
+                    .map_err(storage_error)?;
+                tx.execute("DELETE FROM epitaph_salts WHERE run=?1", params![id])
+                    .map_err(storage_error)?;
+                tx.execute("DELETE FROM summons WHERE id=?1", params![id])
+                    .map_err(storage_error)?;
+            }
+            tx.commit().map_err(storage_error)?;
+        }
+
+        self.record_audit(
+            "elegy.pruned",
+            "summons",
+            "ok",
+            json!({"days": args.days, "cutoff_ms": cutoff_ms, "pruned": victims.len()}),
+        );
+        Ok(json!({
+            "dry_run": false,
+            "cutoff_ms": cutoff_ms,
+            "pruned": victims.len(),
+            "summons": victims,
+        }))
+    }
+}
+
+/// Offline verification of an exported compliance evidence bundle against an
+/// explicitly trusted core `PublicKey`.
+pub(crate) fn verify_evidence_bundle(
+    file: &str,
+    trusted_key: &crate::keys::PublicKey,
+) -> Result<Value, RpcErr> {
+    let text = std::fs::read_to_string(file)
+        .map_err(|e| RpcErr::not_found(format!("cannot read {file}: {e}")))?;
+    let env: Value = serde_json::from_str(&text)
+        .map_err(|e| RpcErr::invalid(format!("invalid bundle JSON: {e}")))?;
+    let body = &env["bundle"];
+    if body["format"].as_str() != Some("summonr-evidence-bundle-v1") {
+        return Err(RpcErr::new(
+            "verification_failed",
+            15,
+            "unsupported evidence bundle format",
+        ));
+    }
+    if body["core_key"].as_str() != Some(trusted_key.text().as_str()) {
+        return Err(RpcErr::new(
+            "verification_failed",
+            15,
+            "bundle core_key does not match trusted key",
+        ));
+    }
+    let canonical = crate::util::canonical_json(body);
+    let computed_hash = sha256_hex(canonical.as_bytes());
+    if env["bundle_hash"].as_str() != Some(computed_hash.as_str()) {
+        return Err(RpcErr::new(
+            "verification_failed",
+            15,
+            "bundle_hash mismatch",
+        ));
+    }
+    let sig_s = env["signature"].as_str().unwrap_or("");
+    let raw_sig = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(sig_s)
+        .map_err(|_| RpcErr::new("verification_failed", 15, "invalid bundle signature encoding"))?;
+    let sig_arr: [u8; 64] = raw_sig
+        .try_into()
+        .map_err(|_| RpcErr::new("verification_failed", 15, "invalid bundle signature length"))?;
+    if !trusted_key.verify(BUNDLE_DOMAIN, canonical.as_bytes(), &sig_arr) {
+        return Err(RpcErr::new(
+            "verification_failed",
+            15,
+            "bundle Ed25519 signature verification failed",
+        ));
+    }
+
+    // Re-verify every audit_log entry's hash and Ed25519 signature.
+    let audit_entries = body["audit_log"].as_array().cloned().unwrap_or_default();
+    for entry in &audit_entries {
+        let seq = entry["seq"].as_i64().unwrap_or(0);
+        let ts = entry["ts"].as_i64().unwrap_or(0);
+        let actor = entry["actor"].as_str().unwrap_or("");
+        let action = entry["action"].as_str().unwrap_or("");
+        let target = entry["target"].as_str().unwrap_or("");
+        let outcome = entry["outcome"].as_str().unwrap_or("");
+        let prev = entry["prev_hash"].as_str().unwrap_or("");
+        let hash = entry["hash"].as_str().unwrap_or("");
+        let sig = entry["sig"].as_str().unwrap_or("");
+        let payload =
+            canonical_audit_entry(seq, prev, ts, actor, action, target, outcome, &entry["detail"]);
+        if sha256_hex(payload.as_bytes()) != hash {
+            return Err(RpcErr::new(
+                "verification_failed",
+                15,
+                format!("audit entry #{seq} hash mismatch"),
+            ));
+        }
+        let rs = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(sig)
+            .map_err(|_| {
+                RpcErr::new(
+                    "verification_failed",
+                    15,
+                    format!("audit entry #{seq} invalid signature"),
+                )
+            })?;
+        let arr: [u8; 64] = rs.try_into().map_err(|_| {
+            RpcErr::new(
+                "verification_failed",
+                15,
+                format!("audit entry #{seq} invalid signature length"),
+            )
+        })?;
+        if !trusted_key.verify(AUDIT_DOMAIN, payload.as_bytes(), &arr) {
+            return Err(RpcErr::new(
+                "verification_failed",
+                15,
+                format!("audit entry #{seq} signature verification failed"),
+            ));
+        }
+    }
+
+    // Re-verify epitaph links and Merkle root.
+    let epitaphs = body["epitaphs"].as_array().cloned().unwrap_or_default();
+    let mut hashes = Vec::with_capacity(epitaphs.len());
+    for ep in &epitaphs {
+        let link = ep["link"].as_str().unwrap_or("");
+        let sig = ep["sig"].as_str().unwrap_or("");
+        let hash = ep["hash"].as_str().unwrap_or("");
+        crate::epitaph::check_link(link, sig, trusted_key)
+            .map_err(|e| RpcErr::new("verification_failed", 15, format!("epitaph link: {e}")))?;
+        if crate::epitaph::hash(link) != hash {
+            return Err(RpcErr::new(
+                "verification_failed",
+                15,
+                "epitaph hash column mismatch",
+            ));
+        }
+        hashes.push(hash.to_string());
+    }
+    let expected_merkle = crate::epitaph::merkle_root(&hashes);
+    if body["epitaph_merkle_root"].as_str() != Some(expected_merkle.as_str()) {
+        return Err(RpcErr::new(
+            "verification_failed",
+            15,
+            "epitaph Merkle root mismatch",
+        ));
+    }
+
+    Ok(json!({
+        "ok": true,
+        "file": file,
+        "core_id": trusted_key.id(),
+        "bundle_hash": computed_hash,
+        "audit_entries": audit_entries.len(),
+        "epitaphs": epitaphs.len(),
+        "epitaph_merkle_root": expected_merkle,
+    }))
 }
 
 #[cfg(test)]
@@ -478,5 +885,60 @@ mod tests {
 
         drop(core);
         let _ = std::fs::remove_dir_all(p.state.parent().unwrap());
+    }
+
+    #[test]
+    fn audit_export_verify_bundle_and_prune_preserve_chain() {
+        let p = test_paths("bundle-prune");
+        let core = Core::open(p.clone()).unwrap();
+        let dir = p.state.parent().unwrap();
+
+        // Run a pure ritual so we have an ended summon + epitaph + audit entries.
+        let rf = dir.join("pure.yaml");
+        std::fs::write(
+            &rf,
+            "ritual: pure1\nessence: {requests: 0, time: 1m}\nsteps:\n  - id: s\n    operation: data.trim\n    arguments: {text: \"  secret  \"}\nreturn:\n  out: \"${steps.s.output}\"\n",
+        )
+        .unwrap();
+        core.inscribe(json!({"path": rf.to_str().unwrap()})).unwrap();
+        let started = core.invoke(json!({"target": "pure1", "cwd": "/"})).unwrap();
+        let sid = started["summon"].as_str().unwrap().to_string();
+        let ended = core.wait(json!({"summon": sid, "timeout_ms": 10_000})).unwrap();
+        assert_eq!(ended["outcome"], "returned");
+
+        // Export signed compliance evidence bundle and verify offline.
+        let bundle_file = dir.join("evidence.bundle.json");
+        let exp = core
+            .audit_export(json!({"file": bundle_file.to_str().unwrap()}))
+            .unwrap();
+        assert_eq!(exp["epitaphs"], 1);
+        let verified =
+            verify_evidence_bundle(bundle_file.to_str().unwrap(), &core.key.public()).unwrap();
+        assert_eq!(verified["ok"], true, "{verified}");
+        assert_eq!(verified["epitaphs"], 1);
+
+        // Tampering with the exported bundle must be caught offline.
+        let mut bad: Value =
+            serde_json::from_str(&std::fs::read_to_string(&bundle_file).unwrap()).unwrap();
+        bad["bundle"]["controls"]["rbac_enforce"] = json!(true);
+        let bad_file = dir.join("bad.bundle.json");
+        std::fs::write(&bad_file, serde_json::to_string(&bad).unwrap()).unwrap();
+        let err = verify_evidence_bundle(bad_file.to_str().unwrap(), &core.key.public())
+            .unwrap_err();
+        assert_eq!(err.exit, 15);
+
+        // Prune ended summons (days=0 -> prune everything ended <= now) and confirm
+        // plaintext summon/events are removed while epitaph chain + audit_log still verify ok!
+        let dry = core.audit_prune(json!({"days": 0, "dry_run": true})).unwrap();
+        assert_eq!(dry["would_prune"], 1);
+        let pruned = core.audit_prune(json!({"days": 0})).unwrap();
+        assert_eq!(pruned["pruned"], 1);
+        let cv = core.chain_verify(json!({})).unwrap();
+        assert_eq!(cv["ok"], true, "chain_verify must remain ok after pruning: {cv}");
+        assert_eq!(cv["not_checkable"].as_array().unwrap().len(), 1);
+        assert_eq!(core.audit_verify().unwrap()["ok"], true);
+
+        drop(core);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
