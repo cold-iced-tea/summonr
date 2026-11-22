@@ -109,7 +109,22 @@ steps:
       - id: brief
         operation: data.canonical_json
         arguments: {value: "${found}"}
-      # Model names are fixed per step, so routing by severity is a branch.
+      # Model names are fixed per step, so routing is a branch per model.
+      # Sibling ifs, not nested ones: a step inside an `if` nested in an
+      # untaken branch is never recorded, so it cannot be referenced later
+      # (see AGENT-NOTES 32).
+      - id: not_codex
+        operation: data.logic
+        arguments: {operator: not, left: "${steps.use_codex.output}"}
+      - id: not_big
+        operation: data.logic
+        arguments: {operator: not, left: "${steps.is_big.output}"}
+      - id: use_big
+        operation: data.logic
+        arguments: {operator: and, left: "${steps.not_codex.output}", right: "${steps.is_big.output}"}
+      - id: use_small
+        operation: data.logic
+        arguments: {operator: and, left: "${steps.not_codex.output}", right: "${steps.not_big.output}"}
       - if: steps.use_codex.output
         then:
           - id: codex
@@ -117,34 +132,42 @@ steps:
             arguments:
               command: bughunt-codex
               params:
-                prompt: |
-                  Write src/bughunt_repro.rs to test this suspected bug. Print only the file.
-                  Rules: a #[cfg(test)] module at the crate root, crate:: paths, one #[test]
-                  that panics with BUGHUNT-CONFIRMED only if the bug is real.
-                  Finding: ${steps.brief.output}
-        else:
-          - if: steps.is_big.output
-            then:
-              - id: write_big
-                model:
-                  name: ollama/hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M
-                  bind: [harness]
-                  prompt: |
-                    Suspected bug: ${steps.brief.output}
+                # cmd parameters may not contain newlines, so this prompt is
+                # one folded line (see AGENT-NOTES 30).
+                # Worded as a regression test for the maintainer's own code
+                # (user's decision, 2026-11-22): assert the safe behaviour.
+                prompt: >-
+                  We maintain this Rust project and want a regression test for a suspected
+                  defect in our own code. Write the file src/bughunt_repro.rs and print only its
+                  contents, no markdown fences. It is a #[cfg(test)] module at the crate root:
+                  use crate:: paths and call the real function under suspicion. One #[test] that
+                  asserts the correct, safe behaviour; when the code misbehaves the assertion
+                  must fail with a short message starting BUGHUNT-CONFIRMED. Never
+                  #[should_panic]; files only under std::env::temp_dir(). Suspected defect:
+                  ${steps.brief.output}
+      - if: steps.use_big.output
+        then:
+          - id: write_big
+            model:
+              name: ollama/hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M
+              bind: [harness]
+              prompt: |
+                Suspected bug: ${steps.brief.output}
 
-                    Code from ${found.file}, lines from ${found.start}:
-                    ${steps.code.output}
-                  schema: {$ref: "#/$defs/repro"}
-            else:
-              - id: write_small
-                model:
-                  bind: [harness]
-                  prompt: |
-                    Suspected bug: ${steps.brief.output}
+                Code from ${found.file}, lines from ${found.start}:
+                ${steps.code.output}
+              schema: {$ref: "#/$defs/repro"}
+      - if: steps.use_small.output
+        then:
+          - id: write_small
+            model:
+              bind: [harness]
+              prompt: |
+                Suspected bug: ${steps.brief.output}
 
-                    Code from ${found.file}, lines from ${found.start}:
-                    ${steps.code.output}
-                  schema: {$ref: "#/$defs/repro"}
+                Code from ${found.file}, lines from ${found.start}:
+                ${steps.code.output}
+              schema: {$ref: "#/$defs/repro"}
       # A skipped branch leaves its outputs null; select the one that ran.
       - id: model_file
         operation: data.select

@@ -57,8 +57,10 @@ repos:
 # prints the test file; Summonr writes it.
 commands:
   bughunt-codex:
-    program: codex
-    args: [exec, --sandbox, read-only, --skip-git-repo-check, -C, $target, "\${prompt}"]
+    # cmd starts commands with an empty environment; codex (and wrappers
+    # around it) need HOME and PATH, so env passes exactly those.
+    program: env
+    args: ["HOME=$HOME", "PATH=$PATH", codex, exec, --sandbox, read-only, --skip-git-repo-check, -C, $target, "\${prompt}"]
     cwd: $target
     effect: read
     params:

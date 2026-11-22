@@ -123,6 +123,46 @@ guide already says `result` is a subset match. The rest are open.
     operation would turn `gather`'s dedupe loop and `score`'s nested loops
     into one call each.
 
+30. **`cmd` cannot carry a multi-line prompt.** Parameters may not contain
+    newlines (a sound injection rule), so calling a CLI model such as
+    Codex through `cmd` needs a one-line prompt; the first Codex run failed
+    on that, and the failure only showed as `failed: 1` in the item counts
+    (entry 16 again). *Suggestion:* let a command declare one parameter as
+    stdin (`stdin: prompt`), which is where multi-line text belongs, or a
+    command-backed model backend (LIMITS 16).
+
+31. **A `cmd` command's failure is invisible, and it gets no environment.**
+    Commands start with an empty environment (sound), and there is no
+    config field to pass a variable through, so `codex` (a wrapper that
+    needs `HOME`) exited at once. The step recorded "0 chars"; neither the
+    exit code nor stderr appeared in the events, so finding the cause took
+    running the command by hand with `env -i`. *Suggestion:* an `env:`
+    allowlist per command (`env: [HOME, PATH]`), and always record the
+    exit code and a stderr tail in the step's event, as `trial` does.
+
+32. **Steps inside an `if` nested in an untaken branch are never
+    recorded.** The docs say steps in a branch not taken are `skipped` with a
+    `null` output; that holds for the branch's own steps, but an `if` inside
+    it is not visited, so its steps have no record at all and a later
+    reference fails at run time ("step `write_small` has not produced a
+    value"). The static checker accepted the reference. Found only when
+    the Codex branch first ran. *Suggestion:* record every step under an
+    untaken branch as skipped, recursively, or make the checker reject the
+    reference. Workaround: sibling `if`s with combined conditions.
+
+33. **Codex declines exploit-shaped findings, even as a regression test.**
+    For a "critical" CRLF header-injection finding Codex answered "I can't
+    provide a targeted reproduction of the header-injection bypass", both
+    with the original prompt and when reworded (with the user's approval)
+    as a regression test asserting the safe behaviour; the finding text
+    itself describes an attack. The verdict was correctly `untestable`, and
+    the refusal was visible only because the test source is kept in the
+    result. Codex also assumed it should write the file and noted its
+    sandbox is read-only, although the prompt asks it to print the file.
+    Not a Summonr issue; for the rite it means cloud escalation helps with
+    correctness bugs more than with security findings, which stay with the
+    local models. The Codex path itself now works (12 s per finding).
+
 ## Reflections after the build
 
 What it was like to build a real multi-ritual workflow, beyond single
