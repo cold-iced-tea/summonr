@@ -48,8 +48,10 @@ repos:
     path: $target
     trunk: bughunt-base
     remote: lab
-    test: env CARGO_TARGET_DIR=$lab/cargo-target cargo test --offline $only bughunt_repro
-    disposable: [target/]
+    # timeout: a repro that hangs must not use up the whole run (no shell
+    # here, so timeout and env are plain programs). -q keeps the tail short.
+    test: timeout 300 env CARGO_TARGET_DIR=$lab/cargo-target cargo test --offline -q $only bughunt_repro
+    disposable: [target/, Cargo.lock]
 # Optional cloud escalation (test.yaml, escalate=codex, critical findings
 # only). Needs the codex CLI on PATH and logged in. Read-only sandbox: codex
 # prints the test file; Summonr writes it.

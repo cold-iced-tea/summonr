@@ -12,7 +12,7 @@ how much they cost the build.
    file name or chunk start to a model's findings, and they cannot nest.
    *Workaround:* an `each` per level (dir → file → chunk → finding) with a
    `data.merge` step inside, then one `data.fold`+`data.concat` per level to
-   flatten. About 60% of `hunt.yaml` is this plumbing.
+   flatten. Most of `hunt.yaml` and `scan-file.yaml` is this plumbing.
    *Proposal:* `with:` constants on collection operators, and a
    `data.flatten`.
 2. **A loop item exposes only its steps' outputs, not the element.**
@@ -40,10 +40,19 @@ how much they cost the build.
    `lines`) inside its loop results, so the fold that collects findings
    failed after 213 model calls ("data value exceeds 1 MiB encoded JSON").
    *Workaround:* per-file work moved into a child ritual,
-   `bughunt-scan-file`, whose only output is its findings.
+   `bughunt-scan-file`, whose only output is its findings. The trap came
+   back once: a per-chunk "has the test module started?" check re-joined
+   the file prefix in every chunk, which put ~60 copies of the file into
+   the loop results; half of `src/` then failed and, because files are
+   skipped on failure, looked like "no findings" (caught in review; the
+   check now runs once per file).
    *Proposal:* an `each` option to keep only named outputs (`keep: [x]`).
-8. **`each` is sequential** (`parallel > 1` is rejected). A hunt is one
-   model call per chunk, one after another.
+8. **Not a limit, a documentation bug:** `ritual-format.md` says
+   "`parallel` greater than 1 is rejected", but `each` accepts
+   `parallel: 1..32` and the executor runs items concurrently (with atomic
+   essence reservations, see `concepts/essence.md`). Bughunt was written
+   sequentially because of the doc; parallel chunks would only help if
+   Ollama serves requests in parallel (`OLLAMA_NUM_PARALLEL`).
 
 ## Pointing a ritual at a project
 
@@ -63,8 +72,10 @@ how much they cost the build.
 ## Running tests
 
 12. **`trial.run` runs the repository's single `test` command.** No test
-    selection. *Workaround:* a dedicated repo entry, `bughunt-target`, whose
-    `test` is `cargo test --offline --bins bughunt_repro`.
+    selection and no per-test timeout. *Workaround:* a dedicated repo
+    entry, `bughunt-target`, whose `test` is
+    `timeout 300 env CARGO_TARGET_DIR=… cargo test --offline -q --bins bughunt_repro`
+    (the command runs without a shell, so `timeout` and `env` are programs).
 13. **`git.worktree_add` starts only from an up-to-date trunk and needs
     `<remote>/<trunk>` to exist.** *Workaround:* `setup.sh` checks the
     target commit out as a `bughunt-base` branch and pushes it to a local

@@ -10,6 +10,9 @@ inputs:
   findings: list
   chunk: {type: integer, default: 150, min: 1, max: 2000}
   escalate: {type: string, enum: [none, codex], default: none}
+  # Each finding costs one or two model calls and one or two builds; the
+  # rest are reported as untested rather than left to exhaust the run.
+  max_batch: {type: integer, default: 25, min: 1, max: 200}
 model: ollama/qwen3:4b
 settings: {temperature: 0, num_ctx: 16384}
 requires:
@@ -41,7 +44,11 @@ bindings:
       The test must panic with a message starting BUGHUNT-CONFIRMED only when
       the bug really happens, for example:
         assert!(!bad, "BUGHUNT-CONFIRMED: <what happened>");
-      If the code behaves correctly the test must pass. Use only the
+      Keep that message to one short line (under 80 characters, no {:?}
+      dumps). If the code behaves correctly the test must pass.
+      Never use #[should_panic]; to check for a panic, wrap the call in
+      std::panic::catch_unwind and assert on the result with the marker.
+      Write any files only under std::env::temp_dir(). Use only the
       standard library and crates the project already uses. No network.
       You must call the real code under suspicion; a test that copies the
       logic into itself proves nothing and is rejected.
@@ -50,8 +57,20 @@ steps:
   - id: add
     operation: git.worktree_add
     arguments: {repo: bughunt-target, branch: repro}
+  - id: n_findings
+    operation: data.count
+    arguments: {value: "${inputs.findings}"}
+  - id: batch_end
+    operation: data.clamp
+    arguments: {value: "${inputs.max_batch}", min: 0, max: "${steps.n_findings.output}"}
+  - id: batch
+    operation: data.slice
+    arguments: {values: "${inputs.findings}", start: 0, end: "${steps.batch_end.output}"}
+  - id: untested
+    operation: data.arithmetic
+    arguments: {left: "${steps.n_findings.output}", right: "${steps.batch_end.output}", operator: subtract}
   - id: per_finding
-    each: found in inputs.findings
+    each: found in steps.batch.output
     on_failure: continue
     steps:
       - id: source
@@ -87,16 +106,6 @@ steps:
       - id: use_codex
         operation: data.logic
         arguments: {operator: and, left: "${steps.wants_codex.output}", right: "${steps.is_critical.output}"}
-      # src/reagents/x.rs -> crate::reagents::x; the repro must name it.
-      - id: mod_noext
-        operation: data.replace
-        arguments: {text: "${found.file}", from: ".rs", to: ""}
-      - id: mod_root
-        operation: data.replace
-        arguments: {text: "${steps.mod_noext.output}", from: "src/", to: "crate/"}
-      - id: mod_path
-        operation: data.replace
-        arguments: {text: "${steps.mod_root.output}", from: /, to: "::"}
       - id: brief
         operation: data.canonical_json
         arguments: {value: "${found}"}
@@ -149,15 +158,12 @@ steps:
       - id: run
         operation: trial.run
         arguments: {repo: bughunt-target, worktree: /absolute/path/to/target-repro}
-      - id: uses_code
-        operation: data.contains
-        arguments: {value: "${steps.test_file.output}", needle: "${steps.mod_path.output}"}
       - id: judged
         ritual: bughunt-verdict
-        arguments: {uses_code: "${steps.uses_code.output}", passed: "${steps.run.output.passed}", tail: "${steps.run.output.tail}"}
+        arguments: {file: "${found.file}", test_file: "${steps.test_file.output}", passed: "${steps.run.output.passed}", tail: "${steps.run.output.tail}"}
       - id: build_failed
-        operation: data.contains
-        arguments: {value: "${steps.run.output.tail}", needle: "error["}
+        operation: data.get
+        arguments: {value: "${steps.judged.output}", path: /build_failed}
       # One retry, with the compiler's complaint, on the small model.
       - if: steps.build_failed.output
         then:
@@ -169,8 +175,6 @@ steps:
 
                 Code from ${found.file}, lines from ${found.start}:
                 ${steps.code.output}
-
-                It must use ${steps.mod_path.output}.
 
                 Your previous file did not compile:
                 ${steps.test_file.output}
@@ -184,12 +188,9 @@ steps:
           - id: rerun
             operation: trial.run
             arguments: {repo: bughunt-target, worktree: /absolute/path/to/target-repro}
-          - id: reuses_code
-            operation: data.contains
-            arguments: {value: "${steps.rewrite.output.rust_source}", needle: "${steps.mod_path.output}"}
           - id: rejudged
             ritual: bughunt-verdict
-            arguments: {uses_code: "${steps.reuses_code.output}", passed: "${steps.rerun.output.passed}", tail: "${steps.rerun.output.tail}"}
+            arguments: {file: "${found.file}", test_file: "${steps.rewrite.output.rust_source}", passed: "${steps.rerun.output.passed}", tail: "${steps.rerun.output.tail}"}
       - id: restore
         operation: file.write_text
         arguments: {root: /absolute/path/to/target-repro, path: src/bughunt_repro.rs, text: ""}
@@ -207,16 +208,6 @@ steps:
         arguments:
           left: "${found}"
           right: {verdict: "${steps.verdict.output}", test_file: "${steps.final_file.output}", tail: "${steps.final_tail.output}"}
-  # Leave the worktree clean even if the last item stopped half way.
-  - id: clean
-    operation: file.write_text
-    arguments: {root: /absolute/path/to/target-repro, path: src/bughunt_repro.rs, text: ""}
-  - id: remove
-    operation: git.remove_worktree
-    arguments: {repo: bughunt-target, path: /absolute/path/to/target-repro}
-  - id: drop_branch
-    operation: git.delete_branch
-    arguments: {repo: bughunt-target, branch: repro}
   - id: finished
     operation: data.filter
     arguments: {values: "${steps.per_finding.output}", predicate: 'item.status == "returned"'}
@@ -233,7 +224,29 @@ steps:
   - id: confirmed_count
     operation: data.count
     arguments: {value: "${steps.confirmed.output}"}
+  # Leave the worktree clean even if the last item stopped half way.
+  - id: clean
+    operation: file.write_text
+    arguments: {root: /absolute/path/to/target-repro, path: src/bughunt_repro.rs, text: ""}
+  # Cleanup never fails the run: a repro that left files behind blocks
+  # removal, and the results above must still be returned.
+  - id: remove
+    operation: git.remove_worktree
+    arguments: {repo: bughunt-target, path: /absolute/path/to/target-repro}
+    fallback:
+      - id: remove_skipped
+        operation: data.select
+        arguments: {condition: true, then: "worktree left in place; see README", else: ""}
+  - id: drop_branch
+    operation: git.delete_branch
+    arguments: {repo: bughunt-target, branch: repro}
+    fallback:
+      - id: drop_skipped
+        operation: data.select
+        arguments: {condition: true, then: "branch left in place; see README", else: ""}
 return:
   results: "${steps.results.output}"
   confirmed: "${steps.confirmed_count.output}"
   tested: "${steps.per_finding.counts}"
+  untested: "${steps.untested.output}"
+  cleanup: {worktree: "${steps.remove.output}", branch: "${steps.drop_branch.output}"}

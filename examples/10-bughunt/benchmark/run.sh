@@ -38,4 +38,4 @@ parent() { git -C "$repo" rev-parse --short "$1^"; }
 bench fix-c06fd86 "$(parent c06fd86)" fix-c06fd86.json '["src"]'
 bench fix-4979f5c "$(parent 4979f5c)" fix-4979f5c.json '["src","src/reagents"]'
 bench fix-35f37f0 "$(parent 35f37f0)" fix-35f37f0.json '["src"]'
-bench gemini 5fb6bbe gemini-125.json '["src/reagents"]'
+bench gemini-reagents 5fb6bbe gemini-reagents.json '["src/reagents"]'

@@ -1,40 +1,89 @@
-# Drill for bughunt-verdict: turns a trial result into a verdict. Pure.
+# Drill for bughunt-verdict: turns a repro test and its trial result into a
+# verdict. Pure.
 drill: bughunt-verdict-cases
 ritual: bughunt-verdict
 cases:
   - id: marker-panic-confirms
     inputs:
-      uses_code: true
+      file: src/auth.rs
+      test_file: "use crate::auth::allowed;\n#[test] fn t() { assert!(!allowed(\"adminx\"), \"BUGHUNT-CONFIRMED: prefix\"); }"
       passed: false
       tail: "error: test failed\n--- stdout ---\nthread 'bughunt_repro::t' panicked at src/bughunt_repro.rs:9:5:\nBUGHUNT-CONFIRMED: role passes\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored"
-    expect: {outcome: returned, result: {verdict: confirmed}, model_calls: 0}
+    expect: {outcome: returned, result: {verdict: confirmed, build_failed: false}, model_calls: 0}
   - id: passing-test-refutes
     inputs:
-      uses_code: true
+      file: src/auth.rs
+      test_file: "use crate::auth::allowed;\n#[test] fn t() { assert!(allowed(\"admin\")); }"
       passed: true
-      tail: "--- stdout ---\nrunning 1 test\ntest bughunt_repro::t ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored"
+      tail: "--- stdout ---\nrunning 1 test\n.\ntest result: ok. 1 passed; 0 failed; 0 ignored"
     expect: {outcome: returned, result: {verdict: refuted}}
   - id: compile-error-quoting-marker-is-untestable
     inputs:
-      uses_code: true
+      file: src/auth.rs
+      test_file: "use crate::auth::nope;"
       passed: false
-      tail: "error[E0425]: cannot find function `nope`\n  |     panic!(\"BUGHUNT-CONFIRMED\")\nerror: could not compile `summonr`"
-    expect: {outcome: returned, result: {verdict: untestable}}
+      tail: "error[E0425]: cannot find function `nope`\n  |     panic!(\"BUGHUNT-CONFIRMED\")\nerror: could not compile `summonr` (bin \"summonr\" test) due to 1 previous error"
+    expect: {outcome: returned, result: {verdict: untestable, build_failed: true}}
+  - id: syntax-error-without-code-is-a-build-failure
+    inputs:
+      file: src/auth.rs
+      test_file: "use crate::auth::x;\\n"
+      passed: false
+      tail: "error: unknown start of token: \\\nerror: could not compile `summonr` (bin \"summonr\" test) due to 1 previous error"
+    expect: {outcome: returned, result: {verdict: untestable, build_failed: true}}
+  - id: a-test-that-ran-is-not-a-build-failure
+    inputs:
+      file: src/auth.rs
+      test_file: "use crate::auth::x;"
+      passed: false
+      tail: "--- stdout ---\nprinted error[E0001] in a message\ntest result: FAILED. 0 passed; 1 failed"
+    expect: {outcome: returned, result: {build_failed: false}}
   - id: other-panic-is-untestable
     inputs:
-      uses_code: true
+      file: src/auth.rs
+      test_file: "use crate::auth::x;"
       passed: false
       tail: "--- stdout ---\nthread 'bughunt_repro::t' panicked at src/bughunt_repro.rs:4:9:\ncalled `Option::unwrap()` on a `None` value\n\ntest result: FAILED. 0 passed; 1 failed"
     expect: {outcome: returned, result: {verdict: untestable}}
   - id: no-test-ran-is-untestable
     inputs:
-      uses_code: true
+      file: src/auth.rs
+      test_file: "use crate::auth::x;"
       passed: true
       tail: "--- stdout ---\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored"
     expect: {outcome: returned, result: {verdict: untestable}}
   - id: test-that-never-calls-the-code-cannot-confirm
     inputs:
-      uses_code: false
+      file: src/auth.rs
+      test_file: "#[test] fn t() { let bad = true; assert!(!bad, \"BUGHUNT-CONFIRMED: copied logic\"); }"
       passed: false
       tail: "panicked at src/bughunt_repro.rs:9:5:\nBUGHUNT-CONFIRMED: copied logic\n\ntest result: FAILED. 0 passed; 1 failed"
     expect: {outcome: returned, result: {verdict: untestable}}
+  - id: should-panic-cannot-refute
+    inputs:
+      file: src/auth.rs
+      test_file: "use crate::auth::allowed;\n#[test] #[should_panic] fn t() { allowed(\"\"); }"
+      passed: true
+      tail: "running 1 test\n.\ntest result: ok. 1 passed; 0 failed"
+    expect: {outcome: returned, result: {verdict: untestable}}
+  - id: mod-rs-is-named-by-its-directory
+    inputs:
+      file: src/cli/mod.rs
+      test_file: "use crate::cli::run;\n#[test] fn t() { assert!(false, \"BUGHUNT-CONFIRMED: x\"); }"
+      passed: false
+      tail: "BUGHUNT-CONFIRMED: x\ntest result: FAILED. 0 passed; 1 failed"
+    expect: {outcome: returned, result: {verdict: confirmed}}
+  - id: main-rs-is-the-crate-root
+    inputs:
+      file: src/main.rs
+      test_file: "use crate::parse_args;\n#[test] fn t() { assert!(false, \"BUGHUNT-CONFIRMED: x\"); }"
+      passed: false
+      tail: "BUGHUNT-CONFIRMED: x\ntest result: FAILED. 0 passed; 1 failed"
+    expect: {outcome: returned, result: {verdict: confirmed}}
+  - id: re-exported-module-path-counts
+    inputs:
+      file: src/reagents/git_reagent.rs
+      test_file: "use crate::git_reagent::valid_ref_name;\n#[test] fn t() { assert!(valid_ref_name(\"a..b\").is_err(), \"BUGHUNT-CONFIRMED: x\"); }"
+      passed: false
+      tail: "BUGHUNT-CONFIRMED: x\ntest result: FAILED. 0 passed; 1 failed"
+    expect: {outcome: returned, result: {verdict: confirmed}}

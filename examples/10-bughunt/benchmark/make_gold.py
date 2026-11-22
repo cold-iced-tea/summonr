@@ -10,9 +10,11 @@ Gold format: {"target": COMMIT, "source": ..., "total": N,
       Each src/ hunk the fix changed becomes a gold item whose text is the
       old side of the hunk: removed lines plus surrounding context.
 
-  make_gold.py gemini REPO AUDIT_MD COMMIT > gold.json
+  make_gold.py gemini REPO AUDIT_MD COMMIT [DIR...] > gold.json
       Each finding's file#Lx-Ly link in the audit markdown becomes a gold
-      item whose text is those lines at COMMIT. Unverified claims.
+      item whose text is those lines at COMMIT. Unverified claims. With DIRs
+      (e.g. src/reagents), only files directly in them are kept, so recall
+      is measured against what a hunt over those directories can see.
 """
 import json
 import re
@@ -73,7 +75,7 @@ def fix_gold(repo, commits):
     return {"target": parents.pop(), "source": "fix commits " + " ".join(commits), "total": total, "by_file": by_file}
 
 
-def gemini_gold(repo, audit, commit):
+def gemini_gold(repo, audit, commit, dirs=()):
     by_file, seen = {}, set()
     link = re.compile(r"file://[^)#]*?/(src/[^)#]+)#L(\d+)(?:-L(\d+))?")
     current = None
@@ -82,6 +84,8 @@ def gemini_gold(repo, audit, commit):
         if m:
             current = m.group(1)
         for f, a, b in link.findall(line):
+            if dirs and f.rsplit("/", 1)[0] not in dirs:
+                continue
             key = (current, f, a)
             if key in seen:
                 continue
@@ -92,14 +96,14 @@ def gemini_gold(repo, audit, commit):
             if text:
                 add(by_file, f, {"id": f"gemini-{current}:{f}:{a}", "text": text})
     total = sum(len(v) for v in by_file.values())
-    return {"target": commit, "source": "gemini audit (unverified)", "total": total, "by_file": by_file}
+    return {"target": commit, "source": "gemini audit (unverified)" + (f" in {', '.join(dirs)}" if dirs else ""), "total": total, "by_file": by_file}
 
 
 def main():
     if len(sys.argv) >= 4 and sys.argv[1] == "fix":
         out = fix_gold(sys.argv[2], sys.argv[3:])
-    elif len(sys.argv) == 5 and sys.argv[1] == "gemini":
-        out = gemini_gold(sys.argv[2], sys.argv[3], sys.argv[4])
+    elif len(sys.argv) >= 5 and sys.argv[1] == "gemini":
+        out = gemini_gold(sys.argv[2], sys.argv[3], sys.argv[4], tuple(sys.argv[5:]))
     else:
         sys.exit(__doc__)
     json.dump(out, sys.stdout, indent=1)

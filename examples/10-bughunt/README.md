@@ -10,20 +10,27 @@ not say is in [LIMITS.md](LIMITS.md).
 
 | Ritual | Does | Model |
 | --- | --- | --- |
-| `bughunt-hunt` | Lists source files in `dirs` and runs `bughunt-scan-file` on each; unreadable files are skipped | |
-| `bughunt-scan-file` | Reads one file in chunks, asks for findings from one `angle`; marks each finding `quoted` when its snippet really appears in the code; a chunk the model chokes on is skipped | `qwen3:4b`, one call per chunk |
+| `bughunt-hunt` | Lists source files in `dirs` and runs `bughunt-scan-file` on each; reports `files_failed` and `chunks_failed`, and fails if every file failed (model or backend down) | |
+| `bughunt-scan-file` | Reads one file in chunks up to its `mod tests {`, asks for findings from one `angle`; marks each finding `quoted` when its snippet (8+ characters) really appears in the code; a chunk the model chokes on is skipped and counted | `qwen3:4b`, one call per chunk |
 | `bughunt-gather` | Merges hunts, drops unquoted and low-confidence findings, collapses duplicates, `pass` when `count ≥ min_batch` | none |
 | `bughunt-batch-ready` | Touchstone gate on gather's `pass` | none |
-| `bughunt-test` | Per finding: model writes `src/bughunt_repro.rs`, `trial` runs it in a throwaway worktree, one retry with compiler output | `qwen3:4b` for low/medium, `Qwen3.6-35B-A3B` for high/critical, optional Codex for critical |
-| `bughunt-verdict` | `confirmed` (failed with `BUGHUNT-CONFIRMED`), `refuted` (one test ran and passed), else `untestable`; a test that never names the suspect module can be neither | none |
+| `bughunt-test` | Per finding (first `max_batch`, default 25): model writes `src/bughunt_repro.rs`, `trial` runs it in a throwaway worktree with a 300 s timeout, one retry when it does not build; cleanup never fails the run | `qwen3:4b` for low/medium, `Qwen3.6-35B-A3B` for high/critical, optional Codex for critical |
+| `bughunt-verdict` | `confirmed` (failed with `BUGHUNT-CONFIRMED`), `refuted` (one test ran and passed), else `untestable`; a test that never names the suspect module, or uses `#[should_panic]`, can be neither | none |
 | `bughunt-score` | Hits and noise against a gold set | none |
-| `bughunt-bench` | One hunt plus score against a gold file | as hunt |
+| `bughunt-bench` | One hunt per angle, gather, and score against a gold file; reports failed hunts | as hunt |
 | `bughunt.rite.yaml` | Three hunts → gather (gated) → test | |
 
 ## Set up a lab
 
 The target must be a git repository; the repro harness assumes Rust with
-`src/main.rs` or `src/lib.rs`.
+`src/main.rs` or `src/lib.rs`. Paths must not contain spaces. You need the
+models and the target's crates locally:
+
+```bash
+ollama pull qwen3:4b
+ollama pull hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M   # high/critical findings
+(cd /path/to/project && cargo fetch)
+```
 
 ```bash
 cargo build --release
@@ -41,6 +48,7 @@ trial does not spend its time compiling:
 
 ```bash
 (cd ~/bughunt-lab/target && CARGO_TARGET_DIR=~/bughunt-lab/cargo-target cargo test --offline --bins bughunt_repro)
+# use --lib instead of --bins if the project has src/lib.rs
 ```
 
 ## Run
@@ -54,7 +62,7 @@ summonr rite start examples/10-bughunt/bughunt.rite.yaml --arg commit=COMMIT --a
 summonr rite advance RITE_ID      # after the gate passes, runs the test stage
 
 # Score a hunt against a gold set in ~/bughunt-lab/benchmark/:
-summonr run bughunt-bench --arg 'dirs=["src","src/reagents"]' --arg 'angle=...' --arg gold=fix-c06fd86.json --wait --json
+summonr run bughunt-bench --arg 'dirs=["src"]' --arg 'angles=["panics on hostile input"]' --arg gold=fix-c06fd86.json --wait --json
 ```
 
 Optional Codex escalation for critical findings: `--arg escalate=codex` on
@@ -68,10 +76,15 @@ set at its parent: each `src/` hunk the fix changed (old side plus context)
 is one item. These are bugs someone fixed, so they are real. Run a bench at
 the parent commit (its own lab).
 
-`benchmark/make_gold.py gemini REPO AUDIT.md 5fb6bbe` turns the 125-finding
-Gemini audit into a gold set. Those are unverified model claims: use them
-for recall only, and treat `confirmed` test results on them as spot checks
-of the list.
+`benchmark/make_gold.py gemini REPO AUDIT.md 5fb6bbe [DIR...]` turns the
+Gemini audit (125 findings, 139 linked code spans) into a gold set, kept to
+files directly in the given directories so recall is measured against what
+the hunt scanned (`gemini-reagents.json` is `src/reagents`). Those are
+unverified model claims: use them for recall only, and treat `confirmed`
+test results on them as spot checks of the list.
+
+`benchmark/run.sh REPO OUT_DIR SUMMONR_BIN` runs every shipped gold set, one
+lab each, with the rite's three angles.
 
 ## Drills
 
@@ -87,7 +100,9 @@ are simulated, so no worktree exists); it is checked live.
 
 `bughunt-test` adds a `repro` worktree beside the target and removes it at
 the end. If a run dies half way, the next one refuses to start (`branch
-repro already exists`). Clean up by hand:
+repro already exists`). The run's results are still in its record under `result.partial` (or in
+`result.results` if only cleanup failed; `result.cleanup` says so). Clean up
+by hand:
 
 ```bash
 git -C ~/bughunt-lab/target worktree remove --force ~/bughunt-lab/target-repro
