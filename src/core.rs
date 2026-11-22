@@ -820,7 +820,7 @@ impl Core {
             self.cfg.max_depth(),
         )
         .map_err(|errors| {
-            RpcErr::invalid("definition does not satisfy its contract").with(json!({
+            RpcErr::invalid(ritual::contract_message(&errors)).with(json!({
                 "diagnostics": errors.into_iter().map(|message| json!({
                     "code": "invalid_definition",
                     "message": message,

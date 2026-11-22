@@ -41,7 +41,7 @@ pub(crate) fn validate_file(op: &Op, paths: &Paths) -> Result<Value, RpcErr> {
     .map_err(RpcErr::invalid)?;
     let cfg = Config::load(paths).map_err(RpcErr::invalid)?;
     let effects = ritual::validate_with_cfg(&def, &resolve, &cfg, cfg.max_depth())
-        .map_err(|errors| RpcErr::invalid("definition does not satisfy its contract").with(json!({"diagnostics": errors.into_iter().map(|message|json!({"code":"invalid_definition","file":file,"message":message})).collect::<Vec<_>>()})))?;
+        .map_err(|errors| RpcErr::invalid(ritual::contract_message(&errors)).with(json!({"diagnostics": errors.into_iter().map(|message|json!({"code":"invalid_definition","file":file,"message":message})).collect::<Vec<_>>()})))?;
     Ok(
         json!({"valid":true,"language_version":def.language_version,"hash":ritual::content_hash(&def),"effects":effects,"definition":def}),
     )

@@ -572,3 +572,16 @@ pub use types::{Effect, Ty};
 pub use validate::{
     model_sites, validate, validate_with_cfg, validate_with_return_types_cfg,
 };
+
+/// The error message for a definition that fails validation: the first
+/// problem in full, so a caller reading only `error.message` can act on it.
+pub fn contract_message(errors: &[String]) -> String {
+    match errors {
+        [] => "definition does not satisfy its contract".into(),
+        [one] => format!("definition does not satisfy its contract: {one}"),
+        [first, rest @ ..] => format!(
+            "definition does not satisfy its contract: {first} (and {} more in data.diagnostics)",
+            rest.len()
+        ),
+    }
+}

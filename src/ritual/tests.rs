@@ -1294,3 +1294,20 @@ return:
         assert!(validate(&bad_def, &none, &crate::reagent::tool, 3).is_err());
     }
 }
+
+#[cfg(test)]
+mod contract_message_tests {
+    #[test]
+    fn contract_error_names_the_first_problem() {
+        let one = vec!["step a: `x` has no field `y`".to_string()];
+        assert_eq!(
+            crate::ritual::contract_message(&one),
+            "definition does not satisfy its contract: step a: `x` has no field `y`"
+        );
+        let three = vec!["first".to_string(), "second".to_string(), "third".to_string()];
+        assert_eq!(
+            crate::ritual::contract_message(&three),
+            "definition does not satisfy its contract: first (and 2 more in data.diagnostics)"
+        );
+    }
+}
