@@ -6,6 +6,14 @@ say; this file is about what made Summonr slow, confusing or costly to
 *use* from a shell and MCP. Each entry: what happened, what it cost, and a
 suggestion. Most recent last.
 
+**Status (2026-11-22):** addressed on branch `feat/language-gaps` (not yet
+merged): 1 and 26 (`brief` / `--brief` on `run --wait` and `record`),
+3 (misplaced `config.yaml` warning), 8 (first diagnostic in
+`error.message`), 12 (`reading` / `--arg-file`), 13 (a looping model is
+`invalid`), 17 (the `parallel` doc), 19 (`model_default` in drills), and
+the dedupe half of 29 (`data.unique_by`). 14 was my oversight: the drill
+guide already says `result` is a subset match. The rest are open.
+
 1. **`--wait --json` returns the whole record.** A bench run's envelope was
    30 MB (every effect of every nested step). An agent reading that
    overflows its context; I had to pipe everything through Python to find
@@ -60,7 +68,9 @@ suggestion. Most recent last.
     `abstain` logic apply) and allow a retry with a different seed.
 14. **Drill `expect.result` semantics were a guess.** It turned out to be a
     subset match on listed keys, which is what I wanted, but I found out by
-    trying. *Suggestion:* one sentence in the drill docs.
+    trying. *Correction:* `guides/safe-building.md` already says so; I had
+    not read it. The real lesson is discoverability: `summonr drill --help`
+    could point at that page.
 15. **Two homes, two interfaces.** The MCP server is bound to the real home,
     so all lab work went through the CLI with `SUMMONR_HOME` set per command;
     the compact MCP results (entry 1) were not available there.
