@@ -154,7 +154,7 @@ Runs a saved ritual as a linked child summon. Arguments must be inputs the child
   steps: [...]
 ```
 
-Runs the body once per element of a list, sequentially, binding the element to `VAR`. The loop variable may not be named `inputs`, `steps` or `output`. Ids defined in the body are visible only inside it. `parallel` greater than 1 is rejected.
+Runs the body once per element of a list, binding the element to `VAR`. The loop variable may not be named `inputs`, `steps` or `output`. Ids defined in the body are visible only inside it. Items run one after another unless `parallel: N` (1 to 32) is given, in which case up to N items run at once; results, checkpoints and the output list stay in item order, and essence is reserved atomically across workers (see [Essence](../concepts/essence.md)).
 
 Output: a list of items, each `{item, status, error, outputs, steps, effects, interrupted}`, where `item` is the element's `id` field if it has one, or its index. The step also carries `counts`:
 

@@ -696,6 +696,13 @@ impl Reagent for Git {
                     return Err(Fail::Invalid(format!("{} already exists", path.display())));
                 }
                 git(cfg, main, &["fetch", "--quiet", &r.remote], d)?;
+                let tracking = format!("refs/remotes/{}/{}", r.remote, r.trunk);
+                if !git_test(cfg, main, &["show-ref", "--verify", "--quiet", &tracking], d)? {
+                    return Err(Fail::Invalid(format!(
+                        "{} has no branch `{}`, so the trunk cannot be checked as up to date; push it there first",
+                        r.remote, r.trunk
+                    )));
+                }
                 let range = format!("{}..{}/{}", r.trunk, r.remote, r.trunk);
                 let behind = git(cfg, main, &["rev-list", "--count", &range], d)?;
                 if behind.trim() != "0" {
@@ -1183,6 +1190,16 @@ mod tests {
         commit(&f.root.join("other"), "o.txt", "elsewhere");
         sh(&f.root.join("other"), &["push", "-q", "origin", "master"]);
         assert!(call(&f, "worktree_add", json!({"repo": "demo", "branch": "fresh"})).unwrap_err().message().contains("behind"));
+    }
+
+    #[test]
+    fn worktree_add_explains_a_remote_without_the_trunk() {
+        let f = fixture();
+        sh(&f.root.join("origin.git"), &["branch", "-D", "master"]);
+        sh(&f.main(), &["update-ref", "-d", "refs/remotes/origin/master"]);
+        let err = call(&f, "worktree_add", json!({"repo": "demo", "branch": "fresh"})).unwrap_err().message();
+        assert!(err.contains("origin has no branch `master`"), "{err}");
+        assert!(!err.contains("rev-list"), "{err}");
     }
 
     #[test]
