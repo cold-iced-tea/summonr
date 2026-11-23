@@ -186,7 +186,7 @@ fn perf_bench_large_state_db() {
     for sql in [
         "SELECT * FROM summons WHERE parent = 'x' ORDER BY started",
         "SELECT * FROM summons WHERE status = 'ended' AND parent IS NULL ORDER BY ended DESC LIMIT 40",
-        "WITH RECURSIVE tree(id) AS (SELECT id FROM summons WHERE id='x' UNION ALL SELECT s.id FROM summons s JOIN tree t ON s.parent=t.id) SELECT e.kind FROM events e JOIN tree t ON e.summon=t.id WHERE e.kind IN ('op','held') ORDER BY e.ts,e.seq",
+        "WITH RECURSIVE tree(id) AS (SELECT id FROM summons WHERE id='x' UNION ALL SELECT s.id FROM summons s JOIN tree t ON s.parent=t.id) SELECT e.kind FROM tree t CROSS JOIN events e ON e.summon=t.id WHERE e.kind IN ('op','held') ORDER BY e.ts,e.seq",
         "SELECT p.id FROM petitions p WHERE p.summon='x'",
         "SELECT * FROM effect_fence WHERE summon='x'",
     ] {
@@ -222,4 +222,46 @@ fn perf_bench_where_time_goes() {
     }
     let effects = rec["effects"].as_array().map(Vec::len).unwrap_or(0);
     eprintln!("bench record effects: {effects}");
+}
+
+/// A state database the size of a long-used lab: 200 roots with 100 children
+/// each and 200,000 events, written directly; then the reads.
+#[test]
+#[ignore]
+fn perf_bench_query_plans_at_scale() {
+    let h = Home::new("");
+    {
+        let mut db = h.core.db.lock().unwrap();
+        let tx = db.transaction().unwrap();
+        for r in 0..200 {
+            let root = format!("s-root{r}");
+            for c in 0..=100 {
+                let (id, parent) = if c == 0 { (root.clone(), None) } else { (format!("s-{r}-{c}"), Some(root.clone())) };
+                tx.execute(
+                    "INSERT INTO summons (id, parent, ritual, version, hash, status, outcome, started, ended, inputs, essence, result) VALUES (?1, ?2, 'r', 1, 'h', 'ended', 'returned', ?3, ?3, '{}', '{}', '{}')",
+                    params![id, parent, (r * 1000 + c) as i64],
+                ).unwrap();
+                for seq in 1..=10 {
+                    tx.execute(
+                        "INSERT INTO events (summon, seq, ts, kind, text, data) VALUES (?1, ?2, ?3, 'op', 't', '{\"effect\":\"pure\"}')",
+                        params![id, seq, seq],
+                    ).unwrap();
+                }
+            }
+        }
+        tx.commit().unwrap();
+    }
+    eprintln!("bench scale db: {}", sizes(&h));
+    let time = |what: &str, method: &str, p: Value| {
+        let t = Instant::now();
+        for _ in 0..20 {
+            h.call(method, p.clone()).unwrap();
+        }
+        eprintln!("bench scale {what}: {:?} per call", t.elapsed() / 20);
+    };
+    time("history", "list", json!({"scope": "ended", "limit": 40}));
+    time("history --children", "list", json!({"scope": "children", "summon": "s-root7", "limit": 1000}));
+    time("record", "get", json!({"summon": "s-root7"}));
+    time("record --brief", "get", json!({"summon": "s-root7", "brief": true}));
+    time("logs page", "events", json!({"summon": "s-root7"}));
 }

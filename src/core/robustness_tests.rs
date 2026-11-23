@@ -1695,3 +1695,25 @@ fn a_record_lists_effects_but_not_pure_steps() {
     let ops = events.as_array().unwrap().iter().filter(|e| e["kind"] == "op").count();
     assert_eq!(ops, 2, "{events}");
 }
+
+#[test]
+fn run_tree_queries_use_indexes_not_scans() {
+    let h = super::test_home::Home::new("");
+    let db = h.core.db.lock().unwrap();
+    for sql in [TREE_EFFECTS_SQL, TREE_PETITIONS_SQL, TREE_EACH_FAILED_SQL] {
+        let mut q = db.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        let plan: Vec<String> = q
+            .query_map(["s-x"], |r| r.get::<_, String>(3))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert!(plan.iter().any(|l| l.contains("idx_summons_parent")), "{plan:?}");
+        assert!(
+            !plan.iter().any(|l| l.starts_with("SCAN e") || l.starts_with("SCAN p") || l.starts_with("SCAN s")),
+            "a run's record must not scan every event, petition or summon: {plan:?}"
+        );
+    }
+    let mut q = db.prepare("EXPLAIN QUERY PLAN SELECT id FROM summons WHERE parent = ?1 ORDER BY started").unwrap();
+    let plan: Vec<String> = q.query_map(["s-x"], |r| r.get::<_, String>(3)).unwrap().map(Result::unwrap).collect();
+    assert!(plan.iter().any(|l| l.contains("idx_summons_parent")), "{plan:?}");
+}

@@ -249,7 +249,19 @@ CREATE TABLE IF NOT EXISTS rbac_actor_roles (
   PRIMARY KEY (actor_id, role_name));
 CREATE INDEX IF NOT EXISTS idx_rbac_actor_roles_active
   ON rbac_actor_roles(actor_id) WHERE revoked_at IS NULL;
+-- A run's tree (record, brief, children, warnings) walks parent links.
+CREATE INDEX IF NOT EXISTS idx_summons_parent ON summons(parent, started);
+CREATE INDEX IF NOT EXISTS idx_petitions_summon ON petitions(summon);
+CREATE INDEX IF NOT EXISTS idx_effect_fence_summon ON effect_fence(summon);
 ";
+
+
+// Queries over a run's tree of summons. The tree is walked first (by
+// idx_summons_parent), then each summon's rows by their own index; a
+// CROSS JOIN fixes that order, or SQLite may scan every event instead.
+pub(crate) const TREE_EFFECTS_SQL: &str = "WITH RECURSIVE tree(id) AS (SELECT id FROM summons WHERE id=?1 UNION ALL SELECT s.id FROM summons s JOIN tree t ON s.parent=t.id) SELECT e.kind,e.data FROM tree t CROSS JOIN events e ON e.summon=t.id WHERE e.kind IN ('op','held','check.failed') AND NOT (e.kind='op' AND json_extract(e.data,'$.effect')='pure') ORDER BY e.ts,e.seq";
+pub(crate) const TREE_PETITIONS_SQL: &str = "WITH RECURSIVE tree(id) AS (SELECT id FROM summons WHERE id=?1 UNION ALL SELECT s.id FROM summons s JOIN tree t ON s.parent=t.id) SELECT p.id,p.status,p.operation FROM tree t CROSS JOIN petitions p ON p.summon=t.id ORDER BY p.created";
+pub(crate) const TREE_EACH_FAILED_SQL: &str = "WITH RECURSIVE tree(id) AS (SELECT id FROM summons WHERE id=?1 UNION ALL SELECT s.id FROM summons s JOIN tree t ON s.parent=t.id) SELECT s.id, s.ritual, e.text FROM tree t CROSS JOIN events e ON e.summon=t.id JOIN summons s ON s.id=e.summon WHERE e.kind='each.failed' ORDER BY e.ts, e.seq";
 
 pub(crate) enum FenceAcquire {
     Proceed { fence_key: String },
@@ -758,7 +770,7 @@ impl Core {
                     .is_some_and(|flag| flag.load(Ordering::SeqCst))
         );
         let db = self.db.lock().unwrap();
-        let mut query = db.prepare("WITH RECURSIVE tree(id) AS (SELECT id FROM summons WHERE id=?1 UNION ALL SELECT s.id FROM summons s JOIN tree t ON s.parent=t.id) SELECT e.kind,e.data FROM events e JOIN tree t ON e.summon=t.id WHERE e.kind IN ('op','held','check.failed') AND NOT (e.kind='op' AND json_extract(e.data,'$.effect')='pure') ORDER BY e.ts,e.seq")
+        let mut query = db.prepare(TREE_EFFECTS_SQL)
             .map_err(|e| RpcErr::new("storage_failed",11,e.to_string()))?;
         let rows = query
             .query_map(params![id], |r| {
@@ -773,7 +785,7 @@ impl Core {
             rows.collect::<Result<Vec<_>, _>>()
                 .map_err(|e| RpcErr::new("storage_failed", 11, e.to_string()))?,
         );
-        let mut query = db.prepare("WITH RECURSIVE tree(id) AS (SELECT id FROM summons WHERE id=?1 UNION ALL SELECT s.id FROM summons s JOIN tree t ON s.parent=t.id) SELECT p.id,p.status,p.operation FROM petitions p JOIN tree t ON p.summon=t.id ORDER BY p.created")
+        let mut query = db.prepare(TREE_PETITIONS_SQL)
             .map_err(|e|RpcErr::new("storage_failed",11,e.to_string()))?;
         let rows=query.query_map(params![id],|r| Ok(json!({"id":r.get::<_,String>(0)?,"status":r.get::<_,String>(1)?,"operation":r.get::<_,String>(2)?})))
             .map_err(|e|RpcErr::new("storage_failed",11,e.to_string()))?;
@@ -801,7 +813,7 @@ impl Core {
     fn failed_item_warnings(db: &rusqlite::Connection, id: &str) -> Result<Vec<Value>, RpcErr> {
         let err = |e: rusqlite::Error| RpcErr::new("storage_failed", 11, e.to_string());
         let mut q = db
-            .prepare("WITH RECURSIVE tree(id) AS (SELECT id FROM summons WHERE id=?1 UNION ALL SELECT s.id FROM summons s JOIN tree t ON s.parent=t.id) SELECT s.id, s.ritual, e.text FROM events e JOIN tree t ON e.summon=t.id JOIN summons s ON s.id=e.summon WHERE e.kind='each.failed' ORDER BY e.ts, e.seq")
+            .prepare(TREE_EACH_FAILED_SQL)
             .map_err(err)?;
         let rows = q
             .query_map(params![id], |r| {
