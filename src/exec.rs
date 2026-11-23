@@ -1787,14 +1787,15 @@ fn chat_failure(sid: &str, e: &str) -> Fail {
 }
 
 /// The items of a top-level `each` already recorded: one checkpoint row per
-/// item (`each:ID#00000003`), or the whole list under `each:ID` as older cores
-/// wrote it. Rows stop at the first gap or unreadable item.
+/// item (`each:ID#00000003`), after the whole list under `each:ID` that older
+/// cores wrote (a run they started and this core revived has both). Rows stop
+/// at the first gap or unreadable item.
 fn checkpointed_items(map: &BTreeMap<String, Value>, id: &str) -> Vec<BatchItem> {
-    if let Some(list) = map.get(&format!("each:{id}")) {
-        return serde_json::from_value(list.clone()).unwrap_or_default();
-    }
+    let mut items: Vec<BatchItem> = map
+        .get(&format!("each:{id}"))
+        .and_then(|list| serde_json::from_value(list.clone()).ok())
+        .unwrap_or_default();
     let prefix = format!("each:{id}#");
-    let mut items = Vec::new();
     for (path, v) in map.range(prefix.clone()..) {
         let Some(n) = path.strip_prefix(&prefix) else { break };
         if n.parse::<usize>().ok() != Some(items.len()) {
@@ -2055,6 +2056,13 @@ mod tests {
         assert_eq!(got, ["a", "b"]);
         let legacy = BTreeMap::from([("each:loop".to_string(), json!([item("old")]))]);
         assert_eq!(checkpointed_items(&legacy, "loop")[0].item, "old");
+        // Revived by this core: the older list, then rows continuing its numbering.
+        let mixed = BTreeMap::from([
+            ("each:loop".to_string(), json!([item("old")])),
+            ("each:loop#00000001".to_string(), item("new")),
+        ]);
+        let got: Vec<String> = checkpointed_items(&mixed, "loop").into_iter().map(|i| i.item).collect();
+        assert_eq!(got, ["old", "new"]);
         assert!(checkpointed_items(&BTreeMap::new(), "loop").is_empty());
     }
 

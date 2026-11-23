@@ -784,7 +784,15 @@ impl Core {
                 })
             })
             .map_err(err)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(err)
+        let mut all = rows.collect::<Result<Vec<_>, _>>().map_err(err)?;
+        // A lenient loop nested in another can fail once per outer item.
+        const SHOWN: usize = 10;
+        if all.len() > SHOWN {
+            let more = all.len() - SHOWN;
+            all.truncate(SHOWN);
+            all.push(json!(format!("and {more} more loops with failed items (events of kind each.failed)")));
+        }
+        Ok(all)
     }
 
     fn admission_warnings(&self, id: &str) -> Value {
