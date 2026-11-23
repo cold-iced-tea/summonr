@@ -115,3 +115,10 @@ cases:
       passed: false
       tail: "BUGHUNT-CONFIRMED: Failed to deserialize ritual\ntest result: FAILED. 0 passed; 1 failed"
     expect: {outcome: returned, result: {verdict: untestable, honest: false}}
+  - id: comment-quoting-marker-does-not-break-honesty
+    inputs:
+      file: src/reagent.rs
+      test_file: "use crate::reagent::validate_grant_scope;\n#[test] fn t() {\n    // Prompt says: panic with BUGHUNT-CONFIRMED when the bug happens\n    assert!(validate_grant_scope(\"x\", &on, &into).is_err(), \"BUGHUNT-CONFIRMED: bypass\");\n}"
+      passed: false
+      tail: "BUGHUNT-CONFIRMED: bypass\ntest result: FAILED. 0 passed; 1 failed"
+    expect: {outcome: returned, result: {verdict: confirmed, honest: true}}

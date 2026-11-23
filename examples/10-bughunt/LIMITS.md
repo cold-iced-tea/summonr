@@ -204,3 +204,25 @@ both cloud backends.
   the test-stage harness works when paired with a capable test writer — and
   that the remaining bottleneck is upstream (hunt diagnosis, gather filtering,
   and honesty-guard refinement).
+
+### Follow-up: Bughunt v2 + `34b4259` runtime + `Qwen3.6-35B-A3B` hunter
+
+After landing the runtime/language improvements (`34b4259`) and updating
+bughunt to v2 (`keep:`, `data.range`, `data.index_of`, `data.unique_by`,
+`data.filter` `params:`, normalized `score.yaml`, hardened `verdict.yaml`,
+`triage` stage, `num_predict: 6144`, `env:`/`stdin:`):
+
+- **Pure-step speedup (`bughunt-rescore` on `hunts-fix-4979f5c.json`, btrfs):**
+  **394s → 4.24s (93× faster)**, lab DB 420 MB → 20 MB, `--brief` returned
+  cleanly with identical counts.
+- **v2 `bughunt-test` across all 4 labs (100 findings):** **4/4 `returned`**
+  (0 1 MiB failures), **3.7× faster** (`8,038s → 2,175s`), **-27.5% tokens**,
+  **3.3× fewer truncations** (`40/100 → 12/100`), **0 false confirmations**
+  (down from 3/3), and **61/100** noisy leads dismissed by triage.
+- **A/B hunt (`Qwen3.6-35B-A3B` vs `qwen3:4b`, same 3 angles):** 35B-A3B
+  (3B-active MoE) was **15–17% faster** than `qwen3:4b` (`gemini-reagents`:
+  310s vs 364s; `fix-4979f5c`: 2039s vs 2453s), jumped `gemini-reagents`
+  recall to **14/19** (vs 9/19 v2 on 4B), and on `fix-4979f5c` located **2/2**
+  gold hunks and **accurately diagnosed** `validate_grant_scope`'s
+  `_ => return Ok(())` bypass. `scan-file.yaml` now defaults to
+  `Qwen3.6-35B-A3B` (`num_predict: 4096`).

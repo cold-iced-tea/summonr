@@ -71,7 +71,10 @@ bindings:
       at the crate root, so reach code with crate:: paths (for
       src/reagents/file_reagent.rs that is crate::reagents::file_reagent).
       Private items are reachable only if their module and the item are
-      visible to the crate; prefer pub(crate) functions you can see.
+      visible to the crate; prefer pub(crate) functions you can see. If the
+      suspect function is private (`fn`, not `pub`), do NOT copy it into
+      `bughunt_repro.rs`; call the `pub` or `pub(crate)` entry point in the
+      same module (e.g. `crate::reagent::authorize(...)`) that reaches it.
       Write the complete file: use lines, then exactly one #[test] function.
       The test must panic with a message starting BUGHUNT-CONFIRMED ONLY at
       the single final assertion when the bug really happens, for example:

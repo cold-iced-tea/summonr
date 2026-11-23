@@ -96,11 +96,40 @@ steps:
   - id: no_should_panic
     operation: data.logic
     arguments: {operator: not, left: "${steps.should_panic.output}"}
-  # Reject tests that plant BUGHUNT-CONFIRMED in multiple branches (e.g. both
-  # arms of an if/else) so they fail no matter what the code does.
+  # Reject tests that plant BUGHUNT-CONFIRMED in multiple code branches (e.g.
+  # both arms of an if/else) so they fail no matter what the code does. Ignore
+  # `//` comment lines so quoting the prompt in a comment does not false-trip.
+  - id: test_lines
+    operation: data.lines
+    arguments: {text: "${inputs.test_file}"}
+  - id: strip_comments
+    each: line in steps.test_lines.output
+    keep: [kept]
+    steps:
+      - id: trimmed
+        operation: data.trim
+        arguments: {text: "${line}"}
+      - id: is_comment
+        operation: data.starts_with
+        arguments: {text: "${steps.trimmed.output}", prefix: "//"}
+      - id: kept
+        operation: data.select
+        arguments: {condition: "${steps.is_comment.output}", then: [], else: ["${line}"]}
+  - id: code_line_lists
+    operation: data.map
+    arguments:
+      values: "${steps.strip_comments.output}"
+      operation: data.get
+      arguments: {value: "${item}", path: /outputs/kept}
+  - id: code_lines
+    operation: data.flatten
+    arguments: {values: "${steps.code_line_lists.output}"}
+  - id: code_only
+    operation: data.join
+    arguments: {values: "${steps.code_lines.output}", separator: "\n"}
   - id: marker_parts
     operation: data.split
-    arguments: {text: "${inputs.test_file}", separator: BUGHUNT-CONFIRMED}
+    arguments: {text: "${steps.code_only.output}", separator: BUGHUNT-CONFIRMED}
   - id: marker_part_count
     operation: data.count
     arguments: {value: "${steps.marker_parts.output}"}

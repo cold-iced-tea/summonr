@@ -11,7 +11,7 @@ not say is in [LIMITS.md](LIMITS.md).
 | Ritual | Does | Model |
 | --- | --- | --- |
 | `bughunt-hunt` | Lists source files in `dirs` and runs `bughunt-scan-file` on each; reports `files_failed` and `chunks_failed`, and fails if every file failed (model or backend down) | |
-| `bughunt-scan-file` | Reads one file up to `stop_at` (`data.index_of`) in dynamic `data.range` chunks, asks for findings from one `angle`; marks each finding `quoted` when its snippet (8+ characters) really appears in the code; uses `each` `keep:` so file text never leaves the loop | `qwen3:4b`, one call per chunk |
+| `bughunt-scan-file` | Reads one file up to `stop_at` (`data.index_of`) in dynamic `data.range` chunks, asks for findings from one `angle`; marks each finding `quoted` when its snippet (8+ characters) really appears in the code; uses `each` `keep:` so file text never leaves the loop | `Qwen3.6-35B-A3B`, one call per chunk (override with `--model`) |
 | `bughunt-gather` | Merges hunts (`data.flatten`), drops unquoted, below-`min_confidence` (`data.filter` `params:`), angle-echo, and no-bug findings, collapses duplicates (`data.unique_by`), `pass` when `count ≥ min_batch` | none |
 | `bughunt-batch-ready` | Touchstone gate on gather's `pass` | none |
 | `bughunt-test` | Per finding (first `max_batch`, default 25, `keep: [result]`): optional `triage` re-reads a wider code window on `Qwen3.6-35B-A3B` and dismisses false leads before building; otherwise writes `src/bughunt_repro.rs`, `trial` runs it in a throwaway worktree (300 s timeout), one retry on build failure; cleanup never fails the run | `qwen3:4b` for low/medium, `Qwen3.6-35B-A3B` for triage and high/critical, optional Codex/Gemini for critical |
