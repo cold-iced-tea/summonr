@@ -810,12 +810,17 @@ fn recast_branches_from_earlier_step_reusing_prior_checkpoints() {
         panic!("summon {id} did not finish");
     };
 
+    // Steps that ran in a summon (pure steps are in its log, not its effects).
+    let ops_run = |id: &str| {
+        let events = c.dispatch("events", json!({"summon": id})).unwrap();
+        events.as_array().unwrap().iter().filter(|e| e["kind"] == "op").count()
+    };
     let run1 = c.dispatch("invoke", json!({"target": "two-step"})).unwrap();
     let id1 = run1["summon"].as_str().unwrap().to_string();
     let done1 = wait_done(&id1);
     assert_eq!(done1["outcome"], "returned", "{done1}");
     assert_eq!(done1["result"]["second"], json!(45));
-    assert_eq!(done1["effects"].as_array().unwrap().len(), 2, "{done1}");
+    assert_eq!(ops_run(&id1), 2, "{done1}");
 
     // Recast from `second`: keeps `first` checkpoint, only executes `second` (1 tool call).
     let recast = c
@@ -828,7 +833,7 @@ fn recast_branches_from_earlier_step_reusing_prior_checkpoints() {
     assert_eq!(done2["outcome"], "returned", "{done2}");
     assert_eq!(done2["result"]["first"], json!(15));
     assert_eq!(done2["result"]["second"], json!(45));
-    assert_eq!(done2["effects"].as_array().unwrap().len(), 1, "{done2}");
+    assert_eq!(ops_run(&id2), 1, "{done2}");
 
     // Invalid step name fails cleanly.
     let err = c
@@ -1670,4 +1675,23 @@ fn failed_items_in_a_lenient_each_warn_on_the_parent_record() {
     assert!(w.contains("in lenient-child"), "{w}");
     let brief = h.call("get", json!({"summon": rec["id"], "brief": true})).unwrap();
     assert_eq!(brief["warnings"], json!(warnings));
+}
+
+#[test]
+fn a_record_lists_effects_but_not_pure_steps() {
+    let h = super::test_home::Home::new("");
+    h.inscribe_def(
+        json!({"ritual": "pure-only", "steps": [
+            {"id": "a", "operation": "data.trim", "arguments": {"text": " a "}},
+            {"id": "b", "operation": "data.count", "arguments": {"value": "${steps.a.output}"}}],
+            "return": {"b": "${steps.b.output}"}}),
+        false,
+    );
+    let rec = h.run(json!({"target": "pure-only"}));
+    assert_eq!(rec["outcome"], "returned", "{rec}");
+    assert_eq!(rec["effects"], json!([]), "{rec}");
+    // The steps are still in the event log.
+    let events = h.call("events", json!({"summon": rec["id"]})).unwrap();
+    let ops = events.as_array().unwrap().iter().filter(|e| e["kind"] == "op").count();
+    assert_eq!(ops, 2, "{events}");
 }

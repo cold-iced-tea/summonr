@@ -758,7 +758,7 @@ impl Core {
                     .is_some_and(|flag| flag.load(Ordering::SeqCst))
         );
         let db = self.db.lock().unwrap();
-        let mut query = db.prepare("WITH RECURSIVE tree(id) AS (SELECT id FROM summons WHERE id=?1 UNION ALL SELECT s.id FROM summons s JOIN tree t ON s.parent=t.id) SELECT e.kind,e.data FROM events e JOIN tree t ON e.summon=t.id WHERE e.kind IN ('op','held','check.failed') ORDER BY e.ts,e.seq")
+        let mut query = db.prepare("WITH RECURSIVE tree(id) AS (SELECT id FROM summons WHERE id=?1 UNION ALL SELECT s.id FROM summons s JOIN tree t ON s.parent=t.id) SELECT e.kind,e.data FROM events e JOIN tree t ON e.summon=t.id WHERE e.kind IN ('op','held','check.failed') AND NOT (e.kind='op' AND json_extract(e.data,'$.effect')='pure') ORDER BY e.ts,e.seq")
             .map_err(|e| RpcErr::new("storage_failed",11,e.to_string()))?;
         let rows = query
             .query_map(params![id], |r| {
@@ -767,6 +767,8 @@ impl Core {
                 Ok(json!({"kind":kind,"data":parse_json(Some(raw))?}))
             })
             .map_err(|e| RpcErr::new("storage_failed", 11, e.to_string()))?;
+        // Pure steps change nothing outside the run; their records stay in
+        // the event log (`logs`) but would swamp a big run's record.
         value["effects"] = Value::Array(
             rows.collect::<Result<Vec<_>, _>>()
                 .map_err(|e| RpcErr::new("storage_failed", 11, e.to_string()))?,
