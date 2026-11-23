@@ -2280,6 +2280,28 @@ mod tests {
     }
 
     #[test]
+    fn a_filter_reads_inputs_through_params_as_values() {
+        let f = Fixture::new();
+        let def: Ritual = crate::ritual::parse_file(r#"
+ritual: floor-imp
+inputs: {floor: integer, team: string}
+steps:
+  - id: kept
+    operation: data.filter
+    arguments:
+      values: [{team: a, score: 9}, {team: a, score: 2}, {team: "a' or 'x' == 'x", score: 10}]
+      predicate: "item.team == params.team and item.score >= params.floor"
+      params: {floor: "${inputs.floor}", team: "${inputs.team}"}
+return: {kept: "${steps.kept.output}"}
+"#).unwrap();
+        let mut run = f.run(def, None);
+        run.inputs = json!({"floor": 5, "team": "a"});
+        let fin = run.execute();
+        assert_eq!(fin.outcome, Outcome::Returned, "{:?}", fin.error);
+        assert_eq!(fin.result["kept"], json!([{"team": "a", "score": 9}]));
+    }
+
+    #[test]
     fn steps_in_an_if_nested_in_an_untaken_branch_are_skipped() {
         let f = Fixture::new();
         let def = definition(json!({

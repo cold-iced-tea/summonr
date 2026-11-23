@@ -23,7 +23,7 @@ The `data` reagent contains deterministic functions over explicit arguments. It 
 | `data.join` | string array `values`, `separator` | Joined string; no implicit conversion. |
 | `data.replace` | `text`, nonempty literal `from`, `to` | All non-overlapping occurrences replaced. Expansion is bounded before allocation. |
 | `data.map` | array `values`, literal `operation`, object `arguments` | Array of pure operation results. |
-| `data.filter` | array `values`, literal `predicate` | Elements whose predicate returns true; non-booleans fail. |
+| `data.filter` | array `values`, literal `predicate`, optional `params` object | Elements whose predicate returns true; non-booleans fail. |
 | `data.fold` | array `values`, explicit `initial`, literal `operation`, object `arguments` | Final accumulator; empty array returns the initial value. |
 | `data.all` | boolean array `values` | `true` only when every element is `true` (empty array returns `true`). |
 | `data.any` | boolean array `values` | `true` when at least one element is `true` (empty array returns `false`). |
@@ -107,7 +107,22 @@ Body templates have their own scope: `item`, zero-based `index`, and, for fold,
 include necessary data in each item. Filter predicates can use `item` and `index`
 with the [condition language](expressions.md), and cannot contain `${...}` at
 all, even inside a quoted string: a value pasted into a predicate's text could
-change what it means. Body operations must be literal
+change what it means. To compare items with outside values, pass them in
+`params`; each entry is rendered like any argument and bound as a value, read in
+the predicate as `params.NAME`, so a string that looks like predicate source is
+only ever compared as a string:
+
+```yaml
+  - id: confident
+    operation: data.filter
+    arguments:
+      values: "${steps.findings.output}"
+      predicate: "item.confidence >= params.floor and item.file == params.file"
+      params: {floor: "${inputs.floor}", file: "${inputs.file}"}
+```
+
+Param names are plain identifiers, and a predicate may read only the params its
+step declares. Body operations must be literal
 `data.*` primitive names and must also be selected under `reagents.data.select`.
 Nested collection operators, I/O, model calls, and child rituals are refused.
 

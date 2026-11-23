@@ -547,7 +547,11 @@ impl V<'_> {
             if let Some(pred) = args.get("predicate").and_then(Value::as_str) {
                 self.vars.push(("item".into(), elem_ty.clone()));
                 self.vars.push(("index".into(), Ty::Int));
+                // Bound as values; `params.NAME` must be declared.
+                let params_ty = arg_types.get("params").cloned().unwrap_or_else(|| closed_obj([]));
+                self.vars.push(("params".into(), params_ty));
                 self.check_cond(pred, &format!("step {at} predicate"), None);
+                self.vars.pop();
                 self.vars.pop();
                 self.vars.pop();
             }

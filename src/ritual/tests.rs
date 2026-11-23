@@ -1397,4 +1397,27 @@ steps:
         let w = crate::ritual::lint(&crate::ritual::parse_file(&text).unwrap());
         assert!(w[0].contains("Add `keep: [numbered, verdict]` to `tested`"), "{w:?}");
     }
+
+    #[test]
+    fn filter_params_are_checked_statically() {
+        let none = |_: &str, _: Option<u32>| None;
+        let ok = crate::ritual::parse_file(r#"
+ritual: r
+inputs: {floor: integer}
+steps:
+  - id: f
+    operation: data.filter
+    arguments: {values: [1, 2], predicate: "item >= params.floor", params: {floor: "${inputs.floor}"}}
+"#).unwrap();
+        crate::ritual::validate(&ok, &none, &crate::reagent::tool, 3).unwrap();
+        let undeclared = crate::ritual::parse_file(r#"
+ritual: r
+steps:
+  - id: f
+    operation: data.filter
+    arguments: {values: [1, 2], predicate: "item >= params.floor"}
+"#).unwrap();
+        let errs = crate::ritual::validate(&undeclared, &none, &crate::reagent::tool, 3).unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("params.floor")), "{errs:?}");
+    }
 }

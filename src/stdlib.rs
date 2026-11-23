@@ -54,7 +54,8 @@ pub fn schema(name: &str) -> Option<Value> {
             (p, r)
         }
         "filter" => (
-            json!({"values":array,"predicate":{"type":"string","maxLength":4096}}),
+            json!({"values":array,"predicate":{"type":"string","maxLength":4096},
+                   "params":{"type":"object"}}),
             vec!["values", "predicate"],
         ),
         "all" | "any" => (
@@ -525,13 +526,15 @@ pub fn collection(
         None
     };
     let mut acc = a.get("initial").cloned().unwrap_or(Value::Null);
+    // A filter's params are values bound by name, never predicate text.
+    let params = a.get("params").cloned().unwrap_or_else(|| json!({}));
     let mut result = Vec::new();
     let mut bytes = 2usize;
     for (index, item) in a["values"].as_array().unwrap().iter().enumerate() {
         if let Some(tick) = tick {
             tick()?;
         }
-        let env = ItemEnv(json!({"item":item,"index":index,"acc":acc}));
+        let env = ItemEnv(json!({"item":item,"index":index,"acc":acc,"params":params}));
         let output = if let Some(expr) = &predicate {
             ritual::eval(expr, &env).map_err(invalid)?
         } else {
@@ -559,6 +562,22 @@ pub fn collection(
         }
     }
     bounded(if name == "fold" { acc } else { json!(result) }).map_err(invalid)
+}
+
+/// The names a filter's `params` declares: plain identifiers only.
+fn filter_param_names(args: &Value) -> Result<Vec<String>, String> {
+    let Some(params) = args.get("params") else {
+        return Ok(Vec::new());
+    };
+    let map = params.as_object().ok_or("filter `params` must be an object of name: value")?;
+    for name in map.keys() {
+        let ok = name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !ok {
+            return Err(format!("filter param name `{name}` must be a plain identifier"));
+        }
+    }
+    Ok(map.keys().cloned().collect())
 }
 
 pub fn validate_collection(op: &str, args: &Value) -> Result<(), String> {
@@ -606,11 +625,25 @@ pub fn validate_collection(op: &str, args: &Value) -> Result<(), String> {
         let expr = ritual::parse_expr(p)?;
         let mut paths = Vec::new();
         ritual::expr_refs(&expr, &mut paths);
-        if paths
-            .iter()
-            .any(|p| !matches!(p.first().map(String::as_str), Some("item" | "index")))
-        {
-            return Err("filter references must start with item or index".into());
+        let declared = filter_param_names(args)?;
+        for path in &paths {
+            match path.first().map(String::as_str) {
+                Some("item" | "index") => {}
+                Some("params") => match path.get(1) {
+                    Some(name) if declared.contains(name) => {}
+                    Some(name) => {
+                        return Err(format!(
+                            "filter predicate reads `params.{name}`, which `params` does not declare"
+                        ))
+                    }
+                    None => return Err("filter predicate must name a param: `params.NAME`".into()),
+                },
+                _ => {
+                    return Err("filter references must start with item, index or params \
+                                (pass outside values in `params: {name: value}`)"
+                        .into())
+                }
+            }
         }
     } else {
         let name = args
@@ -763,6 +796,29 @@ mod tests {
             &json!({"predicate":"item.team == '${inputs.team}'"})
         )
         .is_err());
+    }
+    #[test]
+    fn filter_params_are_values_never_predicate_source() {
+        let rows = json!([
+            {"color": "blue", "score": 0.9},
+            {"color": "red", "score": 0.4},
+            {"color": "blue' or 'x' == 'x", "score": 0.1},
+        ]);
+        let pred = "item.color == params.color and item.score >= params.floor";
+        let args = json!({"values": rows, "predicate": pred, "params": {"color": "blue", "floor": 0.5}});
+        validate_collection("data.filter", &args).unwrap();
+        assert_eq!(collection("filter", &args, None).unwrap(), json!([rows[0]]));
+        // A value shaped like predicate source is only ever compared as a value.
+        let hostile = json!({"values": rows, "predicate": "item.color == params.color",
+                             "params": {"color": "blue' or 'x' == 'x"}});
+        assert_eq!(collection("filter", &hostile, None).unwrap(), json!([rows[2]]));
+        let typed = json!({"values": rows, "predicate": "item.score >= params.floor", "params": {"floor": "0.5"}});
+        assert!(collection("filter", &typed, None).is_err(), "a string is not a number");
+        // Only declared params, with plain names, may be read.
+        assert!(validate_collection("data.filter", &json!({"predicate": "item.a == params.missing", "params": {"x": 1}})).is_err());
+        assert!(validate_collection("data.filter", &json!({"predicate": "item.a == params.x", "params": {"x y": 1}})).is_err());
+        assert!(validate_collection("data.filter", &json!({"predicate": "item.a == params.x"})).is_err());
+        assert!(validate_collection("data.filter", &json!({"predicate": "item.a == '${params.x}'", "params": {"x": 1}})).is_err());
     }
     #[test]
     fn extended_stdlib_logic_math_objects_and_hashing() {
