@@ -1,0 +1,64 @@
+language_version: 1
+ritual: bughunt-gather
+description: >-
+  Merge the findings of several hunts, drop weak ones, collapse findings
+  that point at the same line for the same kind, and say whether the batch
+  is big enough to test. Pure: no model, no files.
+inputs:
+  hunts: list
+  min_batch: {type: integer, default: 5, min: 1, max: 1000}
+essence: {requests: 0, time: 30m}
+steps:
+  - id: all
+    operation: data.fold
+    arguments:
+      values: "${inputs.hunts}"
+      initial: []
+      operation: data.concat
+      arguments: {left: "${acc}", right: "${item.findings}"}
+  # Drop findings whose snippet was not found in the code (made up).
+  # Predicates cannot take a parameter (no ${...} inside them), so the
+  # confidence floor is fixed here. See LIMITS.md.
+  - id: confident
+    operation: data.filter
+    arguments: {values: "${steps.all.output}", predicate: "item.quoted and item.confidence >= 0.3"}
+  - id: keyed
+    each: found in steps.confident.output
+    steps:
+      - id: spot
+        operation: data.project
+        arguments: {value: "${found}", fields: [file, kind, snippet]}
+      - id: key
+        operation: data.canonical_json
+        arguments: {value: "${steps.spot.output}"}
+      # A loop item exposes only its steps' outputs, not the loop variable.
+      - id: whole
+        operation: data.get
+        arguments: {value: "${found}", path: ""}
+  - id: by_key
+    operation: data.fold
+    arguments:
+      values: "${steps.keyed.output}"
+      initial: {}
+      operation: data.set
+      arguments: {value: "${acc}", field: "${item.outputs.key}", item: "${item.outputs.whole}"}
+  - id: entries
+    operation: data.entries
+    arguments: {value: "${steps.by_key.output}"}
+  - id: findings
+    operation: data.map
+    arguments:
+      values: "${steps.entries.output}"
+      operation: data.get
+      arguments: {value: "${item}", path: /value}
+  - id: count
+    operation: data.count
+    arguments: {value: "${steps.findings.output}"}
+  - id: pass
+    operation: data.compare
+    arguments: {left: "${steps.count.output}", right: "${inputs.min_batch}", operator: ge}
+return:
+  findings: "${steps.findings.output}"
+  count: "${steps.count.output}"
+  min_batch: "${inputs.min_batch}"
+  pass: "${steps.pass.output}"

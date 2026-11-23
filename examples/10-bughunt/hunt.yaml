@@ -1,0 +1,135 @@
+language_version: 1
+ritual: bughunt-hunt
+description: >-
+  Read source files in a few directories, chunk by chunk, and ask a small
+  model for bugs or ways around the system from one angle. Read-only.
+inputs:
+  dirs: {type: list, default: [src]}
+  angle: string
+  ext: {type: string, default: ".rs"}
+  chunk: {type: integer, default: 150, min: 1, max: 2000}
+  # No range operation exists, so chunk starts are listed; starts past the
+  # end of a file are skipped. Covers files up to 4,500 lines at chunk 150.
+  starts:
+    type: list
+    default: [0, 150, 300, 450, 600, 750, 900, 1050, 1200, 1350, 1500, 1650, 1800, 1950, 2100, 2250, 2400, 2550, 2700, 2850, 3000, 3150, 3300, 3450, 3600, 3750, 3900, 4050, 4200, 4350]
+requires:
+  - {reagent: file, action: list, on: {root: /absolute/path/to/target}}
+  - {reagent: file, action: read_text, on: {root: /absolute/path/to/target}}
+essence: {requests: 400, time: 3h}
+steps:
+  - id: per_dir
+    each: dir in inputs.dirs
+    steps:
+      - id: listing
+        operation: file.list
+        arguments: {root: /absolute/path/to/target, path: "${dir}"}
+      # An unreadable file (not UTF-8, over 1 MiB) is skipped, not fatal.
+      - id: per_entry
+        each: entry in steps.listing.output.entries
+        on_failure: continue
+        steps:
+          - id: is_source
+            operation: data.ends_with
+            arguments: {text: "${entry.name}", suffix: "${inputs.ext}"}
+          - id: is_file
+            operation: data.compare
+            arguments: {left: "${entry.kind}", right: file, operator: eq}
+          - id: wanted
+            operation: data.logic
+            arguments: {operator: and, left: "${steps.is_source.output}", right: "${steps.is_file.output}"}
+          - if: steps.wanted.output
+            then:
+              - id: scanned
+                ritual: bughunt-scan-file
+                arguments: {path: "${dir}/${entry.name}", angle: "${inputs.angle}", chunk: "${inputs.chunk}", starts: "${inputs.starts}"}
+          - id: entry_out
+            operation: data.select
+            arguments:
+              condition: "${steps.wanted.output}"
+              then: "${steps.scanned.output.findings}"
+              else: []
+          - id: entry_chunks_failed
+            operation: data.select
+            arguments:
+              condition: "${steps.wanted.output}"
+              then: "${steps.scanned.output.chunks_failed}"
+              else: 0
+      - id: entries_ok
+        operation: data.filter
+        arguments: {values: "${steps.per_entry.output}", predicate: 'item.status == "returned"'}
+      - id: dir_findings
+        operation: data.fold
+        arguments:
+          values: "${steps.entries_ok.output}"
+          initial: []
+          operation: data.concat
+          arguments: {left: "${acc}", right: "${item.outputs.entry_out}"}
+      - id: dir_chunks_failed
+        operation: data.fold
+        arguments:
+          values: "${steps.entries_ok.output}"
+          initial: 0
+          operation: data.arithmetic
+          arguments: {left: "${acc}", right: "${item.outputs.entry_chunks_failed}", operator: add}
+      # Files that were wanted (source files) but failed to scan.
+      - id: dir_files_failed_list
+        operation: data.filter
+        arguments: {values: "${steps.per_entry.output}", predicate: 'item.status != "returned"'}
+      - id: dir_files_failed
+        operation: data.count
+        arguments: {value: "${steps.dir_files_failed_list.output}"}
+      - id: dir_files_wanted_list
+        operation: data.filter
+        arguments: {values: "${steps.per_entry.output}", predicate: 'item.status != "returned" or item.outputs.wanted'}
+      - id: dir_files_wanted
+        operation: data.count
+        arguments: {value: "${steps.dir_files_wanted_list.output}"}
+  - id: all_findings
+    operation: data.fold
+    arguments:
+      values: "${steps.per_dir.output}"
+      initial: []
+      operation: data.concat
+      arguments: {left: "${acc}", right: "${item.outputs.dir_findings}"}
+  - id: chunks_failed
+    operation: data.fold
+    arguments:
+      values: "${steps.per_dir.output}"
+      initial: 0
+      operation: data.arithmetic
+      arguments: {left: "${acc}", right: "${item.outputs.dir_chunks_failed}", operator: add}
+  - id: files_failed
+    operation: data.fold
+    arguments:
+      values: "${steps.per_dir.output}"
+      initial: 0
+      operation: data.arithmetic
+      arguments: {left: "${acc}", right: "${item.outputs.dir_files_failed}", operator: add}
+  - id: files_wanted
+    operation: data.fold
+    arguments:
+      values: "${steps.per_dir.output}"
+      initial: 0
+      operation: data.arithmetic
+      arguments: {left: "${acc}", right: "${item.outputs.dir_files_wanted}", operator: add}
+  - id: some_wanted
+    operation: data.compare
+    arguments: {left: "${steps.files_wanted.output}", right: 0, operator: gt}
+  - id: every_file_failed
+    operation: data.compare
+    arguments: {left: "${steps.files_failed.output}", right: "${steps.files_wanted.output}", operator: eq}
+  - id: dead
+    operation: data.logic
+    arguments: {operator: and, left: "${steps.some_wanted.output}", right: "${steps.every_file_failed.output}"}
+  - id: alive
+    operation: data.logic
+    arguments: {operator: not, left: "${steps.dead.output}"}
+  - id: some_file_scanned
+    operation: data.assert
+    arguments: {condition: "${steps.alive.output}", message: "every source file failed to scan; is the model or backend available?"}
+return:
+  angle: "${inputs.angle}"
+  findings: "${steps.all_findings.output}"
+  files_failed: "${steps.files_failed.output}"
+  chunks_failed: "${steps.chunks_failed.output}"

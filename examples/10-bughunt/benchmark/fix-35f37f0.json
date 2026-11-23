@@ -1,0 +1,49 @@
+{
+ "target": "f7779ab",
+ "source": "fix commits 35f37f0",
+ "total": 9,
+ "by_file": {
+  "src/exec.rs": [
+   {
+    "id": "35f37f0:src/exec.rs:1",
+    "text": "let hold = hold || caller_hold;\n// A simulated run never files a petition: the held write is\n// authorized and recorded as simulated, with `would_hold`.\nlet would_hold = hold && self.io.simulates(op);\nif hold && !would_hold {\n// Buffer before acting: record what would be done and why, and\n// leave the decision to a person."
+   },
+   {
+    "id": "35f37f0:src/exec.rs:2",
+    "text": "};\nself.check_live()?;\nlet is_write = !matches!(effect, \"read\" | \"pure\");\nlet fence_key = if is_write && !self.io.simulates(op) {\nreagent::authorize(self.core.cfg.mail_root.as_deref(), op, &args, &auth)?;\nmatch self\n.core"
+   }
+  ],
+  "src/io.rs": [
+   {
+    "id": "35f37f0:src/io.rs:3",
+    "text": "}\n/// True when a call to `operation` is answered with what it would do\n/// rather than done. Decided by the `Io`, never by inspecting output.\nfn simulates(&self, _operation: &str) -> bool {\nfalse\n}"
+   },
+   {
+    "id": "35f37f0:src/io.rs:4",
+    "text": "self.inner.scripted()\n}\nfn simulates(&self, operation: &str) -> bool {\nis_write(operation)\n}\nfn chat("
+   },
+   {
+    "id": "35f37f0:src/io.rs:5",
+    "text": "args: &Value,\nauth: &reagent::Authority,\n) -> Result<Value, reagent::Fail> {\nif !is_write(operation) {\nreturn self.inner.call(root, operation, args, auth);\n}\nreagent::authorize(root, operation, args, auth)?;"
+   },
+   {
+    "id": "35f37f0:src/io.rs:6",
+    "text": "}\n}\n/// A known tool whose effect is neither read nor pure. An unknown operation\n/// is never guessed to be a write.\nfn is_write(operation: &str) -> bool {\neffect(operation).is_some_and(|e| !matches!(e, \"read\" | \"pure\"))\n}\n/// A known tool whose effect is pure: computed from its arguments alone, so\n/// it is never recorded and a replay computes it live, metered as live.\nfn is_pure(operation: &str) -> bool {\neffect(operation) == Some(\"pure\")\n}\nfn effect(operation: &str) -> Option<&'static str> {\noperation\n.split_once('.')\n.and_then(|(r, t)| reagent::tool(r, t))\n.map(|t| t.effect)\n}"
+   },
+   {
+    "id": "35f37f0:src/io.rs:7",
+    "text": "args: &Value,\nauth: &reagent::Authority,\n) -> Result<Value, reagent::Fail> {\nif is_pure(operation) {\nreturn self.inner.call(root, operation, args, auth);\n}\nlet result = self.inner.call(root, operation, args, auth);"
+   },
+   {
+    "id": "35f37f0:src/io.rs:8",
+    "text": "args: &Value,\nauth: &reagent::Authority,\n) -> Result<Value, reagent::Fail> {\nif is_pure(operation) {\nreturn Live.call(root, operation, args, auth);\n}\nreagent::authorize(root, operation, args, auth)?;"
+   }
+  ],
+  "src/reagent.rs": [
+   {
+    "id": "35f37f0:src/reagent.rs:9",
+    "text": ".ok_or_else(|| Fail::Failed(format!(\"bad operation `{operation}`\")))?;\nlet out = io.call(mail_root, operation, args, auth)?;\n// The Io says whether it simulated this call; its output is never inspected.\nif io.simulates(operation) {\nreturn Ok((out.clone(), Evidence::Simulated { would: out }));\n}\nlet Some(c) = check else {"
+   }
+  ]
+ }
+}

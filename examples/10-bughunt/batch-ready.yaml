@@ -1,0 +1,12 @@
+language_version: 1
+ritual: bughunt-batch-ready
+description: Touchstone gate for the bughunt rite; passes when gather says the batch is big enough.
+inputs:
+  output: object
+essence: {requests: 0, time: 10s}
+steps:
+  - id: ready
+    operation: data.get
+    arguments: {value: "${inputs.output}", path: /pass}
+return:
+  pass: "${steps.ready.output}"

@@ -1,0 +1,1 @@
+{"target": "fixture", "source": "drill", "total": 1, "by_file": {"src/auth.rs": [{"id": "g-auth", "text": "role.starts_with(\"admin\") || role == \"owner\""}]}}

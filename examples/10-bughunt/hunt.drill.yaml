@@ -1,0 +1,106 @@
+# Drill for bughunt-hunt: the model's findings are scripted by step id
+# (`scan`), so no model is needed. Files are read for real from
+# fixtures/target, so run it through ./drill.sh, which rewrites the root.
+drill: bughunt-hunt-cases
+ritual: bughunt-hunt
+cases:
+  - id: finding-gets-file-and-chunk
+    inputs: {dirs: [src], angle: authority bypass}
+    model:
+      scan:
+        - findings:
+            - {kind: bypass, severity: high, confidence: 0.9, claim: Any role starting with admin passes, trigger: role "administrator-ish", snippet: 'role.starts_with("admin")'}
+    expect:
+      outcome: returned
+      result:
+        angle: authority bypass
+        findings:
+          - {kind: bypass, severity: high, confidence: 0.9, claim: Any role starting with admin passes, trigger: role "administrator-ish", snippet: 'role.starts_with("admin")', file: src/auth.rs, start: 0, quoted: true}
+      model_calls: 1
+  - id: nothing-found-is-fine
+    inputs: {dirs: [src], angle: panics}
+    model:
+      scan:
+        - findings: []
+    expect:
+      outcome: returned
+      result: {angle: panics, findings: []}
+      model_calls: 1
+  - id: chunks-cover-the-whole-file
+    inputs: {dirs: [src], angle: panics, chunk: 3, starts: [0, 3, 6]}
+    model:
+      scan:
+        - findings: []
+        - findings:
+            - {kind: bug, severity: low, confidence: 0.5, claim: c, trigger: t, snippet: // end}
+    expect:
+      outcome: returned
+      result:
+        angle: panics
+        findings:
+          - {kind: bug, severity: low, confidence: 0.5, claim: c, trigger: t, snippet: // end, file: src/auth.rs, start: 3, quoted: false}
+      model_calls: 2
+  - id: invented-snippet-is-marked-unquoted
+    inputs: {dirs: [src], angle: panics}
+    model:
+      scan:
+        - findings:
+            - {kind: bug, severity: high, confidence: 0.9, claim: c, trigger: t, snippet: "let status = loop { ... }"}
+    expect:
+      outcome: returned
+      result:
+        angle: panics
+        findings:
+          - {kind: bug, severity: high, confidence: 0.9, claim: c, trigger: t, snippet: "let status = loop { ... }", file: src/auth.rs, start: 0, quoted: false}
+  - id: one-bad-chunk-does-not-sink-the-hunt
+    inputs: {dirs: [src], angle: panics, chunk: 3, starts: [0, 3]}
+    model:
+      scan:
+        - "not json at all"
+        - findings:
+            - {kind: bug, severity: low, confidence: 0.5, claim: c, trigger: t, snippet: // end}
+    expect:
+      outcome: returned
+      result:
+        angle: panics
+        findings:
+          - {kind: bug, severity: low, confidence: 0.5, claim: c, trigger: t, snippet: // end, file: src/auth.rs, start: 3, quoted: false}
+      model_calls: 2
+  - id: test-module-chunks-are-not-scanned
+    inputs: {dirs: [lib], angle: panics, chunk: 3, starts: [0, 3, 6]}
+    model:
+      scan:
+        - findings: []
+        - findings: []
+    expect:
+      outcome: returned
+      result: {angle: panics, findings: []}
+      model_calls: 2
+  - id: too-short-snippet-is-not-a-quote
+    inputs: {dirs: [src], angle: panics}
+    model:
+      scan:
+        - findings:
+            - {kind: bug, severity: low, confidence: 0.9, claim: c, trigger: t, snippet: "}"}
+    expect:
+      outcome: returned
+      result:
+        findings:
+          - {kind: bug, severity: low, confidence: 0.9, claim: c, trigger: t, snippet: "}", file: src/auth.rs, start: 0, quoted: false}
+  - id: a-real-sized-file-stays-under-the-data-cap
+    # ~120 KB: 10 chunks of code are scanned; the 200-test module is not.
+    inputs: {dirs: [big], angle: panics}
+    model:
+      scan: [{findings: []}, {findings: []}, {findings: []}, {findings: []}, {findings: []}, {findings: []}, {findings: []}, {findings: []}, {findings: []}, {findings: []}]
+    expect:
+      outcome: returned
+      result: {angle: panics, findings: [], files_failed: 0, chunks_failed: 0}
+      model_calls: 10
+  - id: a-dead-backend-is-loud-not-empty
+    inputs: {dirs: [lib], angle: panics}
+    model:
+      scan:
+        - "not json"
+    expect:
+      outcome: invalid
+      model_calls: 1

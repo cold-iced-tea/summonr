@@ -1,0 +1,41 @@
+# The bughunt rite: three hunts from different angles, a gather stage
+# gated on batch size, then the test stage. Rites cannot take a variable
+# number of stages, so the angles are fixed here (inputs can retarget them).
+rite: bughunt
+description: Hunt from three angles, gather when the batch is big enough, then try to prove each finding.
+inputs:
+  dirs: {type: list, default: [src]}
+  commit: string
+  angle_a: {type: string, default: "ways to bypass a permission, scope or resource limit"}
+  angle_b: {type: string, default: "panics, overflows or unbounded work on hostile input"}
+  angle_c: {type: string, default: "injection: untrusted text reaching a path, command, header, query or prompt"}
+  min_batch: {type: integer, default: 5}
+  escalate: {type: string, default: none}
+assumptions:
+  - id: target-commit
+    statement: The lab target is still checked out at the commit given as `commit`; findings refer to that code.
+stages:
+  - id: hunt_a
+    ritual: bughunt-hunt
+    assumes: [target-commit]
+    inputs: {dirs: "${inputs.dirs}", angle: "${inputs.angle_a}"}
+  - id: hunt_b
+    ritual: bughunt-hunt
+    assumes: [target-commit]
+    inputs: {dirs: "${inputs.dirs}", angle: "${inputs.angle_b}"}
+  - id: hunt_c
+    ritual: bughunt-hunt
+    assumes: [target-commit]
+    inputs: {dirs: "${inputs.dirs}", angle: "${inputs.angle_c}"}
+  - id: gather
+    ritual: bughunt-gather
+    after: [hunt_a, hunt_b, hunt_c]
+    inputs:
+      hunts: ["${stages.hunt_a.output}", "${stages.hunt_b.output}", "${stages.hunt_c.output}"]
+      min_batch: "${inputs.min_batch}"
+    gate: {type: touchstone, ritual: bughunt-batch-ready}
+  - id: test
+    ritual: bughunt-test
+    after: [gather]
+    assumes: [target-commit]
+    inputs: {findings: "${stages.gather.output.findings}", escalate: "${inputs.escalate}"}

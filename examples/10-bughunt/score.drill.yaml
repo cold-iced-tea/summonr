@@ -1,0 +1,39 @@
+# Drill for bughunt-score: pure. A finding hits a gold hunk when it names the
+# same file and its snippet (8+ characters, trimmed) appears in the hunk text.
+drill: bughunt-score-cases
+ritual: bughunt-score
+cases:
+  - id: one-hit-one-miss-one-noise
+    inputs:
+      gold:
+        total: 2
+        by_file:
+          src/a.rs:
+            - {id: g1, text: "fn check(x: u32) {\nif x > LIMIT { return; }\n}"}
+          src/b/c.rs:
+            - {id: g2, text: "let path = root.join(name);"}
+      findings:
+        - {file: src/a.rs, snippet: "  if x > LIMIT { return; }", claim: real}
+        - {file: src/a.rs, snippet: "println!(\"hello\");", claim: noise}
+        - {file: src/b/c.rs, snippet: "}", claim: too short to count}
+    expect:
+      outcome: returned
+      result: {gold_total: 2, gold_hit: 1, hit_ids: [g1], findings: 3, hits: 1, noise: 2}
+      model_calls: 0
+  - id: file-without-gold-is-noise
+    inputs:
+      gold: {total: 1, by_file: {src/a.rs: [{id: g1, text: "abcdefghij"}]}}
+      findings:
+        - {file: src/zzz.rs, snippet: abcdefghij, claim: wrong file}
+    expect:
+      outcome: returned
+      result: {gold_hit: 0, hits: 0, noise: 1}
+  - id: two-findings-same-gold-count-once
+    inputs:
+      gold: {total: 1, by_file: {src/a.rs: [{id: g1, text: "alpha beta gamma delta"}]}}
+      findings:
+        - {file: src/a.rs, snippet: alpha beta, claim: one}
+        - {file: src/a.rs, snippet: gamma delta, claim: two}
+    expect:
+      outcome: returned
+      result: {gold_hit: 1, hit_ids: [g1], hits: 2, noise: 0}

@@ -1,0 +1,22 @@
+# Drill for bughunt-bench: hunt (scripted model) then score against
+# fixtures/benchmark/gold.json. Run through ./drill.sh.
+drill: bughunt-bench-cases
+ritual: bughunt-bench
+cases:
+  - id: real-and-made-up-findings-scored
+    inputs: {dirs: [src], angles: [authority bypass, panics]}
+    model:
+      scan:
+        - findings:
+            - {kind: bypass, severity: high, confidence: 0.9, claim: prefix match, trigger: t, snippet: 'role.starts_with("admin")'}
+            - {kind: bug, severity: low, confidence: 0.9, claim: invented, trigger: t, snippet: "let x = unsafe { y };"}
+        - findings:
+            - {kind: bug, severity: high, confidence: 0.8, claim: same spot again, trigger: t, snippet: 'role.starts_with("admin")'}
+    expect:
+      outcome: returned
+      result:
+        angles: [authority bypass, panics]
+        hunts_failed: 0
+        raw: {gold_total: 1, gold_hit: 1, hit_ids: [g-auth], findings: 3, hits: 2, noise: 1}
+        after_gather: {gold_total: 1, gold_hit: 1, hit_ids: [g-auth], findings: 2, hits: 2, noise: 0}
+      model_calls: 2

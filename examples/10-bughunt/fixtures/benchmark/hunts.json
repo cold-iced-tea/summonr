@@ -1,0 +1,3 @@
+[{"angle": "a", "findings": [
+  {"kind": "bypass", "severity": "high", "confidence": 0.9, "claim": "prefix", "trigger": "t", "snippet": "role.starts_with(\"admin\")", "file": "src/auth.rs", "start": 0, "quoted": true},
+  {"kind": "bug", "severity": "low", "confidence": 0.9, "claim": "made up", "trigger": "t", "snippet": "let x = unsafe { y };", "file": "src/auth.rs", "start": 0, "quoted": false}]}]
