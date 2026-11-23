@@ -11,6 +11,9 @@ pub(crate) fn wait_for(client: &mut Client, id: &str, op: &Op) -> Result<Value, 
         Some(t) => Some(util::parse_duration(t).map_err(RpcErr::invalid)?),
         None => None,
     };
+    if op.cancel_on_drop {
+        client.tether(id)?;
+    }
     if op.json || !theme::tty() {
         return client.call("wait", json!({"summon": id, "timeout_ms": timeout, "brief": op.brief}));
     }

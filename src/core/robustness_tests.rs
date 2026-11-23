@@ -1801,3 +1801,35 @@ fn grant_check_lists_what_a_ritual_and_its_children_still_need() {
     let all = h.call("grant_check", json!({})).unwrap();
     assert_eq!(all["rituals"].as_array().unwrap().len(), 2, "{all}");
 }
+
+#[test]
+fn a_dropped_waiting_client_is_noticed_and_a_finished_wait_is_not() {
+    use std::os::unix::net::UnixStream;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
+    // The client goes away mid-wait: the watcher reports it once.
+    let (core_end, client_end) = UnixStream::pair().unwrap();
+    let done = Arc::new(AtomicBool::new(false));
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let d = dropped.clone();
+    let watcher = watch_for_drop(&core_end, done.clone(), move || {
+        d.fetch_add(1, Ordering::SeqCst);
+    })
+    .unwrap();
+    drop(client_end);
+    watcher.join().unwrap();
+    assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    // The wait finished first: nothing is cancelled when the client leaves after.
+    let (core_end, client_end) = UnixStream::pair().unwrap();
+    let done = Arc::new(AtomicBool::new(false));
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let d = dropped.clone();
+    let watcher = watch_for_drop(&core_end, done.clone(), move || {
+        d.fetch_add(1, Ordering::SeqCst);
+    })
+    .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    done.store(true, Ordering::SeqCst);
+    watcher.join().unwrap();
+    drop(client_end);
+    assert_eq!(dropped.load(Ordering::SeqCst), 0);
+}

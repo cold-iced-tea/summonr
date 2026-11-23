@@ -372,6 +372,11 @@ pub struct Wait {
     pub timeout_ms: Option<u64>,
     #[serde(default)]
     pub brief: bool,
+    /// Cancel the summon if this client goes away before the wait ends.
+    /// Read by the connection loop, which watches the client (`watch_for_drop`).
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub cancel_on_drop: bool,
 }
 impl Validate for Wait {
     fn validate(&self) -> Result<(), String> {

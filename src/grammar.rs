@@ -54,6 +54,9 @@ pub struct Op {
     pub live: bool,
     /// Only the outcome, result, usage and child runs (`brief` / `--brief`).
     pub brief: bool,
+    /// Cancel the summon if this waiting client goes away
+    /// (`tethered` / `--cancel-on-drop`).
+    pub cancel_on_drop: bool,
     /// `all` outside a reagent scope: every pending petition.
     pub all: bool,
     pub scopes: Vec<ReagentScope>,
@@ -461,6 +464,11 @@ pub const CLAUSES: &[(&str, &str, &str)] = &[
         "Show only outcome, result, usage and child runs (always fits one reply)",
     ),
     (
+        "tethered",
+        "--cancel-on-drop",
+        "With run --wait: cancel the summon if this client is killed or stops waiting",
+    ),
+    (
         "key K",
         "--key K",
         "A public key (ed25519:…) for familiar add or peer add",
@@ -530,6 +538,7 @@ const KEYWORDS: &[&str] = &[
     "baseline",
     "live",
     "brief",
+    "tethered",
     "key",
     "url",
     "via",
@@ -736,7 +745,7 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
         // Normalize flag names onto the keyword they spell.
         let clause = if is_flag {
             match name {
-                "json" | "wait" | "dry-run" | "replace" | "simulate" | "baseline" | "live" | "brief" | "all"
+                "json" | "wait" | "dry-run" | "replace" | "simulate" | "baseline" | "live" | "brief" | "all" | "cancel-on-drop"
                     if attached.is_some() =>
                 {
                     return Err(cur.err(
@@ -769,6 +778,7 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
                 "baseline" => "baseline",
                 "live" => "live",
                 "brief" => "brief",
+                "cancel-on-drop" => "tethered",
                 "key" => "key",
                 "url" => "url",
                 "via" => "via",
@@ -962,6 +972,12 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
                 }
                 op.brief = true;
             }
+            "tethered" => {
+                if op.cancel_on_drop {
+                    return Err(cur.err(pos, "tethered is given more than once", ""));
+                }
+                op.cancel_on_drop = true;
+            }
             "from" => {
                 let v = value(&mut cur, pos, attached, is_flag, "from mail selecting read")?;
                 if op.scopes.iter().any(|s| s.reagent == v) {
@@ -1021,7 +1037,8 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
             "all" => {
                 if scope_open {
                     op.scopes.last_mut().unwrap().all = true;
-                } else if op.verb == "petition" {
+                } else if matches!(op.verb.as_str(), "petition" | "banish") {
+                    // Every pending petition; every running summon.
                     op.all = true;
                 } else {
                     return Err(cur.err(pos, "no reagent scope is open", "from mail all"));
@@ -1070,6 +1087,14 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
     }
     if op.reason.is_some() && !matches!(op.verb.as_str(), "pact" | "reliquary" | "rite") {
         return Err(cur.err(last, "`because` gives a reason only to pact, reliquary, or rite commands", "pact reject order-parts 3 because late"));
+    }
+    // `banish all`: the target position holds `all`; no summon id is spelled so.
+    if op.verb == "banish" && op.positionals == ["all"] {
+        op.positionals.clear();
+        op.all = true;
+    }
+    if op.cancel_on_drop && !op.wait {
+        return Err(cur.err(last, "`tethered` (`--cancel-on-drop`) ties a summon to a client that waits for it; add `then return` (`--wait`)", "run bench --wait --cancel-on-drop"));
     }
     if op.children.is_some() && op.verb != "graveyard" {
         return Err(cur.err(last, "`children` lists a run's child summons only with history", "history children s-1234"));
@@ -1188,6 +1213,9 @@ pub fn render(op: &Op, style: Style) -> Vec<String> {
     }
     if op.brief {
         out.push(if kw { "brief".into() } else { "--brief".into() });
+    }
+    if op.cancel_on_drop {
+        out.push(if kw { "tethered".into() } else { "--cancel-on-drop".into() });
     }
     if op.replace {
         out.push(if kw {
@@ -1308,6 +1336,8 @@ mod tests {
         ("rite start ./r.yaml reading hunts=./h.json given n=2", "workflow start ./r.yaml --arg-file hunts=./h.json --arg n=2"),
         ("graveyard children s-1 returning json", "history --children s-1 --json"),
         ("grant check bughunt-bench", "allow check bughunt-bench"),
+        ("invoke bench then return tethered", "run bench --wait --cancel-on-drop"),
+        ("banish all", "stop --all"),
     ];
 
     #[test]
@@ -1318,6 +1348,12 @@ mod tests {
         assert!(p("allow r --from file --select list,read_text").is_ok());
         // Elsewhere a stray word keeps the general message.
         assert!(p("allow r --from file stray").unwrap_err().msg.contains("expected a clause"));
+    }
+
+    #[test]
+    fn tethered_needs_a_waiting_client() {
+        assert!(p("run bench --wait --cancel-on-drop").unwrap().cancel_on_drop);
+        assert!(p("run bench --cancel-on-drop").is_err());
     }
 
     #[test]

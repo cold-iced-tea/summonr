@@ -26,7 +26,7 @@ Scripts and agents should use the flag spelling with `--json`. `summonr help` li
 | `job` | `queue` | Shared result work: `create FILE`, `work NAME`, `status NAME`, `item NAME ITEM`, `retry NAME ITEM` |
 | `daemon` | `panel` | Open the daemon status panel |
 | `await` | `wait` | Block until a summon ends |
-| `banish` | `stop` | Ask a summon to stop |
+| `banish` | `stop` | Ask a summon to stop; `stop --all` (`banish all`) asks every running summon in this home to stop |
 | `revive` | `resume` | Resume an exhausted, cancelled, or interrupted summon from its last checkpoint |
 | `recast RUN STEP` | | Re-run a summon from `STEP`, reusing earlier step outputs |
 | `graveyard` | `history` | List ended summons; `children RUN` (`--children RUN`) lists one run's child summons, ended or not |
@@ -73,6 +73,7 @@ Scripts and agents should use the flag spelling with `--json`. `summonr help` li
 | `replacement` | `--replace` | Explicitly replace the named target |
 | `against SET` | `--against SET` | Assay set to run |
 | `baseline` | `--baseline` | Record the account as the baseline |
+| `tethered` | `--cancel-on-drop` | With `run --wait`: if this client goes away before the summon ends (killed, interrupted, or stopped by `--timeout`), the core cancels the summon instead of leaving it running. A step already in flight, such as a model request or command, finishes first |
 | `recording PATH` | `--record PATH` | `invoke` only: save every model call and every read or write tool call to a cassette (pure `data` operations are not recorded). Replaces an existing cassette; refuses (exit 2) a file that is not one |
 | `replaying PATH` | `--replay PATH` | `invoke` only: answer model calls and reads from a cassette, fully offline; compute `data` operations; always simulate writes. A missing cassette is exit 3, an unparseable one exit 2 |
 | `simulating` | `--simulate` | `invoke` only: authorize writes but do not perform them |

@@ -726,6 +726,30 @@ fn run(op: Op, paths: &Paths, style: Style) -> i32 {
                 |d| list(d, "No summon has ended yet."),
             ),
         },
+        "banish" if op.all => {
+            // Every running summon in this home; a root's children stop with it.
+            let res = client.call("list", json!({"scope": "active"})).and_then(|active| {
+                let mut stopped = Vec::new();
+                for r in active.as_array().into_iter().flatten().filter(|r| r["parent"].is_null()) {
+                    let id = s(r, "id").to_string();
+                    client.call("cancel", json!({"summon": id}))?;
+                    stopped.push(json!({"summon": id, "ritual": r["ritual"]}));
+                }
+                Ok(json!({"stopped": stopped}))
+            });
+            finish(res, json_out, |d| {
+                let all = d["stopped"].as_array().cloned().unwrap_or_default();
+                if all.is_empty() {
+                    println!("Nothing is running.");
+                }
+                for r in &all {
+                    println!("Banishing {} ({}).", s(r, "summon"), s(r, "ritual"));
+                }
+                if !all.is_empty() {
+                    println!("A request already underway may finish first.");
+                }
+            })
+        }
         "banish" => {
             let res = target(&op, "a summon ID")
                 .and_then(|id| client.call("cancel", json!({"summon": id})));

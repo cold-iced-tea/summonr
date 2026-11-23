@@ -263,6 +263,36 @@ pub(crate) const TREE_EFFECTS_SQL: &str = "WITH RECURSIVE tree(id) AS (SELECT id
 pub(crate) const TREE_PETITIONS_SQL: &str = "WITH RECURSIVE tree(id) AS (SELECT id FROM summons WHERE id=?1 UNION ALL SELECT s.id FROM summons s JOIN tree t ON s.parent=t.id) SELECT p.id,p.status,p.operation FROM tree t CROSS JOIN petitions p ON p.summon=t.id ORDER BY p.created";
 pub(crate) const TREE_EACH_FAILED_SQL: &str = "WITH RECURSIVE tree(id) AS (SELECT id FROM summons WHERE id=?1 UNION ALL SELECT s.id FROM summons s JOIN tree t ON s.parent=t.id) SELECT s.id, s.ritual, e.text FROM tree t CROSS JOIN events e ON e.summon=t.id JOIN summons s ON s.id=e.summon WHERE e.kind='each.failed' ORDER BY e.ts, e.seq";
 
+/// Watch a client connection while a request it sent is being served. If
+/// the client goes away (it was killed, or its terminal closed) before
+/// `done` is set, call `on_drop` once. Peeks on a duplicate of the socket
+/// without consuming anything, so the reply can still be written.
+pub(crate) fn watch_for_drop(
+    stream: &std::os::unix::net::UnixStream,
+    done: Arc<AtomicBool>,
+    on_drop: impl FnOnce() + Send + 'static,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    use std::os::unix::io::AsRawFd;
+    let watched = stream.try_clone()?;
+    Ok(std::thread::spawn(move || loop {
+        if done.load(Ordering::SeqCst) {
+            return;
+        }
+        let mut byte = [0u8; 1];
+        // SAFETY: `watched` owns the descriptor for the whole loop.
+        let n = unsafe {
+            libc::recv(watched.as_raw_fd(), byte.as_mut_ptr().cast(), 1, libc::MSG_PEEK | libc::MSG_DONTWAIT)
+        };
+        let gone = n == 0
+            || (n < 0 && !matches!(std::io::Error::last_os_error().kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted));
+        if gone && !done.load(Ordering::SeqCst) {
+            on_drop();
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }))
+}
+
 /// The `summonr allow` command that grants one missing atom.
 fn allow_command(ritual: &str, g: &Grant) -> String {
     let mut c = format!("summonr allow {ritual} --from {} --select {}", g.reagent, g.action);
@@ -3046,12 +3076,31 @@ impl Core {
                                 core.serve_subscribe(&mut stream, id, &req["params"]);
                                 break;
                             }
+                            // `run --wait --cancel-on-drop`: a client killed
+                            // mid-wait cancels its summon instead of leaving
+                            // it running (and holding a model) unattended.
+                            let done = Arc::new(AtomicBool::new(false));
+                            let tether = (method == "wait" && req["params"]["cancel_on_drop"] == true)
+                                .then(|| req["params"]["summon"].as_str().map(String::from))
+                                .flatten()
+                                .and_then(|summon| {
+                                    let c = core.clone();
+                                    watch_for_drop(&stream, done.clone(), move || {
+                                        eprintln!("summonr core: the client waiting on {summon} went away; cancelling it");
+                                        let _ = c.dispatch("cancel", json!({"summon": summon}));
+                                    })
+                                    .ok()
+                                });
                             let reply = match core.dispatch(&method, req["params"].clone()) {
                                 Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
                                 Err(e) => {
                                     json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": e.message, "data": {"code": e.code, "exit": e.exit, "detail": e.data}}})
                                 }
                             };
+                            done.store(true, Ordering::SeqCst);
+                            if let Some(t) = tether {
+                                let _ = t.join();
+                            }
                             if write_frame(&mut stream, &reply).is_err() {
                                 break;
                             }

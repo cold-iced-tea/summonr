@@ -104,6 +104,22 @@ impl Client {
     }
 
     /// Connect to the core, starting it if no socket answers.
+    /// Tie `summon` to this process: a second connection waits on it with
+    /// `cancel_on_drop`, so if this process ends before the summon does (it
+    /// was killed, interrupted, or stopped waiting), the core cancels it.
+    pub fn tether(&self, summon: &str) -> Result<(), RpcErr> {
+        let unreachable = |e: String| RpcErr::new("core_unavailable", 8, format!("cannot tether {summon}: {e}"));
+        let addr = self.stream.peer_addr().map_err(|e| unreachable(e.to_string()))?;
+        let path = addr.as_pathname().ok_or_else(|| unreachable("the core socket has no path".into()))?;
+        let stream = UnixStream::connect(path).map_err(|e| unreachable(e.to_string()))?;
+        let mut held = Client { stream, next: 1 };
+        let id = summon.to_string();
+        std::thread::spawn(move || {
+            let _ = held.call("wait", serde_json::json!({"summon": id, "cancel_on_drop": true}));
+        });
+        Ok(())
+    }
+
     pub fn connect(paths: &Paths) -> Result<Client, RpcErr> {
         let sock = paths.socket();
         if let Ok(stream) = UnixStream::connect(&sock) {
