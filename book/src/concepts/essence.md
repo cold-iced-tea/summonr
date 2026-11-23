@@ -57,7 +57,7 @@ The item that was cut short is not counted as processed; it stays in `remaining`
 
 ## Cancellation
 
-`summonr banish ID` (or `stop`, or `stop_run` over MCP) asks the whole summon tree to stop. Banishing a child stops its root. A request already in flight may finish first; nothing after it runs. The outcome is `cancelled`.
+`summonr banish ID` (or `stop`, or `stop_run` over MCP) asks the whole summon tree to stop. Banishing a child stops its root. A running command is killed, and a model request to a plain-HTTP backend (a local Ollama) has its connection closed so the backend stops generating; see [Reliability](reliability.md) for HTTPS backends. Nothing after it runs except the ritual's [`finally` steps](../reference/ritual-format.md#finally). The outcome is `cancelled`.
 
 Disconnecting from a remote backend cannot prove it stopped computing. Scheduling, DNS and cleanup can delay the final return slightly, so time limits are firm bounds on what Summonr *acts on*, not a guarantee of an exact wall-clock stop.
 

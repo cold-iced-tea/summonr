@@ -4,6 +4,7 @@
 
 mod backend;
 mod cancel;
+mod cancellable_http;
 mod cassette;
 mod cli;
 mod core;
@@ -786,7 +787,7 @@ fn run(op: Op, paths: &Paths, style: Style) -> i32 {
                     println!("Banishing {} ({}).", s(r, "summon"), s(r, "ritual"));
                 }
                 if !all.is_empty() {
-                    println!("Commands stop at once; a model already answering may keep generating.");
+                    println!("Commands and plain-HTTP model requests stop at once; an HTTPS backend may keep generating.");
                 }
             })
         }
@@ -795,7 +796,7 @@ fn run(op: Op, paths: &Paths, style: Style) -> i32 {
                 .and_then(|id| client.call("cancel", json!({"summon": id})));
             finish(res, json_out, |d| {
                 println!(
-                    "Banishing {}. Commands stop at once; a model already answering may keep generating.",
+                    "Banishing {}. Commands and plain-HTTP model requests stop at once; an HTTPS backend may keep generating.",
                     s(d, "summon")
                 )
             })

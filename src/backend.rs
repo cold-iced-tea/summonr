@@ -246,10 +246,18 @@ fn http_with_headers(
     let Some(cancel) = crate::cancel::current() else {
         return http_blocking(method, url, body, headers, timeout);
     };
-    // ureq 2 cannot abort a request in progress, so it runs on a helper
-    // thread and this one returns as soon as the run is cancelled. The
-    // abandoned request keeps its connection until the backend answers or
-    // the timeout ends it (a server may go on generating until then).
+    // A plain-HTTP backend (a local Ollama) gets a socket Summonr owns and
+    // closes on cancel, so the backend sees the hang-up and stops.
+    if url.starts_with("http://") {
+        return match crate::cancellable_http::request(method, url, body, headers, timeout, &cancel) {
+            crate::cancellable_http::Outcome::Done(r) => r,
+            crate::cancellable_http::Outcome::Cancelled => Err(CANCELLED.into()),
+        };
+    }
+    // ureq 2 cannot abort an HTTPS request in progress, so it runs on a
+    // helper thread and this one returns as soon as the run is cancelled.
+    // The abandoned request keeps its connection until the backend answers
+    // or the timeout ends it (a server may go on generating until then).
     let (tx, rx) = std::sync::mpsc::channel();
     let (method, url) = (method.to_string(), url.to_string());
     let body = body.cloned();

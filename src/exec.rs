@@ -2514,6 +2514,48 @@ return: {kept: "${steps.kept.output}"}
     }
 
     #[test]
+    fn cancelling_a_model_request_closes_its_connection_so_the_backend_can_stop() {
+        // A backend that reads the request, never answers, and reports when
+        // the client hangs up: what Ollama watches to stop generating.
+        use std::io::Read;
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = server.local_addr().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut s, _) = server.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            loop {
+                match s.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => continue,
+                }
+            }
+            let _ = tx.send(Instant::now());
+        });
+        let mut f = Fixture::new();
+        Arc::get_mut(&mut f.core).unwrap().cfg.ollama_url = Some(format!("http://{addr}"));
+        let def = definition(json!({
+            "ritual": "slow-model-imp", "model": "ollama/never",
+            "steps": [{"id": "m", "model": {"prompt": "hi"}}],
+            "return": {"m": "${steps.m.output}"},
+        }));
+        let mut run = f.run(def, None);
+        let cancel = run.cancel.clone();
+        let cancelled_at = Arc::new(Mutex::new(None));
+        let at = cancelled_at.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            *at.lock().unwrap() = Some(Instant::now());
+            cancel.store(true, Ordering::SeqCst);
+        });
+        let fin = run.execute();
+        assert_eq!(fin.outcome, Outcome::Cancelled, "{:?}", fin.error);
+        let hung_up = rx.recv_timeout(Duration::from_secs(3)).expect("the connection was left open after the cancel");
+        let at = cancelled_at.lock().unwrap().unwrap();
+        assert!(hung_up.saturating_duration_since(at) < Duration::from_millis(500), "the backend saw the hang-up {:?} after the cancel", hung_up.saturating_duration_since(at));
+    }
+
+    #[test]
     fn cancelling_a_run_stops_waiting_for_a_model_that_has_not_answered() {
         // A backend that accepts the request and never answers.
         let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

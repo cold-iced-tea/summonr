@@ -2275,7 +2275,7 @@ impl Core {
                 self.emit(
                     &root,
                     "banish",
-                    "termination requested; running commands and servers are stopped, and a model request is abandoned (the backend may keep generating until it answers)",
+                    "termination requested; running commands and servers are stopped, a plain-HTTP model request's connection is closed, and an HTTPS one is abandoned (that backend may keep generating until it answers)",
                     json!({}),
                 );
                 Ok(json!({"summon": root, "requested": true}))
