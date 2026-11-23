@@ -886,8 +886,14 @@ impl Run {
                 }
                 // Message bodies stay out of the ledger line; the model
                 // payload record holds what was actually sent.
+                let is_cmd = op.starts_with("cmd.") && tool != "list";
                 let shown = match (&out, tool) {
                     (Value::Array(a), _) => format!("{} items", a.len()),
+                    _ if is_cmd => format!(
+                        "exit {}, {} chars",
+                        out["code"],
+                        out["stdout"].as_str().map(|t| t.chars().count()).unwrap_or(0)
+                    ),
                     (_, "read") => format!(
                         "{} chars",
                         out["text"].as_str().map(|t| t.chars().count()).unwrap_or(0)
@@ -914,6 +920,15 @@ impl Run {
                 let mut data = json!({"step":sid,"operation": op, "arguments": args, "effect": effect,"state":state,"evidence":evidence});
                 if would_hold {
                     data["would_hold"] = json!(true);
+                }
+                if is_cmd && !simulated {
+                    // What a person debugging a wrapped CLI looks for first.
+                    data["code"] = out["code"].clone();
+                    data["stderr_tail"] = json!(crate::trial_reagent::tail_within(
+                        out["stderr"].as_str().unwrap_or(""),
+                        15,
+                        crate::trial_reagent::TAIL_BYTES,
+                    ));
                 }
                 self.emit("op", text, data);
                 if !matches!(effect, "read" | "pure") {
@@ -1822,12 +1837,25 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
+            Self::with_config("")
+        }
+
+        fn with_config(yaml: &str) -> Self {
             let root = std::env::temp_dir().join(new_id("summonr-exec"));
             let paths = Paths {
                 runtime: root.join("run"),
                 state: root.join("state"),
                 config: root.join("config"),
             };
+            if !yaml.is_empty() {
+                std::fs::create_dir_all(&paths.config).unwrap();
+                std::fs::write(
+                    paths.config.join("config.yaml"),
+                    yaml.replace("ROOT", &root.to_string_lossy()),
+                )
+                .unwrap();
+                std::fs::create_dir_all(root.join("work")).unwrap();
+            }
             let core = Core::open(paths).unwrap();
             Self { core, root }
         }
@@ -2001,6 +2029,31 @@ mod tests {
         let legacy = BTreeMap::from([("each:loop".to_string(), json!([item("old")]))]);
         assert_eq!(checkpointed_items(&legacy, "loop")[0].item, "old");
         assert!(checkpointed_items(&BTreeMap::new(), "loop").is_empty());
+    }
+
+    #[test]
+    fn a_cmd_step_records_its_exit_code_and_stderr_tail() {
+        let f = Fixture::with_config(
+            "commands:\n  noisy:\n    program: sh\n    args: ['-c', 'echo warming-up >&2; printf done']\n    cwd: ROOT/work\n",
+        );
+        let def = definition(json!({
+            "ritual": "cmd-record-imp",
+            "reagents": {"cmd": {"select": ["read"]}},
+            "steps": [{"id": "run", "operation": "cmd.read", "arguments": {"command": "noisy"}}],
+            "return": {"out": "${steps.run.output.stdout}"},
+        }));
+        let mut run = f.run(def, None);
+        run.grants = Arc::new(vec![crate::reagent::need("cmd", "read", &[("command", "noisy")], &[])]);
+        let fin = run.execute();
+        assert_eq!(fin.outcome, Outcome::Returned, "{:?}", fin.error);
+        let db = f.core.db.lock().unwrap();
+        let (text, data): (String, String) = db
+            .query_row("SELECT text, data FROM events WHERE kind='op'", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        let data: Value = serde_json::from_str(&data).unwrap();
+        assert!(text.ends_with("exit 0, 4 chars"), "{text}");
+        assert_eq!(data["code"], 0);
+        assert_eq!(data["stderr_tail"], "warming-up");
     }
 
     #[test]

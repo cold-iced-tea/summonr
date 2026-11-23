@@ -25,7 +25,7 @@ const STDOUT_MARK: &str = "\n--- stdout ---\n";
 
 /// The last `n` lines, then at most the last `max` bytes of those, cut on a
 /// character boundary. The end of a test log is where the failure is.
-fn tail_within(text: &str, n: usize, max: usize) -> String {
+pub(crate) fn tail_within(text: &str, n: usize, max: usize) -> String {
     let lines: Vec<&str> = text.trim_end().lines().collect();
     let joined = lines[lines.len().saturating_sub(n)..].join("\n");
     let mut start = joined.len().saturating_sub(max);
@@ -43,7 +43,7 @@ fn tail(text: &str, n: usize) -> String {
 /// their order in time is unknowable: a test runner may buffer stdout until
 /// exit, after the failure it already wrote to stderr. Each stream gets half
 /// the budget, and whatever one leaves unused goes to the other.
-fn report(stdout: &str, stderr: &str) -> String {
+pub(crate) fn report(stdout: &str, stderr: &str) -> String {
     let (out, err) = (stdout.trim(), stderr.trim());
     if err.is_empty() {
         return tail(out, 30);

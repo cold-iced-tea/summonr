@@ -606,6 +606,16 @@ pub struct CommandConfig {
     /// Optional configured `read` command name used to compute a resource
     /// digest when a `write` command is held as a petition.
     pub digest_command: Option<String>,
+    /// Environment variables passed through from the core, by name. When
+    /// set, the command gets exactly these (and never Summonr's secrets);
+    /// when absent it inherits the core's environment minus those secrets.
+    #[serde(default)]
+    pub env: Option<Vec<String>>,
+    /// A parameter written to the command's standard input instead of an
+    /// argument. Unlike an argument it may span lines; it may not also
+    /// appear in `args`, and it is required.
+    #[serde(default)]
+    pub stdin: Option<String>,
 }
 
 /// Constraints on one parameter of a configured `cmd` command.

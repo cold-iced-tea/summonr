@@ -68,29 +68,48 @@ pub(crate) fn config<'a>(auth: &'a Authority) -> Result<&'a Config, Fail> {
 }
 
 /// Strip credentials and git/gh redirection variables from a child process.
+/// Whether `name` is one of the variables Summonr keeps from every program
+/// it runs (its own and its providers' credentials, git config injection).
+pub(crate) fn is_sensitive_env(name: &str, cfg: Option<&Config>) -> bool {
+    if SENSITIVE_ENV.contains(&name)
+        || name.starts_with("GIT_CONFIG_KEY_")
+        || name.starts_with("GIT_CONFIG_VALUE_")
+    {
+        return true;
+    }
+    cfg.is_some_and(|cfg| {
+        cfg.http_auth.values().any(|e| e.token_env == name)
+            || cfg.providers.values().any(|p| p.api_key_env.as_deref() == Some(name))
+            || cfg.mcp_auth.as_ref().and_then(|a| a.hs256_secret_env.as_deref()) == Some(name)
+    })
+}
+
+const SENSITIVE_ENV: &[&str] = &[
+    "SUMMONR_OPENAI_API_KEY",
+    "OPENAI_API_KEY",
+    "SUMMONR_ANTHROPIC_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "SUMMONR_KEY_PASSPHRASE",
+    "GH_REPO",
+    "GH_HOST",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_GLOBAL",
+];
+
 pub(crate) fn strip_sensitive_env(c: &mut Command, cfg: Option<&Config>) {
-    for var in [
-        "SUMMONR_OPENAI_API_KEY",
-        "OPENAI_API_KEY",
-        "SUMMONR_ANTHROPIC_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "SUMMONR_KEY_PASSPHRASE",
-        "GH_REPO",
-        "GH_HOST",
-        "GIT_CONFIG_PARAMETERS",
-        "GIT_CONFIG_COUNT",
-        "GIT_CONFIG_GLOBAL",
-    ] {
+    for var in SENSITIVE_ENV {
         c.env_remove(var);
     }
     for (k, _) in std::env::vars_os() {
         if let Some(name) = k.to_str() {
-            if name.starts_with("GIT_CONFIG_KEY_") || name.starts_with("GIT_CONFIG_VALUE_") {
+            if is_sensitive_env(name, cfg) {
                 c.env_remove(name);
             }
         }
     }
     if let Some(cfg) = cfg {
+        // Configured secrets may be named but unset here; remove anyway.
         for entry in cfg.http_auth.values() {
             c.env_remove(&entry.token_env);
         }
@@ -99,11 +118,7 @@ pub(crate) fn strip_sensitive_env(c: &mut Command, cfg: Option<&Config>) {
                 c.env_remove(env_name);
             }
         }
-        if let Some(env_name) = cfg
-            .mcp_auth
-            .as_ref()
-            .and_then(|a| a.hs256_secret_env.as_deref())
-        {
+        if let Some(env_name) = cfg.mcp_auth.as_ref().and_then(|a| a.hs256_secret_env.as_deref()) {
             c.env_remove(env_name);
         }
     }
@@ -114,10 +129,23 @@ pub(crate) fn strip_sensitive_env(c: &mut Command, cfg: Option<&Config>) {
 /// for parsing; other programs (the user's tests) keep theirs.
 pub(crate) fn command(prog: &str, git: bool, cfg: Option<&Config>) -> Command {
     let mut c = Command::new(prog);
+    strip_repo_env(&mut c);
+    strip_sensitive_env(&mut c, cfg);
+    no_prompts(&mut c);
+    if git {
+        c.env("LC_ALL", "C");
+    }
+    c
+}
+
+fn strip_repo_env(c: &mut Command) {
     for var in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_PREFIX"] {
         c.env_remove(var);
     }
-    strip_sensitive_env(&mut c, cfg);
+}
+
+/// Programs run without a terminal: never wait on a credential prompt.
+fn no_prompts(c: &mut Command) {
     c.env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_EDITOR", "true")
         .env("GH_PROMPT_DISABLED", "1")
@@ -126,10 +154,6 @@ pub(crate) fn command(prog: &str, git: bool, cfg: Option<&Config>) -> Command {
     if std::env::var_os("GIT_SSH_COMMAND").is_none() {
         c.env("GIT_SSH_COMMAND", "ssh -oBatchMode=yes");
     }
-    if git {
-        c.env("LC_ALL", "C");
-    }
-    c
 }
 
 /// Run a program in its own process group with separate arguments (never a
@@ -138,13 +162,26 @@ pub(crate) fn command(prog: &str, git: bool, cfg: Option<&Config>) -> Command {
 /// child that left the group (`setsid`) and still holds the output open is
 /// not waited for beyond a short grace period.
 pub(crate) fn run_bounded_as(prog: &str, args: &[&str], cwd: &Path, deadline: Option<Instant>, git: bool, cfg: Option<&Config>) -> Result<(i32, String, String), Fail> {
-    run_bounded_inner(prog, args, cwd, deadline, git, None, cfg)
+    run_bounded_inner(prog, args, cwd, deadline, git, None, cfg, &Launch::default())
 }
 
 /// The same, keeping only the last `keep` bytes of stdout and of stderr, so a
 /// program that writes without end cannot fill memory.
 pub(crate) fn run_bounded_kept(prog: &str, args: &[&str], cwd: &Path, deadline: Option<Instant>, keep: usize, cfg: Option<&Config>) -> Result<(i32, String, String), Fail> {
-    run_bounded_inner(prog, args, cwd, deadline, false, Some(keep), cfg)
+    run_bounded_inner(prog, args, cwd, deadline, false, Some(keep), cfg, &Launch::default())
+}
+
+/// How a configured command differs from the defaults: an exact
+/// environment (`Some`: only these variables) and text for its stdin.
+#[derive(Default)]
+pub(crate) struct Launch {
+    pub env: Option<Vec<(String, String)>>,
+    pub stdin: Option<String>,
+}
+
+/// `run_bounded_kept` with a configured command's environment and stdin.
+pub(crate) fn run_bounded_launch(prog: &str, args: &[&str], cwd: &Path, deadline: Option<Instant>, keep: usize, cfg: Option<&Config>, launch: &Launch) -> Result<(i32, String, String), Fail> {
+    run_bounded_inner(prog, args, cwd, deadline, false, Some(keep), cfg, launch)
 }
 
 /// How long to keep reading after the program ended, for output a child
@@ -192,17 +229,32 @@ impl Drain {
     }
 }
 
-fn run_bounded_inner(prog: &str, args: &[&str], cwd: &Path, deadline: Option<Instant>, git: bool, keep: Option<usize>, cfg: Option<&Config>) -> Result<(i32, String, String), Fail> {
+#[allow(clippy::too_many_arguments)]
+fn run_bounded_inner(prog: &str, args: &[&str], cwd: &Path, deadline: Option<Instant>, git: bool, keep: Option<usize>, cfg: Option<&Config>, launch: &Launch) -> Result<(i32, String, String), Fail> {
     use std::os::unix::process::CommandExt;
-    let mut child = command(prog, git, cfg)
+    let mut cmd = command(prog, git, cfg);
+    if let Some(vars) = &launch.env {
+        cmd.env_clear();
+        cmd.envs(vars.iter().map(|(k, v)| (k, v)));
+        no_prompts(&mut cmd);
+    }
+    let mut child = cmd
         .args(args)
         .current_dir(cwd)
-        .stdin(Stdio::null())
+        .stdin(if launch.stdin.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0)
         .spawn()
         .map_err(|e| Fail::Failed(format!("cannot run {prog}: {e}")))?;
+    if let (Some(text), Some(mut pipe)) = (launch.stdin.clone(), child.stdin.take()) {
+        // On its own thread, so a program that reads nothing cannot stall
+        // the wait; it closes (EOF) when written or when the program exits.
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let _ = pipe.write_all(text.as_bytes());
+        });
+    }
     let group = child.id() as i32;
     let stop_group = || unsafe {
         libc::kill(-group, libc::SIGKILL);

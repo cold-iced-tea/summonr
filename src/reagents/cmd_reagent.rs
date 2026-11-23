@@ -4,7 +4,7 @@
 //! Never invokes a shell.
 
 use crate::file_reagent::validate_root;
-use crate::git_reagent::run_bounded_kept;
+use crate::git_reagent::{is_sensitive_env, run_bounded_launch, Launch};
 
 /// The most output a command keeps (its end); the rest is read and dropped.
 const KEEP_BYTES: usize = 1 << 20;
@@ -94,11 +94,50 @@ fn scalar_param(v: &Value, name: &str) -> Result<String, Fail> {
 }
 
 /// Validate the configured command and render its argument vector from `params`.
+/// A configured command ready to run.
+struct Prepared<'a> {
+    name: &'a str,
+    cfg: &'a CommandConfig,
+    args: Vec<String>,
+    launch: Launch,
+}
+
+impl Prepared<'_> {
+    fn run(&self, deadline: Option<Instant>, cfg: &Config) -> Result<(i32, String, String), Fail> {
+        let arg_refs: Vec<&str> = self.args.iter().map(String::as_str).collect();
+        run_bounded_launch(&self.cfg.program, &arg_refs, Path::new(&self.cfg.cwd), deadline, KEEP_BYTES, Some(cfg), &self.launch)
+    }
+}
+
+/// A command's `env:` list, resolved from the core's environment.
+fn resolve_env(cmd_name: &str, names: &[String], cfg: &Config) -> Result<Vec<(String, String)>, Fail> {
+    let mut out = Vec::with_capacity(names.len());
+    for name in names {
+        if name.is_empty() || name.contains(['=', '\0']) {
+            return Err(Fail::Invalid(format!(
+                "command `{cmd_name}` has an invalid `env` name `{name}` in config.yaml; list variable names, not NAME=value"
+            )));
+        }
+        if is_sensitive_env(name, Some(cfg)) {
+            return Err(Fail::Invalid(format!(
+                "command `{cmd_name}` lists `{name}` in `env`, a credential Summonr never passes to commands"
+            )));
+        }
+        let Some(value) = std::env::var_os(name) else {
+            return Err(Fail::Failed(format!(
+                "command `{cmd_name}` needs `{name}`, which is not set in the core's environment (the core keeps the environment it was started with; set it there and run `summonr core restart`)"
+            )));
+        };
+        out.push((name.clone(), value.to_string_lossy().into_owned()));
+    }
+    Ok(out)
+}
+
 fn prepare_command<'a>(
     cfg: &'a Config,
     tool: &str,
     args: &'a Value,
-) -> Result<(&'a str, &'a CommandConfig, Vec<String>), Fail> {
+) -> Result<Prepared<'a>, Fail> {
     let cmd_name = args["command"]
         .as_str()
         .ok_or_else(|| Fail::Invalid("`command` is required".into()))?;
@@ -136,6 +175,15 @@ fn prepare_command<'a>(
             needed.insert(p);
         }
     }
+    let stdin_param = cmd_cfg.stdin.as_deref();
+    if let Some(p) = stdin_param {
+        if needed.contains(p) {
+            return Err(Fail::Invalid(format!(
+                "command `{cmd_name}` uses `{p}` both as stdin and in `args`; use one"
+            )));
+        }
+        needed.insert(p.to_string());
+    }
     let supplied = match args.get("params") {
         None | Some(Value::Null) => serde_json::Map::new(),
         Some(Value::Object(m)) => m.clone(),
@@ -159,7 +207,9 @@ fn prepare_command<'a>(
             continue;
         };
         let val = scalar_param(raw, name)?;
-        if val.contains('\0') || val.contains('\n') || val.contains('\r') {
+        // Only stdin may span lines; NUL is never allowed.
+        let multi_line = stdin_param == Some(name.as_str());
+        if val.contains('\0') || (!multi_line && (val.contains('\n') || val.contains('\r'))) {
             return Err(Fail::Denied(format!(
                 "parameter `{name}` may not contain NUL or newline characters"
             )));
@@ -223,7 +273,17 @@ fn prepare_command<'a>(
         }
     }
 
-    Ok((cmd_name, cmd_cfg, rendered_args))
+    let env = match &cmd_cfg.env {
+        Some(names) => Some(resolve_env(cmd_name, names, cfg)?),
+        None => None,
+    };
+    let stdin = stdin_param.map(|p| validated[p].clone());
+    Ok(Prepared {
+        name: cmd_name,
+        cfg: cmd_cfg,
+        args: rendered_args,
+        launch: Launch { env, stdin },
+    })
 }
 
 /// Compute a resource digest for a `cmd.write` operation when its configured
@@ -236,7 +296,7 @@ pub fn target_digest(
     let Some(cfg) = cfg else {
         return Ok(None);
     };
-    let (_, cmd_cfg, _) = prepare_command(cfg, "write", args)?;
+    let cmd_cfg = prepare_command(cfg, "write", args)?.cfg;
     let Some(ref dname) = cmd_cfg.digest_command else {
         return Ok(None);
     };
@@ -259,10 +319,9 @@ pub fn target_digest(
         }
     }
     let dargs = json!({"command": dname, "params": Value::Object(dparams)});
-    let (_, dcfg, rendered) = prepare_command(cfg, "read", &dargs)?;
-    let arg_refs: Vec<&str> = rendered.iter().map(String::as_str).collect();
-    let (code, out, err) = run_bounded_kept(&dcfg.program, &arg_refs, Path::new(&dcfg.cwd), deadline, KEEP_BYTES, Some(cfg))?;
-    if code != 0 && !dcfg.allow_nonzero {
+    let digest = prepare_command(cfg, "read", &dargs)?;
+    let (code, out, err) = digest.run(deadline, cfg)?;
+    if code != 0 && !digest.cfg.allow_nonzero {
         let last = err
             .lines()
             .rev()
@@ -317,7 +376,7 @@ impl Reagent for Cmd {
         match name {
             "list" => reagent::require(auth, reagent::need("cmd", "list", &[], &[])),
             "read" | "write" => {
-                let (cmd_name, _, _) = prepare_command(cfg, name, args)?;
+                let cmd_name = prepare_command(cfg, name, args)?.name;
                 reagent::require(
                     auth,
                     reagent::need("cmd", name, &[("command", cmd_name)], &[]),
@@ -358,7 +417,8 @@ impl Reagent for Cmd {
                 Ok(Value::Array(list))
             }
             "read" | "write" => {
-                let (cmd_name, cmd_cfg, rendered) = prepare_command(cfg, name, args)?;
+                let prepared = prepare_command(cfg, name, args)?;
+                let (cmd_name, cmd_cfg) = (prepared.name, prepared.cfg);
                 if name == "write" {
                     if let Some(want) = auth.expected_digest {
                         if target_digest(Some(cfg), args, auth.deadline)?.as_deref() != Some(want) {
@@ -368,26 +428,14 @@ impl Reagent for Cmd {
                         }
                     }
                 }
-                let arg_refs: Vec<&str> = rendered.iter().map(String::as_str).collect();
-                match run_bounded_kept(
-                    &cmd_cfg.program,
-                    &arg_refs,
-                    Path::new(&cmd_cfg.cwd),
-                    auth.deadline,
-                    KEEP_BYTES,
-                    Some(cfg),
-                ) {
+                match prepared.run(auth.deadline, cfg) {
                     Ok((code, out, err)) => {
                         if code != 0 && !cmd_cfg.allow_nonzero {
-                            let last = err
-                                .lines()
-                                .rev()
-                                .find(|l| !l.trim().is_empty())
-                                .or_else(|| out.lines().rev().find(|l| !l.trim().is_empty()))
-                                .unwrap_or("")
-                                .trim();
+                            // Both streams' ends, as trial reports them: the
+                            // cause is usually on stderr, not the last line.
                             return Err(Fail::Failed(format!(
-                                "cmd {cmd_name} (exit {code}): {last}"
+                                "cmd {cmd_name} (exit {code}): {}",
+                                crate::trial_reagent::report(&out, &err)
                             )));
                         }
                         let stdout = bounded_text(&out);
@@ -446,6 +494,8 @@ mod tests {
                 )]),
                 allow_nonzero: false,
                 digest_command: None,
+                env: None,
+                stdin: None,
             },
         );
         commands.insert(
@@ -458,6 +508,8 @@ mod tests {
                 params: BTreeMap::new(),
                 allow_nonzero: false,
                 digest_command: None,
+                env: None,
+                stdin: None,
             },
         );
         commands.insert(
@@ -475,12 +527,101 @@ mod tests {
                 params: BTreeMap::new(),
                 allow_nonzero: false,
                 digest_command: Some("read-state".into()),
+                env: None,
+                stdin: None,
             },
         );
         Config {
             commands,
             ..Config::default()
         }
+    }
+
+    /// Run one configured command (given as config.yaml text) with `params`.
+    fn run_one(yaml: &str, params: Value) -> Result<Value, Fail> {
+        let dir = std::env::temp_dir().join(new_id("summonr-cmd"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let text = yaml.replace("CWD", &dir.to_string_lossy());
+        let cmd: CommandConfig = serde_yaml::from_str(&text).unwrap();
+        let cfg = Config {
+            commands: BTreeMap::from([("c".to_string(), cmd)]),
+            ..Config::default()
+        };
+        let grants = vec![reagent::need("cmd", "read", &[("command", "c")], &[])];
+        let selected = Mutex::new(HashSet::new());
+        let auth = Authority {
+            grants: &grants,
+            deadline: None,
+            on_item: None,
+            selected: &selected,
+            expected_digest: None,
+            config: Some(&cfg),
+        };
+        let out = Cmd.call(None, "read", &json!({"command": "c", "params": params}), &auth);
+        std::fs::remove_dir_all(&dir).ok();
+        out
+    }
+
+    #[test]
+    fn a_failed_command_reports_its_exit_code_and_both_tails() {
+        let err = run_one(
+            "program: sh\nargs: ['-c', 'echo progress; echo boom-on-stderr >&2; echo last-stdout; exit 3']\ncwd: CWD\n",
+            json!({}),
+        )
+        .unwrap_err();
+        let msg = err.message();
+        assert!(matches!(err, Fail::Failed(_)), "{err:?}");
+        assert!(msg.contains("exit 3"), "{msg}");
+        assert!(msg.contains("boom-on-stderr"), "{msg}");
+        assert!(msg.contains("last-stdout"), "{msg}");
+        assert!(msg.len() <= 1024, "{} bytes", msg.len());
+    }
+
+    #[test]
+    fn env_passes_exactly_the_listed_variables() {
+        std::env::set_var("SUMMONR_CMD_TEST_KEEP", "kept");
+        std::env::set_var("SUMMONR_CMD_TEST_DROP", "dropped");
+        let out = run_one(
+            "program: sh\nargs: ['-c', 'printf \"%s|%s|%s\" \"$SUMMONR_CMD_TEST_KEEP\" \"$SUMMONR_CMD_TEST_DROP\" \"$HOME\"']\ncwd: CWD\nenv: [SUMMONR_CMD_TEST_KEEP]\n",
+            json!({}),
+        )
+        .unwrap();
+        assert_eq!(out["stdout"], "kept||");
+        let missing = run_one(
+            "program: 'true'\ncwd: CWD\nenv: [SUMMONR_CMD_TEST_NEVER_SET]\n",
+            json!({}),
+        )
+        .unwrap_err();
+        assert!(
+            missing.message().contains("SUMMONR_CMD_TEST_NEVER_SET"),
+            "{}",
+            missing.message()
+        );
+        let bad = run_one("program: 'true'\ncwd: CWD\nenv: ['A=B']\n", json!({})).unwrap_err();
+        assert!(matches!(bad, Fail::Invalid(_)), "{bad:?}");
+    }
+
+    #[test]
+    fn stdin_carries_a_multi_line_parameter() {
+        let yaml = "program: cat\ncwd: CWD\nstdin: prompt\nparams:\n  prompt: {max_length: 100}\n";
+        let out = run_one(yaml, json!({"prompt": "line one\nline two"})).unwrap();
+        assert_eq!(out["stdout"], "line one\nline two");
+        let too_long = run_one(yaml, json!({"prompt": "x".repeat(101)})).unwrap_err();
+        assert!(matches!(too_long, Fail::Invalid(_)), "{too_long:?}");
+        // Newlines stay refused in arguments.
+        let arg = run_one(
+            "program: printf\nargs: ['${p}']\ncwd: CWD\nstdin: prompt\n",
+            json!({"p": "a\nb", "prompt": "x"}),
+        )
+        .unwrap_err();
+        assert!(matches!(arg, Fail::Denied(_)), "{arg:?}");
+        // The stdin parameter may not also be an argument.
+        let both = run_one(
+            "program: printf\nargs: ['${prompt}']\ncwd: CWD\nstdin: prompt\n",
+            json!({"prompt": "x"}),
+        )
+        .unwrap_err();
+        assert!(matches!(both, Fail::Invalid(_)), "{both:?}");
     }
 
     #[test]
