@@ -179,7 +179,7 @@ impl App {
         }
         self.confirm_banish = None;
         self.notice = match client.call("cancel", json!({"summon": id})) {
-            Ok(_) => format!("Banishing {id}. A request already underway may finish first."),
+            Ok(_) => format!("Banishing {id}. Commands stop at once; a model already answering may keep generating."),
             Err(e) => e.message,
         };
     }

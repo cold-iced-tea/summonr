@@ -3,6 +3,7 @@
 //! every other command is a thin client of its socket.
 
 mod backend;
+mod cancel;
 mod cassette;
 mod cli;
 mod core;
@@ -746,7 +747,7 @@ fn run(op: Op, paths: &Paths, style: Style) -> i32 {
                     println!("Banishing {} ({}).", s(r, "summon"), s(r, "ritual"));
                 }
                 if !all.is_empty() {
-                    println!("A request already underway may finish first.");
+                    println!("Commands stop at once; a model already answering may keep generating.");
                 }
             })
         }
@@ -755,7 +756,7 @@ fn run(op: Op, paths: &Paths, style: Style) -> i32 {
                 .and_then(|id| client.call("cancel", json!({"summon": id})));
             finish(res, json_out, |d| {
                 println!(
-                    "Banishing {}. A request already underway may finish first.",
+                    "Banishing {}. Commands stop at once; a model already answering may keep generating.",
                     s(d, "summon")
                 )
             })

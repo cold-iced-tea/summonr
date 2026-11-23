@@ -143,6 +143,16 @@ pub(crate) fn call_tool(
                         timeout.as_millis()
                     ));
                 }
+                if crate::cancel::requested() {
+                    let pid = child.id() as libc::pid_t;
+                    unsafe {
+                        libc::kill(-pid, libc::SIGKILL);
+                    }
+                    let _ = child.wait();
+                    let _ = out_handle.join();
+                    let _ = err_handle.join();
+                    return Err("wasm reagent stopped: the run was cancelled (process group killed)".into());
+                }
                 std::thread::sleep(Duration::from_millis(10));
             }
             Err(e) => return Err(format!("wait failed on wasm reagent: {e}")),

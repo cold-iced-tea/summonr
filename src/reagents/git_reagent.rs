@@ -277,6 +277,12 @@ fn run_bounded_inner(prog: &str, args: &[&str], cwd: &Path, deadline: Option<Ins
             let _ = child.wait();
             return Err(Fail::Exhausted(format!("{prog} ran past the time limit")));
         }
+        if crate::cancel::requested() {
+            // The run was stopped: so is everything this program started.
+            stop_group();
+            let _ = child.wait();
+            return Err(Fail::Cancelled);
+        }
         std::thread::sleep(Duration::from_millis(10));
     };
     // The program is done; nothing it started in its group may keep running.

@@ -74,9 +74,16 @@ fn read_response(
         if now >= deadline {
             return Err("mcp reagent timed out".into());
         }
-        let line = rx
-            .recv_timeout(deadline - now)
-            .map_err(|_| "mcp reagent timed out".to_string())??;
+        if crate::cancel::requested() {
+            // The caller stops the server's process group when this returns.
+            return Err("mcp reagent stopped: the run was cancelled".into());
+        }
+        // Wait in slices, so a cancel is seen while the server is busy.
+        let line = match rx.recv_timeout((deadline - now).min(Duration::from_millis(100))) {
+            Ok(line) => line?,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Err("mcp reagent timed out".into()),
+        };
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;

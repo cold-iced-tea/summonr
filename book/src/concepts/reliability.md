@@ -44,6 +44,8 @@ The default admission ceiling is 16 active top-level invocations (`max_active_ru
 
 Do not infer a hard remote execution deadline from a local timeout. Cancellation cannot prove that remote inference stopped, and cleanup may delay return.
 
+`stop` (and `run --wait --cancel-on-drop` when its client goes away) takes effect within about a tenth of a second, even in the middle of a step: a running command, test run (`trial`), git call, wasm module or MCP server has its whole process group killed, and the step ends `cancelled`. A model request is abandoned the same way, but its HTTP connection stays open until the backend answers or the request's timeout passes (the HTTP client cannot close a request it is reading), so a backend such as Ollama may go on generating until then. A write stopped while running leaves its fence in place, as after a time limit: its outcome is unknown until reconciled.
+
 ## Per-step checkpoints and `revive`
 
 As a top-level run executes, completed top-level steps (`top`) and non-interrupted `each` batch items (one row per item, `each:<id>#<n>`) are persisted in the `checkpoints` table.

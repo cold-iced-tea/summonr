@@ -434,6 +434,9 @@ impl Run {
     }
 
     pub fn execute(&mut self) -> Finished {
+        // Blocking work inside steps (commands, servers, model requests)
+        // watches this run's cancel signal.
+        let _cancel = crate::cancel::enter(self.cancel.clone());
         let mut scope = Scope {
             inputs: self.inputs.clone(),
             frames: vec![Frame::default()],
@@ -1016,10 +1019,12 @@ impl Run {
             }
             Err(f) => {
                 if let Some(ref fk) = fence_key {
-                    // Pre-dispatch refusals (validation, authorization, cancel)
-                    // never sent an external write, so clear the fence instead
-                    // of blocking a future revive.
-                    if matches!(f, Fail::Invalid(_) | Fail::Denied(_) | Fail::Cancelled) {
+                    // Refusals (validation, authorization) never sent an
+                    // external write, so clear the fence instead of blocking
+                    // a future revive. A cancel can now stop a write while it
+                    // runs (its process group is killed), so, like a time
+                    // limit, it leaves the outcome unknown: keep the fence.
+                    if matches!(f, Fail::Invalid(_) | Fail::Denied(_)) {
                         self.core.fence_clear(fk);
                     } else {
                         self.core.fence_fail(fk, &f.message());
@@ -1688,6 +1693,7 @@ impl Run {
                     for _ in 0..workers {
                         sc.spawn(|| {
                             let mut worker = self.fork_worker();
+                            let _cancel = crate::cancel::enter(worker.cancel.clone());
                             loop {
                                 if aborted.load(Ordering::SeqCst) {
                                     break;
@@ -2299,6 +2305,61 @@ return: {kept: "${steps.kept.output}"}
         let fin = run.execute();
         assert_eq!(fin.outcome, Outcome::Returned, "{:?}", fin.error);
         assert_eq!(fin.result["kept"], json!([{"team": "a", "score": 9}]));
+    }
+
+    #[test]
+    fn cancelling_a_run_stops_a_command_that_is_still_running() {
+        let f = Fixture::with_config(
+            "commands:\n  snooze:\n    program: sleep\n    args: ['30']\n    cwd: ROOT/work\n",
+        );
+        let def = definition(json!({
+            "ritual": "snooze-imp",
+            "reagents": {"cmd": {"select": ["read"]}},
+            "steps": [{"id": "z", "operation": "cmd.read", "arguments": {"command": "snooze"}}],
+            "return": {"code": "${steps.z.output.code}"},
+        }));
+        let mut run = f.run(def, None);
+        run.grants = Arc::new(vec![crate::reagent::need("cmd", "read", &[("command", "snooze")], &[])]);
+        let cancel = run.cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            cancel.store(true, Ordering::SeqCst);
+        });
+        let started = Instant::now();
+        let fin = run.execute();
+        let took = started.elapsed();
+        assert_eq!(fin.outcome, Outcome::Cancelled, "{:?}", fin.error);
+        assert!(took < Duration::from_millis(1500), "the command kept the run for {took:?}");
+    }
+
+    #[test]
+    fn cancelling_a_run_stops_waiting_for_a_model_that_has_not_answered() {
+        // A backend that accepts the request and never answers.
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = server.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for s in server.incoming().flatten() {
+                held.push(s);
+            }
+        });
+        let mut f = Fixture::new();
+        Arc::get_mut(&mut f.core).unwrap().cfg.ollama_url = Some(format!("http://{addr}"));
+        let def = definition(json!({
+            "ritual": "slow-model-imp", "model": "ollama/never",
+            "steps": [{"id": "m", "model": {"prompt": "hi"}}],
+            "return": {"m": "${steps.m.output}"},
+        }));
+        let mut run = f.run(def, None);
+        let cancel = run.cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            cancel.store(true, Ordering::SeqCst);
+        });
+        let started = Instant::now();
+        let fin = run.execute();
+        assert_eq!(fin.outcome, Outcome::Cancelled, "{:?}", fin.error);
+        assert!(started.elapsed() < Duration::from_millis(1500), "{:?}", started.elapsed());
     }
 
     #[test]

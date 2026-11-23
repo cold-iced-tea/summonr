@@ -233,7 +233,46 @@ fn http_with_timeout(
     http_with_headers(method, url, body, &[], timeout)
 }
 
+/// The message a request returns when its run was cancelled while waiting.
+pub(crate) const CANCELLED: &str = "the run was cancelled while the backend was answering";
+
 fn http_with_headers(
+    method: &str,
+    url: &str,
+    body: Option<&Value>,
+    headers: &[(&str, &str)],
+    timeout: Option<Duration>,
+) -> Result<Value, String> {
+    let Some(cancel) = crate::cancel::current() else {
+        return http_blocking(method, url, body, headers, timeout);
+    };
+    // ureq 2 cannot abort a request in progress, so it runs on a helper
+    // thread and this one returns as soon as the run is cancelled. The
+    // abandoned request keeps its connection until the backend answers or
+    // the timeout ends it (a server may go on generating until then).
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (method, url) = (method.to_string(), url.to_string());
+    let body = body.cloned();
+    let headers: Vec<(String, String)> = headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    std::thread::spawn(move || {
+        let headers: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let _ = tx.send(http_blocking(&method, &url, body.as_ref(), &headers, timeout));
+    });
+    loop {
+        if cancel.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(CANCELLED.into());
+        }
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(result) => return result,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("backend request thread ended without an answer".into())
+            }
+        }
+    }
+}
+
+fn http_blocking(
     method: &str,
     url: &str,
     body: Option<&Value>,

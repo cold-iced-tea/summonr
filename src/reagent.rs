@@ -20,6 +20,15 @@ pub enum Fail {
     Unverified(String),
 }
 
+/// A server reagent's error: `Cancelled` when the run was stopped under it.
+fn stopped_or_failed(e: String) -> Fail {
+    if crate::cancel::requested() {
+        Fail::Cancelled
+    } else {
+        Fail::Failed(e)
+    }
+}
+
 impl Fail {
     pub fn outcome(&self) -> Outcome {
         match self {
@@ -972,7 +981,7 @@ pub fn call(
         let timeout = auth
             .deadline
             .map(|d| d.saturating_duration_since(std::time::Instant::now()));
-        return crate::wasm_reagent::call_tool(wasm_cfg, tool, args, timeout).map_err(Fail::Failed);
+        return crate::wasm_reagent::call_tool(wasm_cfg, tool, args, timeout).map_err(stopped_or_failed);
     }
     authorize_mcp(reagent, tool, auth)?;
     let mcp_cfg = auth
@@ -982,7 +991,7 @@ pub fn call(
     let timeout = auth
         .deadline
         .map(|d| d.saturating_duration_since(std::time::Instant::now()));
-    crate::mcp_reagent::call_tool(mcp_cfg, tool, args, timeout, auth.config).map_err(Fail::Failed)
+    crate::mcp_reagent::call_tool(mcp_cfg, tool, args, timeout, auth.config).map_err(stopped_or_failed)
 }
 
 /// Run every check a live `call` of `operation` would make before its
