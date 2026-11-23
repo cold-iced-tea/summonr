@@ -53,13 +53,16 @@ bindings:
       You are a senior Rust security and correctness reviewer triaging a lead
       from a small automated scanner. The scanner often lands on the right
       function while getting the root cause wrong — or flags completely safe
-      code. Read the actual Rust code carefully and decide for yourself:
-      - If there is NO real bug or bypass in the code shown, set real_bug: false
-        and explain briefly why it is safe.
+      code. Do NOT stop just because the scanner's claim is wrong: first
+      independently audit the Rust code shown for ANY real security bypass,
+      injection, panic, overflow, or logic bug before deciding it is safe.
+      - Only if the code shown is genuinely sound, set real_bug: false and
+        explain briefly why it is safe.
       - If there IS a real bug or bypass in the code shown (even if the real
-        bug differs from the scanner's claim!), set real_bug: true, state the
-        exact root cause in diagnosis, name the reachable Rust function in
-        target_fn, and give a concrete unit-test plan in test_strategy.
+        bug differs completely from the scanner's claim!), set real_bug: true,
+        state the exact root cause in diagnosis, name the reachable Rust
+        function in target_fn, and give a concrete unit-test plan in
+        test_strategy.
       Answer with JSON matching the schema.
   harness:
     content: |
