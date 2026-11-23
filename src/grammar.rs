@@ -40,6 +40,8 @@ pub struct Op {
     pub tsa_ca: Option<String>,
     /// The pinned peer core `mcp` talks to, as the familiar named by `as`.
     pub via: Option<String>,
+    /// With `graveyard` / `history`: list this run's child summons instead.
+    pub children: Option<String>,
     /// A pact a familiar may call under, for `familiar allow`.
     pub pact: Option<String>,
     /// Why, for `pact decline`, `reject` or `end`.
@@ -477,6 +479,11 @@ pub const CLAUSES: &[(&str, &str, &str)] = &[
         "With mcp: reach this pinned peer core instead of this device's",
     ),
     (
+        "children RUN",
+        "--children RUN",
+        "With history: list a run's child summons, ended or not",
+    ),
+    (
         "baseline",
         "--baseline",
         "Record the account as the baseline",
@@ -526,6 +533,7 @@ const KEYWORDS: &[&str] = &[
     "key",
     "url",
     "via",
+    "children",
     "tsa-ca",
     "pact",
     "because",
@@ -761,6 +769,7 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
                 "key" => "key",
                 "url" => "url",
                 "via" => "via",
+                "children" => "children",
                 "tsa-ca" => "tsa-ca",
                 "pact" => "pact",
                 "reason" => "because",
@@ -819,6 +828,10 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
             "via" => {
                 let v = value(&mut cur, pos, attached, is_flag, "via lab")?;
                 set_once(&mut op.via, v, &cur, pos, "the peer")?;
+            }
+            "children" => {
+                let v = value(&mut cur, pos, attached, is_flag, "children s-1234")?;
+                set_once(&mut op.children, v, &cur, pos, "the parent run")?;
             }
             "url" => {
                 let v = value(&mut cur, pos, attached, is_flag, "url http://host:port")?;
@@ -1048,6 +1061,9 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
     if op.reason.is_some() && !matches!(op.verb.as_str(), "pact" | "reliquary" | "rite") {
         return Err(cur.err(last, "`because` gives a reason only to pact, reliquary, or rite commands", "pact reject order-parts 3 because late"));
     }
+    if op.children.is_some() && op.verb != "graveyard" {
+        return Err(cur.err(last, "`children` lists a run's child summons only with history", "history children s-1234"));
+    }
     if let Some(k) = op.arg_files.keys().find(|k| op.args.contains_key(*k)) {
         return Err(cur.err(
             last,
@@ -1134,6 +1150,7 @@ pub fn render(op: &Op, style: Style) -> Vec<String> {
     push_assignments(&mut out, if kw { "on" } else { "--on" }, &op.on);
     push_assignments(&mut out, if kw { "into" } else { "--into" }, &op.into);
     pair(&mut out, "via", "via", &op.via);
+    pair(&mut out, "children", "children", &op.children);
     pair(&mut out, "tsa-ca", "tsa-ca", &op.tsa_ca);
     pair(&mut out, "url", "url", &op.url);
     pair(&mut out, "pact", "pact", &op.pact);
@@ -1279,7 +1296,14 @@ mod tests {
         ("invoke bench then return json brief", "run bench --wait --json --brief"),
         ("elegy s-1 brief returning json", "record s-1 --brief --json"),
         ("rite start ./r.yaml reading hunts=./h.json given n=2", "workflow start ./r.yaml --arg-file hunts=./h.json --arg n=2"),
+        ("graveyard children s-1 returning json", "history --children s-1 --json"),
     ];
+
+    #[test]
+    fn children_belongs_to_history() {
+        assert_eq!(p("history --children s-9").unwrap().children.as_deref(), Some("s-9"));
+        assert!(p("invoke r children s-9").is_err());
+    }
 
     #[test]
     fn pact_clauses_belong_to_their_verbs() {

@@ -210,6 +210,15 @@ pub struct Run {
     pub total: u64,
 }
 
+/// At most `max` characters of `s`, marked when cut.
+fn clip(s: &str, max: usize) -> String {
+    if s.chars().count() > max {
+        format!("{}…", s.chars().take(max - 1).collect::<String>())
+    } else {
+        s.to_string()
+    }
+}
+
 fn brief(v: &Value) -> String {
     let s = v.to_string();
     if s.chars().count() > 96 {
@@ -429,12 +438,19 @@ impl Run {
         let ran = ran.and_then(|_| self.check_live());
         let top = &scope.frames[0];
         // Per-item accounting from any iteration, so a partial batch can
-        // never present itself as a complete one.
+        // never present itself as a complete one. Completed child rituals
+        // and model calls are kept too: they are the costly work, and a
+        // cheap later step running out must not throw them away.
         let partial: Map<String, Value> = top
             .steps
             .iter()
-            .filter(|(_, v)| v.kind == StepKind::Each)
-            .map(|(k, v)| (k.clone(), json!({"items": v.output, "counts": v.counts})))
+            .filter_map(|(k, v)| match v.kind {
+                StepKind::Each => Some((k.clone(), json!({"items": v.output, "counts": v.counts}))),
+                StepKind::Ritual | StepKind::Model => {
+                    Some((k.clone(), json!({"status": v.status, "output": v.output})))
+                }
+                _ => None,
+            })
             .collect();
         match ran {
             Ok(()) => {
@@ -1712,6 +1728,17 @@ impl Run {
             }
         }
         let counts = BatchCounts::from_items(n, &items);
+        let failed = counts.failed + counts.invalid;
+        if keep_going && failed > 0 {
+            // `on_failure: continue` kept going; make sure someone sees it.
+            let first = items.iter().find_map(|i| i.error.as_ref().map(|e| (i.item.clone(), e.clone())));
+            let (first_item, first_error) = first.unwrap_or_default();
+            self.emit(
+                "each.failed",
+                format!("{id}: {failed} of {} items failed; first ({first_item}): {}", items.len(), clip(&first_error, 300)),
+                json!({"step": id, "failed": failed, "of": items.len(), "first_item": first_item, "first_error": first_error}),
+            );
+        }
         let mut marked = StepRecord::new(
             if stop.is_some() {
                 StepStatus::Partial
@@ -2054,6 +2081,31 @@ mod tests {
         assert!(text.ends_with("exit 0, 4 chars"), "{text}");
         assert_eq!(data["code"], 0);
         assert_eq!(data["stderr_tail"], "warming-up");
+    }
+
+    #[test]
+    fn an_exhausted_parent_keeps_its_completed_children_in_partial() {
+        let f = Fixture::new();
+        let child = definition(json!({
+            "ritual": "costly-child-imp",
+            "steps": [{"id": "found", "operation": "data.trim", "arguments": {"text": " finding "}}],
+            "return": {"found": "${steps.found.output}"},
+        }));
+        f.save(&child);
+        let parent = definition(json!({
+            "ritual": "exhausting-parent-imp", "model": "mock/keyword",
+            "essence": {"requests": 0},
+            "steps": [
+                {"id": "hunt", "ritual": "costly-child-imp", "version": 1},
+                {"id": "gather", "model": {"prompt": "over budget"}},
+            ],
+            "return": {"g": "${steps.gather.output}"},
+        }));
+        let fin = f.run(parent, None).execute();
+        assert_eq!(fin.outcome, Outcome::Exhausted, "{:?}", fin.error);
+        assert_eq!(fin.result["partial"]["hunt"]["output"]["found"], "finding", "{}", fin.result);
+        assert_eq!(fin.result["partial"]["hunt"]["status"], "returned");
+        assert!(fin.result["partial"].get("gather").is_none());
     }
 
     #[test]

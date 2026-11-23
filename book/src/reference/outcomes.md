@@ -13,7 +13,7 @@
 | `unverified` | A completed operation could not be verified | 11 |
 | `interrupted` | The core stopped while it was running | 11 |
 
-When a summon does not return, its result is `{"partial": ...}`: the per-item record and counts of every batch that ran, including interrupted items and their recorded prior effects. Unknown external outcomes still require reconciliation.
+When a summon does not return, its result is `{"partial": ...}`: the per-item record and counts of every batch that ran, including interrupted items and their recorded prior effects, and the `status` and `output` of every top-level child ritual and model step that completed, so a later step running out of essence does not discard costly finished work. Each `each` that kept going past failed items (`on_failure: continue`) also adds a warning to the run's record, with the count and the first error, including loops inside child rituals. Unknown external outcomes still require reconciliation.
 
 An abstention inside an `each` makes that *item* `abstained`; it does not make the whole summon abstained.
 

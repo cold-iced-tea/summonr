@@ -752,7 +752,10 @@ impl Core {
             rows.collect::<Result<Vec<_>, _>>()
                 .map_err(|e| RpcErr::new("storage_failed", 11, e.to_string()))?,
         );
-        let warnings = Self::admission_warnings_from(&db, id);
+        let mut warnings = Self::admission_warnings_from(&db, id);
+        if let Some(list) = warnings.as_array_mut() {
+            list.extend(Self::failed_item_warnings(&db, id)?);
+        }
         if warnings.as_array().is_some_and(|a| !a.is_empty()) {
             value["warnings"] = warnings;
         }
@@ -761,6 +764,27 @@ impl Core {
             value["fences"] = Value::Array(fences);
         }
         Ok(value)
+    }
+
+    /// One warning per `each` in the run (children included) that kept
+    /// going past failed items, with the first failure. Without it, a loop
+    /// with `on_failure: continue` can fail most of its items unseen.
+    fn failed_item_warnings(db: &rusqlite::Connection, id: &str) -> Result<Vec<Value>, RpcErr> {
+        let err = |e: rusqlite::Error| RpcErr::new("storage_failed", 11, e.to_string());
+        let mut q = db
+            .prepare("WITH RECURSIVE tree(id) AS (SELECT id FROM summons WHERE id=?1 UNION ALL SELECT s.id FROM summons s JOIN tree t ON s.parent=t.id) SELECT s.id, s.ritual, e.text FROM events e JOIN tree t ON e.summon=t.id JOIN summons s ON s.id=e.summon WHERE e.kind='each.failed' ORDER BY e.ts, e.seq")
+            .map_err(err)?;
+        let rows = q
+            .query_map(params![id], |r| {
+                let (summon, ritual, text): (String, String, String) = (r.get(0)?, r.get(1)?, r.get(2)?);
+                Ok(if summon == id {
+                    json!(format!("each {text}"))
+                } else {
+                    json!(format!("each {text} (in {ritual} {summon})"))
+                })
+            })
+            .map_err(err)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(err)
     }
 
     fn admission_warnings(&self, id: &str) -> Value {

@@ -1638,3 +1638,36 @@ fn session_cost_budget_enforces_pricing_and_cap() {
     drop(c);
     std::fs::remove_dir_all(p.state.parent().unwrap()).unwrap();
 }
+
+#[test]
+fn failed_items_in_a_lenient_each_warn_on_the_parent_record() {
+    let h = super::test_home::Home::new("");
+    h.inscribe_def(
+        json!({
+            "ritual": "lenient-child", "inputs": {"rows": {"type": "list"}},
+            "steps": [{"id": "rows", "each": "r in inputs.rows", "on_failure": "continue", "steps": [
+                {"id": "a", "operation": "data.get", "arguments": {"value": "${r}", "path": "/a"}}
+            ]}],
+            "return": {"n": "${steps.rows.counts.returned}"},
+        }),
+        false,
+    );
+    h.inscribe_def(
+        json!({
+            "ritual": "lenient-parent", "inputs": {"rows": {"type": "list"}},
+            "steps": [{"id": "child", "ritual": "lenient-child", "arguments": {"rows": "${inputs.rows}"}}],
+            "return": {"n": "${steps.child.output.n}"},
+        }),
+        false,
+    );
+    let rec = h.run(json!({"target": "lenient-parent", "args": {"rows": [{"a": 1}, {"b": 2}, {"a": 3}]}}));
+    assert_eq!(rec["outcome"], "returned", "{rec}");
+    let warnings = rec["warnings"].as_array().cloned().unwrap_or_default();
+    assert_eq!(warnings.len(), 1, "{rec}");
+    let w = warnings[0].as_str().unwrap();
+    assert!(w.contains("rows: 1 of 3 items failed"), "{w}");
+    assert!(w.contains("(1)"), "names the first failed item: {w}");
+    assert!(w.contains("in lenient-child"), "{w}");
+    let brief = h.call("get", json!({"summon": rec["id"], "brief": true})).unwrap();
+    assert_eq!(brief["warnings"], json!(warnings));
+}

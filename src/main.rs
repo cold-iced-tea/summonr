@@ -670,11 +670,19 @@ fn run(op: Op, paths: &Paths, style: Style) -> i32 {
                 )
             );
         }),
-        "graveyard" => finish(
-            client.call("list", json!({"scope": "ended", "limit": 40})),
-            json_out,
-            |d| list(d, "No summon has ended yet."),
-        ),
+        "graveyard" => match &op.children {
+            // A big run's children (hunts, chunks) without reading its record.
+            Some(parent) => finish(
+                client.call("list", json!({"scope": "children", "summon": parent, "limit": 1000})),
+                json_out,
+                |d| list(d, "That run has no child summons."),
+            ),
+            None => finish(
+                client.call("list", json!({"scope": "ended", "limit": 40})),
+                json_out,
+                |d| list(d, "No summon has ended yet."),
+            ),
+        },
         "banish" => {
             let res = target(&op, "a summon ID")
                 .and_then(|id| client.call("cancel", json!({"summon": id})));

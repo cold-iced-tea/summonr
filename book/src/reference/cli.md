@@ -29,7 +29,7 @@ Scripts and agents should use the flag spelling with `--json`. `summonr help` li
 | `banish` | `stop` | Ask a summon to stop |
 | `revive` | `resume` | Resume an exhausted, cancelled, or interrupted summon from its last checkpoint |
 | `recast RUN STEP` | | Re-run a summon from `STEP`, reusing earlier step outputs |
-| `graveyard` | `history` | List ended summons |
+| `graveyard` | `history` | List ended summons; `children RUN` (`--children RUN`) lists one run's child summons, ended or not |
 | `elegy` | `record` | Read one summon's complete record |
 | `ledger` | `logs` | Read one summon's events |
 | `epitaph prove RUN` | | Generate a Merkle inclusion proof for `RUN` |
