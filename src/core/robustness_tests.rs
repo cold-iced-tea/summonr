@@ -1717,3 +1717,23 @@ fn run_tree_queries_use_indexes_not_scans() {
     let plan: Vec<String> = q.query_map(["s-x"], |r| r.get::<_, String>(3)).unwrap().map(Result::unwrap).collect();
     assert!(plan.iter().any(|l| l.contains("idx_summons_parent")), "{plan:?}");
 }
+
+#[test]
+fn compile_and_inscribe_warn_about_an_unbounded_loop() {
+    let h = super::test_home::Home::new("");
+    let def = json!({
+        "ritual": "loose-loop", "model": "mock/keyword", "inputs": {"xs": {"type": "list"}},
+        "steps": [
+            {"id": "judged", "each": "x in inputs.xs", "steps": [{"id": "say", "model": {"prompt": "about ${x}"}}]},
+            {"id": "n", "operation": "data.count", "arguments": {"value": "${steps.judged.output}"}},
+        ],
+        "return": {"n": "${steps.n.output}"},
+    });
+    let compiled = h.call("compile", json!({"definition": def.to_string()})).unwrap();
+    let w = compiled["warnings"][0].as_str().unwrap_or_default();
+    assert!(w.contains("each `judged` has no `keep:`") && w.contains("`keep: []`"), "{compiled}");
+    let path = h.root.join("loose.json");
+    std::fs::write(&path, def.to_string()).unwrap();
+    let saved = h.call("inscribe", json!({"path": path.to_str().unwrap(), "cwd": "/"})).unwrap();
+    assert_eq!(saved["warnings"], compiled["warnings"], "{saved}");
+}

@@ -549,6 +549,7 @@ pub fn plain_string(v: &Value) -> String {
 
 mod expr;
 mod inputs;
+mod lint;
 mod parse;
 mod template;
 mod types;
@@ -567,6 +568,7 @@ pub use parse::{
     canonical_json, content_hash, parse_definition, parse_file,
     prepare, Resolved, Resolver,
 };
+pub use lint::lint;
 pub use template::{render_template, render_value, template_refs};
 pub use types::{Effect, Ty};
 pub use validate::{

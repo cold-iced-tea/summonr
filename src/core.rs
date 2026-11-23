@@ -922,6 +922,7 @@ impl Core {
             "language_version": def.language_version,
             "hash": ritual::content_hash(&def),
             "effects": effects,
+            "warnings": ritual::lint(&def),
             "return_types": return_types,
             "output_schema": def.output_schema,
             "definition": def,
@@ -1053,7 +1054,7 @@ impl Core {
             .filter(|need| !grants.iter().any(|g| g.covers(need)))
             .collect();
 
-        let mut warnings = Vec::new();
+        let mut warnings = ritual::lint(&def);
         let mut refuse = None;
         let replaying = spec.replay.is_some();
         if replaying {
@@ -2249,7 +2250,9 @@ impl Core {
                         errs.join("\n  ")
                     ))
                 })?;
-        self.save_ritual_version(&def, p.replace, &effects)
+        let mut saved = self.save_ritual_version(&def, p.replace, &effects)?;
+        saved["warnings"] = json!(ritual::lint(&def));
+        Ok(saved)
     }
 
     pub(crate) fn save_ritual_version(

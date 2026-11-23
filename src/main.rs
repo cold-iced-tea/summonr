@@ -535,6 +535,7 @@ fn run(op: Op, paths: &Paths, style: Style) -> i32 {
                 }
                 row("hash", s(d, "hash"));
                 effects(&d["effects"]);
+                print_warnings(&d["warnings"]);
             })
         }
         "grimoire" => match op.positionals.first().map(String::as_str) {
@@ -922,6 +923,12 @@ fn run(op: Op, paths: &Paths, style: Style) -> i32 {
     }
 }
 
+
+pub(crate) fn print_warnings(list: &Value) {
+    for w in list.as_array().into_iter().flatten() {
+        println!("  {} {}", paint(Ink::Ember, "warning"), w.as_str().unwrap_or(""));
+    }
+}
 
 pub(crate) fn effects(list: &Value) {
     for e in list.as_array().into_iter().flatten() {

@@ -1310,4 +1310,91 @@ mod contract_message_tests {
             "definition does not satisfy its contract: first (and 2 more in data.diagnostics)"
         );
     }
+
+    const LOOP_THEN_FILTER: &str = r#"
+ritual: r
+inputs: {files: list}
+steps:
+  - id: tested
+    each: f in inputs.files
+    steps:
+      - id: source
+        operation: file.read_text
+        arguments: {root: /tmp, path: "${f}"}
+      - id: numbered
+        operation: data.lines
+        arguments: {text: "${steps.source.output.text}"}
+      - id: verdict
+        model: {prompt: "judge ${steps.numbered.output}"}
+  - id: confirmed
+    operation: data.filter
+    arguments: {values: "${steps.tested.output}", predicate: "item.outputs.verdict == 'yes'"}
+return: {n: "${steps.confirmed.output}"}
+"#;
+
+    #[test]
+    fn a_large_loop_without_keep_feeding_a_data_op_warns_with_the_ids_to_keep() {
+        let def = crate::ritual::parse_file(LOOP_THEN_FILTER).unwrap();
+        let w = crate::ritual::lint(&def);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("each `tested` has no `keep:`"), "{}", w[0]);
+        assert!(w[0].contains("`source` (file.read_text)"), "{}", w[0]);
+        assert!(w[0].contains("step `confirmed` passes them to data.filter"), "{}", w[0]);
+        assert!(w[0].contains("Add `keep: [verdict]` to `tested`"), "{}", w[0]);
+    }
+
+    #[test]
+    fn loops_with_keep_small_steps_or_no_data_consumer_do_not_warn() {
+        let kept = LOOP_THEN_FILTER.replace("    each: f in inputs.files\n", "    each: f in inputs.files\n    keep: [verdict]\n");
+        assert!(crate::ritual::lint(&crate::ritual::parse_file(&kept).unwrap()).is_empty());
+        let small = r#"
+ritual: r
+inputs: {xs: list}
+steps:
+  - id: loop
+    each: x in inputs.xs
+    steps:
+      - {id: t, operation: data.trim, arguments: {text: "${x}"}}
+  - {id: all, operation: data.count, arguments: {value: "${steps.loop.output}"}}
+"#;
+        assert!(crate::ritual::lint(&crate::ritual::parse_file(small).unwrap()).is_empty());
+        let unread = LOOP_THEN_FILTER.replace("values: \"${steps.tested.output}\"", "values: []");
+        assert!(crate::ritual::lint(&crate::ritual::parse_file(&unread).unwrap()).is_empty());
+    }
+
+    #[test]
+    fn keep_suggestions_follow_fold_bodies_and_later_loops() {
+        let fold = r#"
+ritual: r
+inputs: {xs: list}
+steps:
+  - id: loop
+    each: x in inputs.xs
+    steps:
+      - {id: page, operation: file.read_text, arguments: {root: /tmp, path: "${x}"}}
+      - {id: found, operation: data.count, arguments: {value: "${steps.page.output.text}"}}
+  - id: total
+    operation: data.fold
+    arguments: {values: "${steps.loop.output}", initial: 0, operation: data.arithmetic,
+                arguments: {left: "${acc}", right: "${item.outputs.found}", operator: add}}
+  - id: again
+    each: r in steps.loop.output
+    steps:
+      - {id: s, operation: data.trim, arguments: {text: "${r.outputs.page.text}"}}
+"#;
+        let w = crate::ritual::lint(&crate::ritual::parse_file(fold).unwrap());
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("Add `keep: [found, page]` to `loop`"), "{}", w[0]);
+    }
+
+    #[test]
+    fn keep_suggestions_follow_items_through_a_filter() {
+        // bughunt-test's shape: filter the loop's results, then fold the kept items.
+        let text = LOOP_THEN_FILTER.replace(
+            "return: {n: \"${steps.confirmed.output}\"}",
+            "  - id: results\n    operation: data.fold\n    arguments: {values: \"${steps.confirmed.output}\", initial: [], operation: data.concat, arguments: {left: \"${acc}\", right: [\"${item.outputs.numbered}\"]}}\nreturn: {n: \"${steps.results.output}\"}",
+        );
+        let w = crate::ritual::lint(&crate::ritual::parse_file(&text).unwrap());
+        assert!(w[0].contains("Add `keep: [numbered, verdict]` to `tested`"), "{w:?}");
+    }
 }
