@@ -413,14 +413,17 @@ impl Run {
         (timeout, tokens)
     }
 
-    fn checkpoint_top(&self, frame: &Frame) {
-        self.core.save_checkpoint(
+    /// `durable: false` after a step that did only pure work, which a
+    /// revive recomputes if this checkpoint is lost.
+    fn checkpoint_top(&self, frame: &Frame, durable: bool) {
+        self.core.save_checkpoint_with(
             &self.id,
             "top",
             &json!({
                 "steps": frame.steps,
                 "abstained": frame.abstained,
             }),
+            durable,
         );
     }
 
@@ -567,6 +570,7 @@ impl Run {
             self.check_live()?;
             let id = s.id().cloned().unwrap_or_default();
             let top_level = self.depth == 0 && scope.frames.len() == 1;
+            let impure_before = self.impure_count();
             if top_level && !id.is_empty() && scope.frames[0].steps.contains_key(&id) {
                 // A restored read happened in an earlier run, so this run's
                 // issue key for its handle is re-issued; only a step that
@@ -668,7 +672,7 @@ impl Run {
                 }
             }
             if top_level {
-                self.checkpoint_top(&scope.frames[0]);
+                self.checkpoint_top(&scope.frames[0], self.impure_count() != impure_before);
             }
         }
         Ok(())
@@ -2171,14 +2175,34 @@ mod tests {
         let before = relaxed();
         assert_eq!(f.run(parent("pure-leaf-imp"), None).execute().outcome, Outcome::Returned);
         // Per item: the child's three start records, its pure op, the
-        // unchanged usage, and the item's progress, checkpoint and event.
-        assert_eq!(relaxed() - before, 2 * 8);
+        // unchanged usage, and the item's progress, checkpoint and event;
+        // then the top checkpoint after the loop.
+        assert_eq!(relaxed() - before, 2 * 8 + 1);
         let before = relaxed();
         let fin = f.run(parent("model-leaf-imp"), None).execute();
         assert_eq!(fin.outcome, Outcome::Returned, "{:?}", fin.error);
         // Only the child's start records: a model call makes the usage and
-        // the item's bookkeeping durable.
+        // the item's bookkeeping durable (and the top checkpoint after it).
         assert_eq!(relaxed() - before, 2 * 3);
+    }
+
+    #[test]
+    fn top_checkpoints_are_synced_after_impure_steps_only() {
+        let relaxed = || crate::core::RELAXED_WRITES.with(|n| n.get());
+        let f = Fixture::new();
+        let def = definition(json!({
+            "ritual": "top-imp", "model": "mock/keyword", "essence": {"requests": 1},
+            "steps": [
+                {"id": "a", "operation": "data.trim", "arguments": {"text": " a "}},
+                {"id": "m", "model": {"prompt": "hi"}},
+                {"id": "b", "operation": "data.trim", "arguments": {"text": " b "}},
+            ],
+            "return": {"b": "${steps.b.output}"},
+        }));
+        let before = relaxed();
+        assert_eq!(f.run(def, None).execute().outcome, Outcome::Returned);
+        // a and b: their op event and the checkpoint after them; m: none.
+        assert_eq!(relaxed() - before, 4);
     }
 
     #[test]
