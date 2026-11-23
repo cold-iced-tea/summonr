@@ -90,7 +90,9 @@ Every model step runs in a **fresh context**. Nothing carries over between steps
 
 ## Failure evidence and privacy
 
-`model.attempt` and `op.intent` events precede dispatch. A failed call retains its intent even when no response or token usage arrives. Do not treat unknown token usage as zero. MCP returns task data faithfully and keeps effect events separate; the evidence reference points to the full record.
+`model.attempt` and `op.intent` events precede dispatch. A failed call retains its intent even when no response or token usage arrives.
+
+Pure steps (`data.*`) are deterministic, so they are recorded more lightly: no `op.intent`, one `op` event in which any argument over 1 KiB of JSON is replaced by its `sha256` and size in `bytes` (rerunning the step from the same inputs reproduces it), and their records, like the per-item bookkeeping of an `each` item that ran only pure steps, are committed without their own disk sync. The next durable record syncs them in order, so a power loss can lose only the most recent pure records, which `revive` recomputes. Do not treat unknown token usage as zero. MCP returns task data faithfully and keeps effect events separate; the evidence reference points to the full record.
 
 Raw prompts, bindings, responses and inputs can contain private data. Keep the state directory private and limit access to the owner. Automatic redaction, encrypted storage, retention policies and familiar-specific evidence access are not implemented. Do not supply secrets to a model merely because its payload will be audited.
 

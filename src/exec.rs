@@ -224,6 +224,11 @@ impl Run {
         self.core.emit(&self.id, kind, &text.into(), data);
     }
 
+    /// A record of recomputable work; see `Core::emit_with`.
+    fn emit_light(&self, kind: &str, text: impl Into<String>, data: Value) {
+        self.core.emit_with(&self.id, kind, &text.into(), data, false);
+    }
+
     /// Pre-execution RBAC guard: verifies that the invoking actor's active roles
     /// permit the requested reagent operation before any side effects, probes,
     /// petitions, or fences occur. Denials are recorded to the tamper-evident
@@ -855,11 +860,16 @@ impl Run {
         } else {
             None
         };
-        self.emit(
-            "op.intent",
-            format!("{sid}: dispatch {op}"),
-            json!({"step":sid,"operation":op,"arguments":args,"effect":effect,"fence_key":fence_key}),
-        );
+        let pure = effect == "pure";
+        // A pure step has nothing to fence or reconcile, so it needs no
+        // intent record ahead of its result.
+        if !pure {
+            self.emit(
+                "op.intent",
+                format!("{sid}: dispatch {op}"),
+                json!({"step":sid,"operation":op,"arguments":args,"effect":effect,"fence_key":fence_key}),
+            );
+        }
         match reagent::perform(
             self.core.cfg.mail_root.as_deref(),
             op,
@@ -886,11 +896,26 @@ impl Run {
                 };
                 let simulated = matches!(evidence, Evidence::Simulated { .. });
                 let state = if simulated { "simulated" } else { "applied" };
+                let text = format!("{op} {} → {shown}", brief(&args));
+                if pure {
+                    // Deterministic and recomputable: large values are kept
+                    // by digest and size, and the record skips its fsync.
+                    let mut ev = serde_json::to_value(&evidence).expect("evidence serializes");
+                    if let Some(o) = ev.get_mut("observed") {
+                        *o = digest_large(o);
+                    }
+                    self.emit_light(
+                        "op",
+                        text,
+                        json!({"step":sid,"operation": op, "arguments": digest_large(&args), "effect": effect,"state":state,"evidence": ev}),
+                    );
+                    return Ok(out);
+                }
                 let mut data = json!({"step":sid,"operation": op, "arguments": args, "effect": effect,"state":state,"evidence":evidence});
                 if would_hold {
                     data["would_hold"] = json!(true);
                 }
-                self.emit("op", format!("{op} {} → {shown}", brief(&args)), data);
+                self.emit("op", text, data);
                 if !matches!(effect, "read" | "pure") {
                     if simulated {
                         if check.is_some() {
@@ -1447,6 +1472,14 @@ impl Run {
             .iter()
             .map(|(k, v)| (k.clone(), v.status))
             .collect();
+        // Only pure work, which a revive can redo exactly: its bookkeeping
+        // need not be durable on its own (the next durable write syncs it).
+        let durable = ran.is_err()
+            || !frame.effects.is_empty()
+            || frame
+                .steps
+                .values()
+                .any(|v| !matches!(v.kind, StepKind::Pure | StepKind::Skipped));
         let (status, error) = match &ran {
             Ok(()) if frame.abstained => (Outcome::Abstained, None),
             Ok(()) => (Outcome::Returned, None),
@@ -1469,19 +1502,27 @@ impl Run {
         });
         if !interrupted && top_level {
             self.done += 1;
-            self.core.progress(&self.id, self.done, self.total);
-            self.core
-                .save_checkpoint(&self.id, &format!("each:{id}"), &json!(items));
+            self.core.progress_with(&self.id, self.done, self.total, durable);
+            // One row per item, so a long loop's checkpoints grow linearly.
+            let n = items.len() - 1;
+            self.core.save_checkpoint_with(
+                &self.id,
+                &format!("each:{id}#{n:08}"),
+                &json!(items[n]),
+                durable,
+            );
         }
         let detail = outputs.values().next().map(brief).unwrap_or_default();
-        self.emit(
+        self.core.emit_with(
+            &self.id,
             "item",
-            format!(
+            &format!(
                 "{label}: {status}{}{}",
                 if detail.is_empty() { "" } else { " " },
                 error.clone().unwrap_or(detail)
             ),
             json!({"item": label, "status": status}),
+            durable,
         );
         fatal
     }
@@ -1516,9 +1557,7 @@ impl Run {
         let mut items: Vec<BatchItem> = if top_level {
             self.core
                 .load_checkpoints(&self.id)
-                .ok()
-                .and_then(|m| m.get(&format!("each:{id}")).cloned())
-                .and_then(|v| serde_json::from_value(v).ok())
+                .map(|m| checkpointed_items(&m, &id))
                 .unwrap_or_default()
         } else {
             Vec::new()
@@ -1705,6 +1744,45 @@ fn chat_failure(sid: &str, e: &str) -> Fail {
     }
 }
 
+/// The items of a top-level `each` already recorded: one checkpoint row per
+/// item (`each:ID#00000003`), or the whole list under `each:ID` as older cores
+/// wrote it. Rows stop at the first gap or unreadable item.
+fn checkpointed_items(map: &BTreeMap<String, Value>, id: &str) -> Vec<BatchItem> {
+    if let Some(list) = map.get(&format!("each:{id}")) {
+        return serde_json::from_value(list.clone()).unwrap_or_default();
+    }
+    let prefix = format!("each:{id}#");
+    let mut items = Vec::new();
+    for (path, v) in map.range(prefix.clone()..) {
+        let Some(n) = path.strip_prefix(&prefix) else { break };
+        if n.parse::<usize>().ok() != Some(items.len()) {
+            break;
+        }
+        match serde_json::from_value::<BatchItem>(v.clone()) {
+            Ok(item) => items.push(item),
+            Err(_) => break,
+        }
+    }
+    items
+}
+
+/// Pure values up to this many bytes of JSON are recorded whole.
+const PURE_INLINE_BYTES: usize = 1024;
+
+/// A pure step's argument or output as recorded: whole when small, else its
+/// SHA-256 and size (rerunning the step from the same inputs reproduces it).
+/// Objects are digested field by field so small fields stay readable.
+fn digest_large(v: &Value) -> Value {
+    let raw = v.to_string();
+    if raw.len() <= PURE_INLINE_BYTES {
+        return v.clone();
+    }
+    match v {
+        Value::Object(m) => Value::Object(m.iter().map(|(k, x)| (k.clone(), digest_large(x))).collect()),
+        _ => json!({"sha256": crate::util::sha256_hex(raw.as_bytes()), "bytes": raw.len()}),
+    }
+}
+
 /// Record every step of an untaken branch as skipped with a null output,
 /// including the steps of `if`s nested in it, whose ids share the frame (the
 /// checker lets later steps reference them). `each` and fallback steps live in
@@ -1828,6 +1906,101 @@ mod tests {
             "steps": [{"id": "answer", "model": {"prompt": "hello"}}],
             "return": {"answer": "${steps.answer.output}"},
         }))
+    }
+
+    /// A loop of pure steps over sizable text, the shape of bughunt's score
+    /// and scan-file. Reports wall time and event bytes; run with
+    /// `cargo test --offline pure_loop_cost -- --ignored --nocapture`.
+    fn pure_loop(items: usize) -> Ritual {
+        let chunk = "fn example() { let x = 1; }\n".repeat(80);
+        let list: Vec<Value> = (0..items).map(|i| json!({"n": i, "text": chunk})).collect();
+        definition(json!({
+            "ritual": "pure-loop-imp",
+            "essence": {"requests": 0},
+            "steps": [{
+                "id": "loop", "each": format!("x in {}", Value::Array(list)),
+                "steps": [
+                    {"id": "a", "operation": "data.trim", "arguments": {"text": "${x.text}"}},
+                    {"id": "b", "operation": "data.replace", "arguments": {"text": "${steps.a.output}", "from": "let", "to": "const"}},
+                    {"id": "c", "operation": "data.contains", "arguments": {"value": "${steps.b.output}", "needle": "const x"}},
+                    {"id": "d", "operation": "data.count", "arguments": {"value": "${steps.b.output}"}},
+                    {"id": "e", "operation": "data.compare", "arguments": {"left": "${steps.d.output}", "right": 8, "operator": "ge"}},
+                    {"id": "f", "operation": "data.logic", "arguments": {"operator": "and", "left": "${steps.c.output}", "right": "${steps.e.output}"}},
+                ],
+            }],
+            "return": {"n": "${steps.loop.counts.returned}"},
+        }))
+    }
+
+    fn event_bytes(f: &Fixture) -> (u64, u64) {
+        f.core.db.lock().unwrap().query_row(
+            "SELECT COUNT(*), COALESCE(SUM(LENGTH(data)), 0) FROM events", [], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap()
+    }
+
+    #[test]
+    #[ignore]
+    fn pure_loop_cost() {
+        let f = Fixture::new();
+        let started = std::time::Instant::now();
+        let fin = f.run(pure_loop(200), None).execute();
+        let took = started.elapsed();
+        assert_eq!(fin.outcome, Outcome::Returned, "{:?}", fin.error);
+        let (n, bytes) = event_bytes(&f);
+        eprintln!("pure loop, 200 items x 6 steps: {took:?}, {n} events, {bytes} event bytes");
+    }
+
+    #[test]
+    fn pure_steps_record_one_event_with_large_values_by_digest() {
+        let f = Fixture::new();
+        let big = "x".repeat(4000);
+        let def = definition(json!({
+            "ritual": "pure-record-imp",
+            "steps": [
+                {"id": "big", "operation": "data.trim", "arguments": {"text": big}},
+                {"id": "small", "operation": "data.trim", "arguments": {"text": " a "}},
+            ],
+            "return": {"n": "${steps.small.output}"},
+        }));
+        let fin = f.run(def, None).execute();
+        assert_eq!(fin.outcome, Outcome::Returned, "{:?}", fin.error);
+        let db = f.core.db.lock().unwrap();
+        let kinds: Vec<String> = db
+            .prepare("SELECT kind FROM events WHERE kind LIKE 'op%'")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(kinds, ["op", "op"], "a pure step needs no intent record");
+        let data: Vec<Value> = db
+            .prepare("SELECT data FROM events WHERE kind='op' ORDER BY seq")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(|r| serde_json::from_str(&r.unwrap()).unwrap())
+            .collect();
+        let text = Value::String(big.clone()).to_string();
+        assert_eq!(data[0]["arguments"]["text"]["bytes"], text.len());
+        assert_eq!(data[0]["arguments"]["text"]["sha256"], crate::util::sha256_hex(text.as_bytes()));
+        assert_eq!(data[0]["evidence"]["class"], "computed by the runtime");
+        assert_eq!(data[1]["arguments"]["text"], " a ");
+    }
+
+    #[test]
+    fn each_checkpoints_read_per_item_rows_and_the_older_whole_list() {
+        let item = |n: &str| json!({"item": n, "status": "returned", "outputs": {}, "steps": {}, "effects": [], "interrupted": false});
+        let rows = BTreeMap::from([
+            ("each:loop#00000000".to_string(), item("a")),
+            ("each:loop#00000001".to_string(), item("b")),
+            ("each:loop#00000003".to_string(), item("after-a-gap")),
+            ("each:loopy#00000000".to_string(), item("other-step")),
+        ]);
+        let got: Vec<String> = checkpointed_items(&rows, "loop").into_iter().map(|i| i.item).collect();
+        assert_eq!(got, ["a", "b"]);
+        let legacy = BTreeMap::from([("each:loop".to_string(), json!([item("old")]))]);
+        assert_eq!(checkpointed_items(&legacy, "loop")[0].item, "old");
+        assert!(checkpointed_items(&BTreeMap::new(), "loop").is_empty());
     }
 
     #[test]

@@ -549,15 +549,25 @@ impl Core {
     // ------------------------------------------------------------- storage
 
     pub fn emit(&self, summon: &str, kind: &str, text: &str, data: Value) {
+        self.emit_with(summon, kind, text, data, true)
+    }
+
+    /// `durable: false` is for records of recomputable work (pure steps):
+    /// the commit skips its fsync. Under WAL the next durable commit syncs
+    /// it along with everything before it, in order, so a power loss can
+    /// drop only a tail of such records, never reorder or tear them.
+    pub fn emit_with(&self, summon: &str, kind: &str, text: &str, data: Value, durable: bool) {
         let ts = now_ms();
         let seq = {
             let db = self.db.lock().unwrap();
             // Events are stored before anyone can observe them.
-            let res = db.execute(
-                "INSERT INTO events (summon, seq, ts, kind, text, data)
-                 VALUES (?1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE summon = ?1), ?2, ?3, ?4, ?5)",
-                params![summon, ts, kind, text, data.to_string()],
-            );
+            let res = relaxed(&db, durable, |db| {
+                db.execute(
+                    "INSERT INTO events (summon, seq, ts, kind, text, data)
+                     VALUES (?1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE summon = ?1), ?2, ?3, ?4, ?5)",
+                    params![summon, ts, kind, text, data.to_string()],
+                )
+            });
             let ok = res.is_ok();
             self.persisted(res);
             if ok {
@@ -587,10 +597,17 @@ impl Core {
     }
 
     pub fn progress(&self, id: &str, done: u64, total: u64) {
-        self.persisted(self.db.lock().unwrap().execute(
-            "UPDATE summons SET done=?2, total=?3 WHERE id=?1",
-            params![id, done as i64, total as i64],
-        ));
+        self.progress_with(id, done, total, true)
+    }
+
+    pub fn progress_with(&self, id: &str, done: u64, total: u64, durable: bool) {
+        let db = self.db.lock().unwrap();
+        self.persisted(relaxed(&db, durable, |db| {
+            db.execute(
+                "UPDATE summons SET done=?2, total=?3 WHERE id=?1",
+                params![id, done as i64, total as i64],
+            )
+        }));
     }
 
     pub fn usage(&self, id: &str, requests: u64, tokens: u64, cost_microusd: Option<u64>) {
@@ -1275,10 +1292,19 @@ impl Core {
     }
 
     pub(crate) fn save_checkpoint(&self, summon: &str, path: &str, data: &Value) {
-        self.persisted(self.db.lock().unwrap().execute(
-            "INSERT OR REPLACE INTO checkpoints (summon, path, data) VALUES (?1, ?2, ?3)",
-            params![summon, path, data.to_string()],
-        ));
+        self.save_checkpoint_with(summon, path, data, true)
+    }
+
+    /// A non-durable checkpoint covers only recomputable work; losing it
+    /// means that work is redone on revive.
+    pub(crate) fn save_checkpoint_with(&self, summon: &str, path: &str, data: &Value, durable: bool) {
+        let db = self.db.lock().unwrap();
+        self.persisted(relaxed(&db, durable, |db| {
+            db.execute(
+                "INSERT OR REPLACE INTO checkpoints (summon, path, data) VALUES (?1, ?2, ?3)",
+                params![summon, path, data.to_string()],
+            )
+        }));
     }
 
     pub(crate) fn load_checkpoints(&self, summon: &str) -> Result<BTreeMap<String, Value>, RpcErr> {
@@ -1789,7 +1815,9 @@ impl Core {
             );
         }
         for (path, data) in &old_checkpoints {
-            if let Some(step_id) = path.strip_prefix("each:") {
+            if let Some(rest) = path.strip_prefix("each:") {
+                // `each:ID` (older cores) or `each:ID#N`, one row per item.
+                let step_id = rest.split_once('#').map_or(rest, |(id, _)| id);
                 if keep.contains(step_id) {
                     self.save_checkpoint(&id, path, data);
                 }
@@ -2879,6 +2907,22 @@ fn add_column(db: &rusqlite::Connection, table: &str, column: &str, decl: &str) 
             .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// Run one write with `synchronous=NORMAL` when it need not be durable on its
+/// own (the connection is otherwise FULL). Callers hold the database lock.
+fn relaxed<T>(
+    db: &rusqlite::Connection,
+    durable: bool,
+    write: impl FnOnce(&rusqlite::Connection) -> rusqlite::Result<T>,
+) -> rusqlite::Result<T> {
+    if durable {
+        return write(db);
+    }
+    db.execute_batch("PRAGMA synchronous=NORMAL")?;
+    let out = write(db);
+    db.execute_batch("PRAGMA synchronous=FULL")?;
+    out
 }
 
 #[cfg(test)]

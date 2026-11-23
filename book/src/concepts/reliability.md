@@ -46,7 +46,7 @@ Do not infer a hard remote execution deadline from a local timeout. Cancellation
 
 ## Per-step checkpoints and `revive`
 
-As a top-level run executes, completed top-level steps (`top`) and non-interrupted `each` batch items (`each:<id>`) are persisted in the `checkpoints` table.
+As a top-level run executes, completed top-level steps (`top`) and non-interrupted `each` batch items (one row per item, `each:<id>#<n>`) are persisted in the `checkpoints` table.
 
 If a root run ends as `exhausted`, `cancelled`, or `interrupted`, `summonr revive <run_id>` (`resume`):
 
