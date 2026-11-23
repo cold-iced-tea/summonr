@@ -1352,9 +1352,7 @@ impl Run {
             }),
         );
         if resp.done_reason.as_deref() == Some("length") {
-            return Err(Fail::Invalid(
-                "backend truncated generation; dependent work refused".into(),
-            ));
+            return Err(Fail::Invalid(truncation_message(sid, &model, &settings, max_output_tokens, &resp)));
         }
         if (max_output_tokens.is_some() || cost_capped) && resp.token_confidence == "unknown" {
             return Err(Fail::Failed("backend did not report token usage; cannot check token/cost essence or continue dependent work".into()));
@@ -1924,6 +1922,43 @@ fn mark_skipped(steps: &[Step], into: &mut BTreeMap<String, StepRecord>) {
     }
 }
 
+/// Why a backend stopped early, in terms a ritual author can act on: the
+/// generation cap that applied and where it came from, what the backend
+/// reported using, and the context and thinking settings that usually
+/// explain it.
+fn truncation_message(
+    sid: &str,
+    model: &str,
+    settings: &BTreeMap<String, Value>,
+    max_output_tokens: Option<u64>,
+    resp: &backend::ChatResp,
+) -> String {
+    let explicit = ["max_tokens", "num_predict"].into_iter().find(|k| settings.contains_key(*k));
+    let cap = match backend::resolve_generation_cap(settings, max_output_tokens).ok().flatten() {
+        Some(cap) if explicit.is_some() && max_output_tokens != Some(cap) => {
+            format!("generation cap of {cap} from `{}`", explicit.unwrap_or_default())
+        }
+        Some(cap) if explicit.is_some() => {
+            format!("generation cap of {cap}, the token essence left (below `{}`)", explicit.unwrap_or_default())
+        }
+        Some(cap) => format!("generation cap of {cap}, the token essence left"),
+        None => "no generation cap set, so the backend's own limit".into(),
+    };
+    let mut parts = vec![format!("prompt {} tokens", resp.prompt_tokens), cap];
+    if let Some(n) = settings.get("num_ctx") {
+        parts.push(format!("num_ctx {n}"));
+    }
+    if model.starts_with("ollama/") {
+        let on = settings.get("think").and_then(Value::as_bool).unwrap_or(false);
+        parts.push(if on { "thinking on".into() } else { "thinking off".into() });
+    }
+    format!(
+        "step {sid}: backend truncated generation after {} output tokens ({}); dependent work refused. Raise `num_predict` or the token essence, raise `num_ctx`, or set `think: false`",
+        resp.output_tokens,
+        parts.join("; ")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -2362,6 +2397,84 @@ return: {kept: "${steps.kept.output}"}
         assert!(started.elapsed() < Duration::from_millis(1500), "{:?}", started.elapsed());
     }
 
+
+    /// A local stand-in for Ollama that answers every request with `reply`
+    /// and sends each request body it receives to the returned channel.
+    pub(crate) fn canned_ollama(reply: Value) -> (String, std::sync::mpsc::Receiver<Value>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = server.local_addr().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for s in server.incoming().flatten() {
+                let mut r = BufReader::new(s.try_clone().unwrap());
+                let mut len = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if r.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                    if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        len = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0; len];
+                let _ = r.read_exact(&mut body);
+                let _ = tx.send(serde_json::from_slice(&body).unwrap_or(Value::Null));
+                let text = reply.to_string();
+                let mut s = s;
+                let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}", text.len());
+            }
+        });
+        (format!("http://{addr}"), rx)
+    }
+
+    #[test]
+    fn an_invocation_think_setting_overrides_the_rituals_and_reaches_ollama() {
+        let (url, bodies) = canned_ollama(json!({
+            "message": {"role": "assistant", "content": "ok"},
+            "done_reason": "stop", "prompt_eval_count": 3, "eval_count": 1,
+        }));
+        let mut f = Fixture::new();
+        Arc::get_mut(&mut f.core).unwrap().cfg.ollama_url = Some(url);
+        let def = definition(json!({
+            "ritual": "thinker-imp", "model": "ollama/thinker", "settings": {"think": true},
+            "steps": [{"id": "m", "model": {"prompt": "hi"}}],
+            "return": {"m": "${steps.m.output}"},
+        }));
+        let mut run = f.run(def, None);
+        // What `--set think=false` stores.
+        run.settings_override.insert("think".into(), crate::core::setting_value("false"));
+        let fin = run.execute();
+        assert_eq!(fin.outcome, Outcome::Returned, "{:?}", fin.error);
+        let sent = bodies.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(sent["think"], json!(false));
+    }
+
+    #[test]
+    fn a_truncated_generation_names_the_cap_and_the_tokens_it_used() {
+        let (url, bodies) = canned_ollama(json!({
+            "message": {"role": "assistant", "content": "{\"verdict\": \"conf", "thinking": "Let me think about this at length..."},
+            "done_reason": "length", "prompt_eval_count": 900, "eval_count": 512,
+        }));
+        let mut f = Fixture::new();
+        Arc::get_mut(&mut f.core).unwrap().cfg.ollama_url = Some(url);
+        let def = definition(json!({
+            "ritual": "thinker-imp", "model": "ollama/thinker",
+            "settings": {"num_predict": 512, "num_ctx": 16384, "think": true},
+            "steps": [{"id": "m", "model": {"prompt": "hi", "schema": {"type": "object", "properties": {"verdict": {"type": "string"}}, "required": ["verdict"]}}}],
+            "return": {"m": "${steps.m.output}"},
+        }));
+        let mut run = f.run(def, None);
+        let fin = run.execute();
+        assert_eq!(fin.outcome, Outcome::Invalid, "{:?}", fin.error);
+        let err = fin.error.unwrap();
+        for want in ["backend truncated generation", "step m", "512 output tokens", "cap of 512", "num_ctx 16384", "thinking on"] {
+            assert!(err.contains(want), "`{want}` missing from: {err}");
+        }
+        let sent = bodies.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(sent["think"], json!(true), "think is forwarded to Ollama");
+    }
     #[test]
     fn steps_in_an_if_nested_in_an_untaken_branch_are_skipped() {
         let f = Fixture::new();

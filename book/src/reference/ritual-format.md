@@ -211,6 +211,26 @@ The Ollama backend accepts:
 
 Unknown settings, invalid types and out-of-range values are rejected during definition validation and for invocation overrides. `num_predict` is further capped by the remaining token essence.
 
+### Thinking models
+
+`think` (a boolean) turns a thinking model's reasoning on or off. Summonr sends `"think": false` to Ollama unless a setting says otherwise, so a thinking model does not spend its generation cap reasoning before it writes the answer. To let it think, give it room as well:
+
+```yaml
+settings: {think: true, num_predict: 8192, num_ctx: 16384}
+```
+
+`summonr run NAME --set think=false` overrides the ritual for one run, and a step's own `settings` override both. The OpenAI-compatible and Anthropic backends have no thinking switch: they accept `think: false`, which is what they already do, and send nothing for it, and they refuse `think: true` when the step runs rather than drop it silently.
+
+### When generation is truncated
+
+A model step whose backend stops because it ran out of room (Ollama's `done_reason: length`) ends `invalid`, and nothing that depends on it runs. The error says what to change:
+
+```text
+step test: backend truncated generation after 512 output tokens (prompt 900 tokens; generation cap of 512 from `num_predict`; num_ctx 16384; thinking on); dependent work refused. ...
+```
+
+The output count includes thinking tokens. A cap described as "the token essence left" means the run's `essence.tokens` is what ran out, not the setting. Output well below the cap with a large prompt usually means `num_ctx` filled up.
+
 The `mock` backend does not use sampling settings, but compiled definitions still validate them so a spelling error cannot hide behind a mock run.
 
 ## Durations

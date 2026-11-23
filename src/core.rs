@@ -431,7 +431,7 @@ fn cassette_error(e: crate::cassette::LoadError) -> RpcErr {
     }
 }
 
-fn setting_value(s: &str) -> Value {
+pub(crate) fn setting_value(s: &str) -> Value {
     serde_json::from_str(s).unwrap_or_else(|_| Value::String(s.to_string()))
 }
 
