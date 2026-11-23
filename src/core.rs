@@ -1874,7 +1874,11 @@ impl Core {
             );
         }
         for (path, data) in &old_checkpoints {
-            if let Some(rest) = path.strip_prefix("each:") {
+            if let Some(step_id) = path.strip_prefix("top#") {
+                if keep.contains(step_id) {
+                    self.save_checkpoint(&id, path, data);
+                }
+            } else if let Some(rest) = path.strip_prefix("each:") {
                 // `each:ID` (older cores) or `each:ID#N`, one row per item.
                 let step_id = rest.split_once('#').map_or(rest, |(id, _)| id);
                 if keep.contains(step_id) {

@@ -413,18 +413,24 @@ impl Run {
         (timeout, tokens)
     }
 
+    /// Record what a top-level step added to the frame: one row per step
+    /// id (`top#ID`), so a long ritual's checkpoints grow linearly.
     /// `durable: false` after a step that did only pure work, which a
-    /// revive recomputes if this checkpoint is lost.
-    fn checkpoint_top(&self, frame: &Frame, durable: bool) {
-        self.core.save_checkpoint_with(
-            &self.id,
-            "top",
-            &json!({
-                "steps": frame.steps,
-                "abstained": frame.abstained,
-            }),
-            durable,
-        );
+    /// revive recomputes if this checkpoint is lost. Only the last row needs
+    /// the sync: it syncs the earlier ones with it.
+    fn checkpoint_top(&self, frame: &Frame, step: &Step, durable: bool) {
+        let mut ids = Vec::new();
+        frame_ids(step, &mut ids);
+        let rows: Vec<(&String, &StepRecord)> =
+            ids.iter().filter_map(|id| frame.steps.get_key_value(id)).collect();
+        for (n, (id, record)) in rows.iter().enumerate() {
+            self.core.save_checkpoint_with(
+                &self.id,
+                &format!("top#{id}"),
+                &json!(record),
+                durable && n + 1 == rows.len(),
+            );
+        }
     }
 
     pub fn execute(&mut self) -> Finished {
@@ -435,14 +441,9 @@ impl Run {
         if self.depth == 0 {
             match self.core.load_checkpoints(&self.id) {
                 Ok(map) => {
-                    if let Some(top) = map.get("top") {
-                        if let Ok(steps) = serde_json::from_value::<BTreeMap<String, StepRecord>>(
-                            top["steps"].clone(),
-                        ) {
-                            scope.frames[0].steps = steps;
-                        }
-                        scope.frames[0].abstained = top["abstained"].as_bool().unwrap_or(false);
-                    }
+                    let (steps, abstained) = checkpointed_top(&map);
+                    scope.frames[0].steps = steps;
+                    scope.frames[0].abstained = abstained;
                 }
                 Err(e) => {
                     return Finished {
@@ -672,7 +673,7 @@ impl Run {
                 }
             }
             if top_level {
-                self.checkpoint_top(&scope.frames[0], self.impure_count() != impure_before);
+                self.checkpoint_top(&scope.frames[0], s, self.impure_count() != impure_before);
             }
         }
         Ok(())
@@ -1822,6 +1823,42 @@ fn chat_failure(sid: &str, e: &str) -> Fail {
     }
 }
 
+/// The ids a step can add to its frame: its own, and those of steps in its
+/// `if` branches and fallbacks, which share the frame.
+fn frame_ids(step: &Step, out: &mut Vec<String>) {
+    if let Some(id) = step.id() {
+        out.push(id.clone());
+    }
+    match step {
+        Step::If(b) => b.then.iter().chain(&b.otherwise).for_each(|s| frame_ids(s, out)),
+        Step::Operation(o) => o.fallback.iter().for_each(|s| frame_ids(s, out)),
+        Step::Model(m) => m.fallback.iter().for_each(|s| frame_ids(s, out)),
+        Step::Ritual(_) | Step::Each(_) => {}
+    }
+}
+
+/// The completed top-level steps of a run: the whole frame under `top` as
+/// older cores wrote it, then one row per step (`top#ID`). The frame is
+/// abstained when any of them is.
+pub(crate) fn checkpointed_top(map: &BTreeMap<String, Value>) -> (BTreeMap<String, StepRecord>, bool) {
+    let mut abstained = false;
+    let mut steps: BTreeMap<String, StepRecord> = match map.get("top") {
+        Some(top) => {
+            abstained = top["abstained"].as_bool().unwrap_or(false);
+            serde_json::from_value(top["steps"].clone()).unwrap_or_default()
+        }
+        None => BTreeMap::new(),
+    };
+    for (path, v) in map.range("top#".to_string()..) {
+        let Some(id) = path.strip_prefix("top#") else { break };
+        if let Ok(record) = serde_json::from_value::<StepRecord>(v.clone()) {
+            steps.insert(id.to_string(), record);
+        }
+    }
+    abstained |= steps.values().any(|r| r.status == StepStatus::Abstained);
+    (steps, abstained)
+}
+
 /// The items of a top-level `each` already recorded: one checkpoint row per
 /// item (`each:ID#00000003`), after the whole list under `each:ID` that older
 /// cores wrote (a run they started and this core revived has both). Rows stop
@@ -2203,6 +2240,43 @@ mod tests {
         assert_eq!(f.run(def, None).execute().outcome, Outcome::Returned);
         // a and b: their op event and the checkpoint after them; m: none.
         assert_eq!(relaxed() - before, 4);
+    }
+
+    #[test]
+    fn top_checkpoints_read_per_step_rows_after_the_older_whole_frame() {
+        let rec = |status: &str, out: Value| json!({"status": status, "kind": "pure", "output": out});
+        let legacy = json!({"steps": {"a": rec("returned", json!(1))}, "abstained": false});
+        let map = BTreeMap::from([
+            ("top".to_string(), legacy),
+            ("top#b".to_string(), rec("abstained", json!(2))),
+            ("top#c".to_string(), rec("returned", json!(3))),
+            ("each:loop#00000000".to_string(), json!({})),
+        ]);
+        let (steps, abstained) = checkpointed_top(&map);
+        assert_eq!(steps.keys().collect::<Vec<_>>(), ["a", "b", "c"]);
+        assert_eq!(steps["c"].output, 3);
+        assert!(abstained, "a restored abstained step marks the frame");
+        assert!(checkpointed_top(&BTreeMap::new()).0.is_empty());
+    }
+
+    #[test]
+    fn a_top_step_checkpoints_the_ids_its_branches_added() {
+        let f = Fixture::new();
+        let def = definition(json!({
+            "ritual": "branch-rows-imp",
+            "steps": [{"id": "gate", "if": "true",
+                "then": [{"id": "inner", "operation": "data.trim", "arguments": {"text": " x "}}],
+                "else": [{"id": "never", "operation": "data.trim", "arguments": {"text": " y "}}]}],
+            "return": {"i": "${steps.inner.output}"},
+        }));
+        let mut run = f.run(def, None);
+        assert_eq!(run.execute().outcome, Outcome::Returned);
+        let map = f.core.load_checkpoints(&run.id).unwrap();
+        let rows: Vec<&String> = map.keys().collect();
+        assert_eq!(rows, ["top#inner", "top#never"], "{map:?}");
+        let (steps, _) = checkpointed_top(&map);
+        assert_eq!(steps["inner"].output, "x");
+        assert_eq!(steps["never"].status, StepStatus::Skipped);
     }
 
     #[test]
