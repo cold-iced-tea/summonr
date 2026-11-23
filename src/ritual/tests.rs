@@ -1420,4 +1420,40 @@ steps:
         let errs = crate::ritual::validate(&undeclared, &none, &crate::reagent::tool, 3).unwrap_err();
         assert!(errs.iter().any(|e| e.contains("params.floor")), "{errs:?}");
     }
+
+    #[test]
+    fn number_inputs_are_finite_bounded_decimals() {
+        let none = |_: &str, _: Option<u32>| None;
+        let mut def = crate::ritual::parse_file(r#"
+ritual: r
+inputs:
+  floor: {type: number, min: 0, max: 1, default: 0.3}
+steps:
+  - id: kept
+    operation: data.filter
+    arguments: {values: [0.1, 0.5], predicate: "item >= params.floor", params: {floor: "${inputs.floor}"}}
+return: {kept: "${steps.kept.output}"}
+"#).unwrap();
+        crate::ritual::prepare(&mut def, std::path::Path::new("."), &none).unwrap();
+        crate::ritual::validate(&def, &none, &crate::reagent::tool, 3).unwrap();
+        assert_eq!(def.inputs["floor"].ty, "decimal", "number is the same type as decimal");
+        let mut short = crate::ritual::parse_file("ritual: r\ninputs: {floor: number}\nsteps: []\n").unwrap();
+        crate::ritual::prepare(&mut short, std::path::Path::new("."), &none).unwrap();
+        assert_eq!(short.inputs["floor"].ty, "decimal");
+        let given = |v: serde_json::Value| crate::ritual::resolve_inputs(&def, serde_json::json!({"floor": v}).as_object().unwrap());
+        assert_eq!(crate::ritual::resolve_inputs(&def, &serde_json::Map::new()).unwrap()["floor"], 0.3);
+        assert_eq!(given(serde_json::json!("0.25")).unwrap()["floor"], 0.25, "a --arg string");
+        for bad in [serde_json::json!("nan"), serde_json::json!("inf"), serde_json::json!("-Infinity"), serde_json::json!(1.5), serde_json::json!(-0.1), serde_json::json!("x")] {
+            assert!(given(bad.clone()).is_err(), "{bad} should be refused");
+        }
+        for default in [".nan", ".inf", "2"] {
+            let text = format!("ritual: r\ninputs:\n  floor: {{type: number, min: 0, max: 1, default: {default}}}\nsteps: []\n");
+            let refused = crate::ritual::parse_file(&text).and_then(|mut d| {
+                crate::ritual::prepare(&mut d, std::path::Path::new("."), &none)?;
+                crate::ritual::validate(&d, &none, &crate::reagent::tool, 3).map_err(|e| e.join("; "))?;
+                Ok(())
+            });
+            assert!(refused.is_err(), "default {default} should be refused");
+        }
+    }
 }

@@ -49,7 +49,7 @@ inputs:
 
 | Field | Meaning |
 | --- | --- |
-| `type` | `integer`, `decimal`, `boolean`, `string`, `list`, or `object` |
+| `type` | `integer`, `decimal` (or `number`: the same type, a finite decimal; `NaN` and infinities are refused), `boolean`, `string`, `list`, or `object` |
 | `default` | Used when the input is not supplied. An input without a default is required. |
 | `min`, `max` | Numeric range, inclusive |
 | `enum` | Allowed values |

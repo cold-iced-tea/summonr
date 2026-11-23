@@ -365,6 +365,12 @@ pub fn normalize(def: &mut Ritual) -> Result<(), String> {
         crate::schema::validate(&defs_root).map_err(|e| format!("$defs: {e}"))?;
         def.defs = expanded_defs;
     }
+    for decl in def.inputs.values_mut() {
+        // `number` (the JSON Schema word) is the same type as `decimal`.
+        if decl.ty == "number" {
+            decl.ty = "decimal".into();
+        }
+    }
     for (name, decl) in &mut def.inputs {
         if let Some(sc) = &mut decl.schema {
             *sc = resolve_ritual_schema(sc.clone(), &def.defs)
