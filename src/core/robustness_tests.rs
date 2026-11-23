@@ -1854,3 +1854,52 @@ fn history_children_recursive_lists_the_whole_tree_depth_first() {
     assert_eq!(direct.as_array().unwrap().len(), 2);
     assert!(h.call("list", json!({"scope": "ended", "recursive": true})).is_err());
 }
+
+#[test]
+fn a_sandboxed_drill_runs_a_write_path_for_real_on_disposable_copies() {
+    let fx = crate::git_fixture::fixture();
+    let root = fx.root.to_string_lossy().into_owned();
+    let main = fx.main();
+    let wt = fx.root.join("main-drill-one").to_string_lossy().into_owned();
+    let h = super::test_home::Home::new(&format!(
+        "repos:\n  demo: {{path: {}, trunk: master, remote: origin, test: test -f marker.txt, disposable: [marker.txt]}}\n",
+        main.display()
+    ));
+    let ritual = format!(r#"ritual: write-path
+inputs: {{branch: string}}
+requires:
+  - {{reagent: git, action: worktree_add}}
+  - {{reagent: file, action: write_text, on: {{root: {wt}}}}}
+  - {{reagent: trial, action: run}}
+steps:
+  - {{id: wt, operation: git.worktree_add, arguments: {{repo: demo, branch: "${{inputs.branch}}"}}}}
+  - {{id: w, operation: file.write_text, arguments: {{root: {wt}, path: marker.txt, text: hi}}}}
+  - {{id: t, operation: trial.run, arguments: {{repo: demo, worktree: "${{steps.wt.output.path}}"}}}}
+return: {{passed: "${{steps.t.output.passed}}", path: "${{steps.wt.output.path}}"}}
+"#);
+    let rpath = h.root.join("write-path.yaml");
+    std::fs::write(&rpath, ritual).unwrap();
+    h.inscribe(&rpath, false);
+    h.call("grant", json!({"ritual": "write-path", "scopes": [{"reagent": "git", "select": ["worktree_add"]}, {"reagent": "trial", "select": ["run"]}]})).unwrap();
+    h.call("grant", json!({"ritual": "write-path", "scopes": [{"reagent": "file", "select": ["write_text"]}], "on": {"root": wt}})).unwrap();
+    let drill = |sandbox: &str| {
+        let d = h.root.join(format!("d{}.yaml", sandbox.len()));
+        std::fs::write(&d, format!("drill: wp\nritual: write-path\n{sandbox}cases:\n  - id: writes-and-tests\n    inputs: {{branch: drill/one}}\n    expect: {{result: {{passed: true}}}}\n")).unwrap();
+        h.call("drill", json!({"ritual": "write-path", "against": d.to_str().unwrap(), "cwd": "/"})).unwrap()
+    };
+    // Simulated writes: the worktree never exists, so the trial cannot pass.
+    let plain = drill("");
+    assert_eq!(plain["passed"], 0, "{plain}");
+    let boxed = drill("sandbox: temp\n");
+    assert_eq!(boxed["passed"], 1, "{boxed}");
+    assert_eq!(boxed["sandbox"]["repos"], json!(["demo"]));
+    // The real repository and its surroundings are untouched, and the copies are gone.
+    assert!(!Path::new(&wt).exists(), "a worktree appeared beside the real checkout");
+    let branches = crate::git_fixture::sh(&main, &["branch", "--list", "drill/one"]);
+    assert!(branches.is_empty(), "the real repository gained a branch");
+    let origin = crate::git_fixture::sh(&fx.origin(), &["branch", "--list", "drill/one"]);
+    assert!(origin.is_empty());
+    let path = boxed["cases"][0]["result"]["path"].as_str().unwrap_or_default().to_string();
+    assert!(path.contains("summonr-sandbox-") && !path.starts_with(&root), "the worktree was made in the sandbox: {path}");
+    assert!(!Path::new(&path).exists(), "the sandbox was deleted");
+}

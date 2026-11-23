@@ -129,6 +129,62 @@ impl Io for Simulate {
     }
 }
 
+/// A sandboxed drill's writes: local ones (git, file, trial, cmd) are
+/// performed for real, against the sandbox's temporary copies, which are the
+/// only repositories, roots and commands its core knows; every other write
+/// (gh, http, mail, MCP, wasm) is simulated as in an ordinary drill.
+pub struct Sandboxed {
+    inner: Arc<dyn Io>,
+}
+
+impl Sandboxed {
+    pub fn new(inner: Arc<dyn Io>) -> Self {
+        Sandboxed { inner }
+    }
+
+    fn local(operation: &str) -> bool {
+        matches!(operation.split('.').next(), Some("git" | "file" | "trial" | "cmd"))
+    }
+}
+
+impl Io for Sandboxed {
+    fn offline(&self) -> bool {
+        self.inner.offline()
+    }
+
+    fn scripted(&self) -> bool {
+        self.inner.scripted()
+    }
+
+    fn simulates(&self, operation: &str, cfg: Option<&crate::util::Config>) -> bool {
+        is_write(cfg, operation) && !Self::local(operation)
+    }
+
+    fn chat(
+        &self,
+        base_url: &str,
+        model: &str,
+        step: &str,
+        req: backend::ChatReq,
+    ) -> Result<backend::ChatResp, String> {
+        self.inner.chat(base_url, model, step, req)
+    }
+
+    fn call(
+        &self,
+        root: Option<&str>,
+        operation: &str,
+        args: &Value,
+        auth: &reagent::Authority,
+    ) -> Result<Value, reagent::Fail> {
+        if !self.simulates(operation, auth.config) {
+            return self.inner.call(root, operation, args, auth);
+        }
+        reagent::authorize(root, operation, args, auth)?;
+        Ok(serde_json::json!({"simulated": true, "operation": operation, "arguments": args}))
+    }
+}
+
 /// Answers model calls from a drill's script, by step id in call order, and
 /// passes tool calls to `tools` (a replay or live reads). It never reaches a
 /// model backend.

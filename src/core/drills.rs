@@ -2,7 +2,8 @@
 use super::*;
 use crate::drill;
 use crate::touchstone::Expected;
-use crate::io::{Io, Live, Replay, Scripted, Simulate};
+use crate::io::{Io, Live, Replay, Sandboxed, Scripted, Simulate};
+use super::sandbox::Sandbox;
 
 impl Core {
     pub(super) fn drill(self: &Arc<Self>, p: Value) -> Result<Value, RpcErr> {
@@ -70,6 +71,162 @@ impl Core {
         dir: Option<&Path>,
         who: Option<(&str, &[String])>,
     ) -> Result<Value, RpcErr> {
+        if file.sandbox.is_some() {
+            if who.is_some() {
+                return Err(RpcErr::new(
+                    "not_authorized",
+                    4,
+                    "a sandboxed drill copies the owner's repositories and files; only the owner can run one",
+                ));
+            }
+            return self.run_sandboxed(name, version, file, label, dir);
+        }
+        self.run_drill_cases(name, version, file, label, dir, who, false)
+    }
+
+    /// Run a drill's cases in a throwaway core whose only repositories and
+    /// roots are disposable copies, with local writes performed for real.
+    fn run_sandboxed(
+        self: &Arc<Self>,
+        name: &str,
+        version: u32,
+        file: &drill::DrillFile,
+        label: &str,
+        dir: Option<&Path>,
+    ) -> Result<Value, RpcErr> {
+        let (_, _, def) = self
+            .load_ritual(name, Some(version))?
+            .ok_or_else(|| RpcErr::not_found(format!("no ritual `{name}`")))?;
+        // The file roots the ritual requires, for every case's inputs.
+        let mut roots = Vec::new();
+        for case in &file.cases {
+            let inputs = ritual::resolve_inputs(&def, &case.inputs).map_err(|e| {
+                RpcErr::invalid(format!("case `{}`: {e}", case.id))
+            })?;
+            for r in Self::render_requires(&def.requires, &inputs)? {
+                if let Some(root) = r.on.get("root") {
+                    if !roots.contains(root) {
+                        roots.push(root.clone());
+                    }
+                }
+            }
+        }
+        let repos: Vec<String> = match file.sandbox.as_ref().and_then(|s| s.repos()) {
+            Some(only) => only.to_vec(),
+            None => self.cfg.repos.keys().cloned().collect(),
+        };
+        let sb = Sandbox::build(&self.cfg, &repos, &roots)?;
+        let paths = crate::util::Paths {
+            runtime: sb.dir.join("core/run"),
+            state: sb.dir.join("core/state"),
+            config: sb.dir.join("core/config"),
+        };
+        let mut temp = Core::open(paths).map_err(|e| RpcErr::invalid(format!("sandbox core: {e}")))?;
+        Arc::get_mut(&mut temp)
+            .ok_or_else(|| RpcErr::invalid("sandbox core is shared"))?
+            .cfg = sb.config(&self.cfg);
+        // The ritual, the children it calls and its touchstone, with paths
+        // rewritten to the copies; children first, and parents re-pinned to
+        // the rewritten children's hashes.
+        let mut pinned: HashMap<(String, u32), String> = HashMap::new();
+        let mut wanted = vec![(name.to_string(), Some(version))];
+        if let Some(t) = &file.touchstone {
+            wanted.push((t.clone(), None));
+        }
+        for (n, v) in wanted {
+            self.copy_into_sandbox(&temp, &sb, &n, v, &mut pinned)?;
+        }
+        for g in self.grants_for(name)? {
+            let g: Grant = serde_json::from_value(sb.rewrite(&serde_json::to_value(&g).unwrap_or_default()))
+                .map_err(|e| RpcErr::invalid(format!("sandbox grant: {e}")))?;
+            temp.db
+                .lock()
+                .unwrap()
+                .execute(
+                    "INSERT OR IGNORE INTO grants (ritual, grant_json, created) VALUES (?1, ?2, ?3)",
+                    params![name, serde_json::to_string(&g).unwrap_or_default(), now_ms()],
+                )
+                .map_err(storage_error)?;
+        }
+        let mut local = file.clone();
+        local.sandbox = None;
+        for case in &mut local.cases {
+            if let Value::Object(m) = sb.rewrite(&Value::Object(case.inputs.clone())) {
+                case.inputs = m;
+            }
+        }
+        let mut out = temp.run_drill_cases(name, version, &local, label, dir, None, true)?;
+        out["sandbox"] = sb.describe();
+        out["note"] = json!("case records lived in the sandbox's core and were deleted with it");
+        drop(temp);
+        drop(sb);
+        Ok(out)
+    }
+
+    /// Copy one saved ritual version (and, first, every child it calls)
+    /// into the sandbox core, rewritten to the sandbox's paths.
+    fn copy_into_sandbox(
+        &self,
+        temp: &Arc<Core>,
+        sb: &Sandbox,
+        name: &str,
+        version: Option<u32>,
+        pinned: &mut HashMap<(String, u32), String>,
+    ) -> Result<(u32, String), RpcErr> {
+        let (v, _, def) = self
+            .load_ritual(name, version)?
+            .ok_or_else(|| RpcErr::not_found(format!("no ritual `{name}` in the grimoire")))?;
+        if let Some(h) = pinned.get(&(name.to_string(), v)) {
+            return Ok((v, h.clone()));
+        }
+        let mut def: Ritual = serde_json::from_value(sb.rewrite(&serde_json::to_value(&def).unwrap_or_default()))
+            .map_err(|e| RpcErr::invalid(format!("sandbox: rewriting `{name}`: {e}")))?;
+        fn children(steps: &mut [ritual::Step], each: &mut dyn FnMut(&mut ritual::Step) -> Result<(), RpcErr>) -> Result<(), RpcErr> {
+            for s in steps.iter_mut() {
+                if s.ritual.is_some() {
+                    each(s)?;
+                }
+                for inner in [&mut s.steps, &mut s.then, &mut s.otherwise, &mut s.fallback].into_iter().flatten() {
+                    children(inner, each)?;
+                }
+            }
+            Ok(())
+        }
+        children(&mut def.steps, &mut |s| {
+            let child = s.ritual.clone().unwrap_or_default();
+            let (cv, ch) = self.copy_into_sandbox(temp, sb, &child, s.version, pinned)?;
+            if s.version.is_some() {
+                s.version = Some(cv);
+            }
+            if s.hash.is_some() {
+                s.hash = Some(ch);
+            }
+            Ok(())
+        })?;
+        let hash = ritual::content_hash(&def);
+        temp.db
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT OR IGNORE INTO rituals (name, version, hash, def, created) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![name, v, hash, ritual::canonical_json(&def), now_ms()],
+            )
+            .map_err(storage_error)?;
+        pinned.insert((name.to_string(), v), hash.clone());
+        Ok((v, hash))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_drill_cases(
+        self: &Arc<Self>,
+        name: &str,
+        version: u32,
+        file: &drill::DrillFile,
+        label: &str,
+        dir: Option<&Path>,
+        who: Option<(&str, &[String])>,
+        sandboxed: bool,
+    ) -> Result<Value, RpcErr> {
         if file.ritual != name {
             return Err(RpcErr::invalid(format!(
                 "{label} drills ritual `{}`, not `{name}`",
@@ -130,7 +287,13 @@ impl Core {
             let script = Arc::new(
                 Scripted::new(case.model.clone(), tools).with_defaults(case.model_default.clone()),
             );
-            let io: Arc<dyn Io> = Arc::new(Simulate::new(script.clone()));
+            // In a sandbox, local writes act on the copies; elsewhere every
+            // write is simulated.
+            let io: Arc<dyn Io> = if sandboxed {
+                Arc::new(Sandboxed::new(script.clone()))
+            } else {
+                Arc::new(Simulate::new(script.clone()))
+            };
             // The same admission as `invoke`: a case is a run like any other.
             let (id, run, _) = {
                 let _admission = self.admission.lock().unwrap();

@@ -11,7 +11,7 @@ use crate::touchstone::Expected;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashSet};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct DrillFile {
     pub drill: String,
@@ -19,10 +19,35 @@ pub struct DrillFile {
     /// A saved pure ritual that computes each case's expected result.
     #[serde(default)]
     pub touchstone: Option<String>,
+    /// Run writes for real inside disposable copies (see `Sandbox`).
+    #[serde(default)]
+    pub sandbox: Option<Sandbox>,
     pub cases: Vec<Case>,
 }
 
-#[derive(Deserialize)]
+/// `sandbox: temp` copies every configured repository and every file root
+/// the ritual requires into a temporary directory and runs the cases there,
+/// writes included; `sandbox: {repos: [a, b]}` clones only those repos.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(untagged)]
+pub enum Sandbox {
+    Temp(String),
+    Only {
+        repos: Vec<String>,
+    },
+}
+
+impl Sandbox {
+    /// The configured repositories to clone, or `None` for all of them.
+    pub fn repos(&self) -> Option<&[String]> {
+        match self {
+            Sandbox::Temp(_) => None,
+            Sandbox::Only { repos } => Some(repos),
+        }
+    }
+}
+
+#[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct Case {
     pub id: String,
@@ -39,7 +64,7 @@ pub struct Case {
     pub expect: Expect,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct Expect {
     /// Defaults to `returned`, so a case never passes on a failed run unnoticed.
@@ -94,6 +119,11 @@ pub fn parse_value(v: Value) -> Result<DrillFile, String> {
 fn validate_file(file: DrillFile) -> Result<DrillFile, String> {
     if file.cases.is_empty() {
         return Err("the drill has no cases".into());
+    }
+    if let Some(Sandbox::Temp(word)) = &file.sandbox {
+        if word != "temp" {
+            return Err(format!("`sandbox` is `temp` or `{{repos: [name, ...]}}`, not `{word}`"));
+        }
     }
     let mut seen = HashSet::new();
     for c in &file.cases {

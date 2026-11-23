@@ -181,7 +181,7 @@ $ echo $?
 
 A case also fails if a model step has no scripted answer, or if scripted answers go unused. Things to know:
 
-- Writes are always simulated in a drill, so `counts.simulated` is how you assert that a ritual would write. A would-be `hold` counts as both `held` and `simulated`. `observed` and `unverified` are always 0, because nothing is performed.
+- Writes are simulated in a drill (unless it is [sandboxed](#sandboxed-drills-real-writes-on-disposable-copies)), so `counts.simulated` is how you assert that a ritual would write. A would-be `hold` counts as both `held` and `simulated`. `observed` and `unverified` are always 0, because nothing is performed.
 - Drills never contact a model backend, but they do need the ritual's real grants. A missing grant is exit 4 before any case runs.
 - Answers are keyed by step id only. A parent and a child that share a step id share answers.
 - A case may name a `cassette`, a path relative to the drill file. Its reads come from the cassette and its `data` operations are computed. Without a cassette, a case's reads (mail, file, http) are live.
@@ -212,6 +212,29 @@ $ summonr drill route-form against route-form.touchstone-drill.yaml
 ```
 
 The touchstone is pinned by hash before any case runs; the output's `touchstone` field names the version used. A file that names a touchstone and also gives a case `expect.result` is refused (exit 2), as is a touchstone that could call a model, perform an effect, or take different inputs. If the touchstone cannot answer a case, the case is reported as a touchstone error (`?`), counted apart from failures, and the drill exits 14: the case was not checked. See [Assays](../concepts/assays.md#touchstones-computed-expectations) for what a touchstone can and cannot vouch for.
+
+### Sandboxed drills: real writes on disposable copies
+
+A write path (add a worktree, write a file, run the tests, clean up) cannot be checked with simulated writes: the worktree never exists, so the tests have nothing to run in. Add `sandbox: temp` to the drill file to run its cases for real against throwaway copies:
+
+```yaml
+drill: write-path-cases
+ritual: bughunt-test
+sandbox: temp            # or {repos: [bughunt-target]} to clone only those
+cases:
+  - id: writes-a-test-and-runs-it
+    inputs: {findings: '[...]'}
+    model: {write_test: ["..."]}
+    expect: {result: {confirmed: 1}}
+```
+
+Before any case runs, Summonr makes a temporary directory and, there:
+
+- clones every repository in `config.yaml` `repos:` (or only the listed ones) from its committed history: a bare copy stands in for the remote, and the checkout is cloned from it, so `git push` lands in the copy too. Uncommitted files in the real checkout are not copied;
+- copies every file root the ritual `requires` (`cp -a --reflink=auto`); a root that does not exist yet, such as the worktree the ritual will add, is only mapped;
+- rewrites every path under those repositories' parent directories and roots, in the ritual, the children it calls, its grants and each case's inputs, to the copies.
+
+The cases then run in a throwaway core whose configuration names only the copies, with scripted model answers as usual. `git`, `file`, `trial` and `cmd` writes are performed; any other write (`gh`, `http`, `mail`, MCP, wasm) is still simulated, and a `cmd` whose working directory is outside the copies is not configured at all. Because the throwaway core's grants cover only the copies, a path the rewrite missed is refused, not written. Afterwards the directory, with the cases' records, is deleted; the report says what was copied (`sandbox`). Only the owner can run a sandboxed drill (not a calling agent), and paths are rewritten only where a string is a whole path or a path under one.
 
 ## Which one to use
 

@@ -4,6 +4,7 @@
 mod assays;
 pub(crate) mod audit;
 mod drills;
+mod sandbox;
 mod experiments;
 mod job_service;
 mod petitions;
