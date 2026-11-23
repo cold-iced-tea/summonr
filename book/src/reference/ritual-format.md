@@ -14,9 +14,10 @@ model: BACKEND/MODEL
 settings: {KEY: VALUE, ...}
 reagents: {REAGENT: {select: [TOOL, ...], version: N}, ...}
 requires: [REQUIREMENT, ...]
-essence: {requests: N, tokens: N, time: DURATION, tool_calls: N, items: N}
+essence: {requests: N, tokens: N, time: DURATION, tool_calls: N, items: N, cleanup_time: DURATION}
 drift: {on_mismatch: note | warn | refuse}
 steps: [STEP, ...]           # required, at least one
+finally: [STEP, ...]         # optional cleanup, runs however `steps` end
 output_schema: {type: object, ...}   # optional final return contract
 return: {NAME: VALUE, ...}
 ```
@@ -31,7 +32,8 @@ return: {NAME: VALUE, ...}
 | `settings` | Default model settings. See [Settings](#settings). |
 | `essence` | All fields optional; an omitted field is unlimited. See [Essence](../concepts/essence.md). |
 | `drift.on_mismatch` | What an invocation does when the backend fingerprint differs from the baseline. Default `warn`. |
-| `return` | Values rendered after the last step. Strings may contain references. |
+| `finally` | Cleanup steps that run after `steps`, whatever the outcome. See [Finally](#finally). |
+| `return` | Values rendered after the last step. Strings may contain references; they cannot name a `finally` step. |
 
 ## Inputs
 
@@ -197,6 +199,29 @@ Any step may carry a bounded `retry` count (`1..=5`) and/or a `fallback` branch:
 ```
 
 `retry` must be in `1..=5`; values outside that range are rejected at validation. If the step still fails after exhausting retries, `fallback` steps run in order and the last fallback step's output becomes the step's output. Exhaustion, cancellation, and abstention are not retried.
+
+## Finally
+
+`finally:` lists steps that run once `steps` have ended, however they ended: `returned`, `abstained`, `failed`, `invalid`, `exhausted` or `cancelled`. Use it to undo what the ritual made outside itself, such as a worktree:
+
+```yaml
+steps:
+  - {id: wt, operation: git.worktree_add, arguments: {repo: target, branch: "${inputs.branch}"}}
+  - {id: tested, operation: trial.run, arguments: {repo: target, worktree: "${steps.wt.output.path}"}}
+finally:
+  - if: steps.wt.status == "returned"
+    then:
+      - {id: remove, operation: git.remove_worktree, arguments: {repo: target, path: "${steps.wt.output.path}"}}
+return: {passed: "${steps.tested.output.passed}"}
+```
+
+- **What cleanup can see.** Every main step. A step the run never reached reads as `skipped` with a `null` output, so test `steps.ID.status == "returned"` before using what a step made. Neither `return` nor a main step can name a `finally` step, and ids are unique across both lists.
+- **Checked like main steps.** Cleanup steps are validated and typed like any other step. Their effects need `requires` and grants, and they appear in `describe` and `preview`.
+- **Its own limits.** A stopped run still cleans up: cleanup has a cancel flag of its own, so a second `stop` does not interrupt it. It gets `essence.cleanup_time` (default `30s`, at most `10m`), counted from when it starts, in place of whatever was left of `time`. It gets a fresh allowance of `tool_calls` and `items`, but only the requests, tokens and cost the main steps left over. What it uses still counts toward the run's totals and its ancestors'.
+- **Outcomes.** A cleanup failure turns a `returned` run into that failure, with an error starting `finally:`, and keeps the computed return under `result.return`. Any other outcome is kept as it was: cleanup never hides why a run stopped.
+- **Where to see it.** The outcome is recorded in the run's `cleanup` (`{"finally": {"outcome", "error", "ran", "ms"}}`) and in `finally` / `finally.end` events. `summonr graveyard ID` prints it as a `finally` row.
+
+A child ritual's `finally` runs when that child ends, before the parent continues.
 
 ## Settings
 

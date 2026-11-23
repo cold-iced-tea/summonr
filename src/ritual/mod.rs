@@ -45,6 +45,11 @@ pub struct Ritual {
     #[serde(default)]
     pub drift: DriftPolicy,
     pub steps: Vec<Step>,
+    /// Cleanup that runs once `steps` end, whatever the outcome; see
+    /// `Run::run_finally`. Absent from the stored form when empty, so
+    /// rituals without it keep their hash.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub finally: Vec<Step>,
     #[serde(rename = "return", default)]
     pub ret: BTreeMap<String, Value>,
 }
@@ -371,6 +376,10 @@ pub struct Essence {
     pub time: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost: Option<String>,
+    /// How long `finally` steps may take, from when they start, whatever
+    /// was left of `time`. Default 30s, at most 10m.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup_time: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]

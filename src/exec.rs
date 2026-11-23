@@ -21,6 +21,11 @@ use std::time::{Duration, Instant};
 
 /// Resource ceilings for one summon. A child summon charges its own meter and
 /// every ancestor's, so a descendant can never exceed a parent's ceiling.
+/// Cleanup time when a ritual does not set `essence.cleanup_time`.
+pub const DEFAULT_CLEANUP_MS: u64 = 30_000;
+/// The most `essence.cleanup_time` may ask for.
+pub const MAX_CLEANUP_MS: u64 = 600_000;
+
 pub struct Meter {
     pub max_requests: Option<u64>,
     pub max_tool_calls: Option<u64>,
@@ -213,6 +218,8 @@ pub struct Run {
     pub actor: Option<crate::core::rbac::ActorContext>,
     pub done: u64,
     pub total: u64,
+    /// What the ritual's `finally` steps did, once they have run.
+    pub finally_report: Option<Value>,
 }
 
 /// At most `max` characters of `s`, marked when cut.
@@ -391,6 +398,7 @@ impl Run {
             actor: self.actor.clone(),
             done: 0,
             total: 0,
+            finally_report: None,
         }
     }
 
@@ -461,12 +469,19 @@ impl Run {
             .map_err(Fail::Failed)
             .and_then(|steps| self.run_steps(&steps, &mut scope));
         let ran = ran.and_then(|_| self.check_live());
-        let top = &scope.frames[0];
-        // Per-item accounting from any iteration, so a partial batch can
-        // never present itself as a complete one. Completed child rituals
-        // and model calls are kept too: they are the costly work, and a
-        // cheap later step running out must not throw them away.
-        let partial: Map<String, Value> = top
+        let fin = self.finish_main(ran, &scope);
+        if self.def.finally.is_empty() {
+            return fin;
+        }
+        self.run_finally(fin, &mut scope)
+    }
+
+    /// Per-item accounting from any iteration, so a partial batch can never
+    /// present itself as a complete one. Completed child rituals and model
+    /// calls are kept too: they are the costly work, and a cheap later step
+    /// running out must not throw them away.
+    fn partial(scope: &Scope) -> Map<String, Value> {
+        scope.frames[0]
             .steps
             .iter()
             .filter_map(|(k, v)| match v.kind {
@@ -476,7 +491,11 @@ impl Run {
                 }
                 _ => None,
             })
-            .collect();
+            .collect()
+    }
+
+    fn finish_main(&self, ran: Result<(), Fail>, scope: &Scope) -> Finished {
+        let partial = Self::partial(scope);
         match ran {
             Ok(()) => {
                 let ret = Value::Object(
@@ -486,7 +505,7 @@ impl Run {
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect(),
                 );
-                let rendered = ritual::render_value(&ret, &scope).and_then(|result| {
+                let rendered = ritual::render_value(&ret, scope).and_then(|result| {
                     if let Some(schema) = &self.def.output_schema {
                         ritual::check_schema(schema, &result, "return")?;
                     }
@@ -494,7 +513,7 @@ impl Run {
                 });
                 match rendered {
                     Ok(result) => Finished {
-                        outcome: if top.abstained {
+                        outcome: if scope.frames[0].abstained {
                             Outcome::Abstained
                         } else {
                             Outcome::Returned
@@ -514,6 +533,128 @@ impl Run {
                 result: json!({"partial": partial}),
                 error: Some(f.message()),
             },
+        }
+    }
+
+    /// Run the ritual's `finally` steps once the main steps have ended,
+    /// however they ended. Cleanup runs under its own limits: a cancel flag
+    /// of its own (a stopped run still cleans up), `essence.cleanup_time`
+    /// counted from now instead of what was left of `time`, a fresh
+    /// allowance of tool calls and items, and only the model budget the main
+    /// steps left. What it uses is added to the run's totals afterwards.
+    /// A cleanup failure fails a run that returned; any other outcome is
+    /// kept, and the cleanup's own outcome is in `finally_report`.
+    fn run_finally(&mut self, fin: Finished, scope: &mut Scope) -> Finished {
+        let started = Instant::now();
+        let window = self
+            .def
+            .essence
+            .cleanup_time
+            .as_deref()
+            .and_then(|t| parse_duration(t).ok())
+            .unwrap_or(DEFAULT_CLEANUP_MS)
+            .min(MAX_CLEANUP_MS);
+        let root = self.meters[0].clone();
+        let remaining = |limit: fn(&Meter) -> Option<u64>, used: fn(&Meter) -> u64| {
+            self.meters
+                .iter()
+                .filter_map(|m| limit(m).map(|l| l.saturating_sub(used(m))))
+                .min()
+        };
+        let load = |a: &AtomicU64| a.load(Ordering::SeqCst);
+        let start = (load(&root.requests), load(&root.tokens), load(&root.cost_microusd), load(&root.impure));
+        let cleanup = Arc::new(Meter {
+            max_requests: remaining(|m| m.max_requests, |m| m.requests.load(Ordering::SeqCst)).map(|r| start.0 + r),
+            max_tokens: remaining(|m| m.max_tokens, |m| m.tokens.load(Ordering::SeqCst)).map(|r| start.1 + r),
+            max_cost_microusd: remaining(|m| m.max_cost_microusd, |m| m.cost_microusd.load(Ordering::SeqCst)).map(|r| start.2 + r),
+            max_tool_calls: self.def.essence.tool_calls,
+            max_items: self.def.essence.items,
+            tool_calls: AtomicU64::new(0),
+            items: AtomicU64::new(0),
+            deadline: Some(started + Duration::from_millis(window)),
+            requests: AtomicU64::new(start.0),
+            tokens: AtomicU64::new(start.1),
+            cost_microusd: AtomicU64::new(start.2),
+            cost_known: AtomicBool::new(root.cost_known.load(Ordering::SeqCst)),
+            impure: AtomicU64::new(start.3),
+        });
+        let meters = std::mem::replace(&mut self.meters, vec![cleanup.clone()]);
+        let cancel = std::mem::replace(&mut self.cancel, Arc::new(AtomicBool::new(false)));
+        let ran = {
+            let _signal = crate::cancel::enter(self.cancel.clone());
+            self.emit(
+                "finally",
+                format!("cleanup: {} step(s), {}s at most", self.def.finally.len(), window / 1000),
+                json!({"main_outcome": fin.outcome, "cleanup_time_ms": window}),
+            );
+            // Anything that never ran reads as skipped, so a cleanup step can
+            // test `steps.X.status` for a step the failure never reached.
+            scope.frames.truncate(1);
+            if let Ok(main) = plan::compile(&self.def.steps) {
+                let mut ids = Vec::new();
+                main.iter().for_each(|s| frame_ids(s, &mut ids));
+                for id in ids {
+                    scope.frames[0].steps.entry(id).or_insert_with(|| {
+                        StepRecord::new(StepStatus::Skipped, StepKind::Skipped, Value::Null)
+                    });
+                }
+            }
+            plan::compile(&self.def.finally)
+                .map_err(Fail::Failed)
+                .and_then(|steps| self.run_steps(&steps, scope))
+        };
+        self.meters = meters;
+        self.cancel = cancel;
+        // Cleanup's usage belongs to the run and to every ancestor.
+        let delta = |a: &AtomicU64, from: u64| a.load(Ordering::SeqCst).saturating_sub(from);
+        let (dr, dt, dc) = (delta(&cleanup.requests, start.0), delta(&cleanup.tokens, start.1), delta(&cleanup.cost_microusd, start.2));
+        for m in &self.meters {
+            m.requests.fetch_add(dr, Ordering::SeqCst);
+            m.tokens.fetch_add(dt, Ordering::SeqCst);
+            m.cost_microusd.fetch_add(dc, Ordering::SeqCst);
+            m.tool_calls.fetch_add(load(&cleanup.tool_calls), Ordering::SeqCst);
+            m.items.fetch_add(load(&cleanup.items), Ordering::SeqCst);
+            if !cleanup.cost_known.load(Ordering::SeqCst) {
+                m.cost_known.store(false, Ordering::SeqCst);
+            }
+        }
+        self.meters[0].impure.fetch_add(delta(&cleanup.impure, start.3), Ordering::SeqCst);
+        if dr > 0 {
+            let cost = self.meters[0].cost_known.load(Ordering::SeqCst).then(|| load(&self.meters[0].cost_microusd));
+            self.core.usage(&self.id, load(&self.meters[0].requests), load(&self.meters[0].tokens), cost);
+        }
+        let mut finally_ids = Vec::new();
+        if let Ok(steps) = plan::compile(&self.def.finally) {
+            steps.iter().for_each(|s| frame_ids(s, &mut finally_ids));
+        }
+        let ran_ids: Vec<&String> = finally_ids
+            .iter()
+            .filter(|id| scope.frames[0].steps.get(*id).is_some_and(|r| r.status != StepStatus::Skipped))
+            .collect();
+        let (outcome, error) = match &ran {
+            Ok(()) => (Outcome::Returned, None),
+            Err(f) => (f.outcome(), Some(f.message())),
+        };
+        let report = json!({
+            "outcome": outcome, "error": error, "ran": ran_ids,
+            "ms": started.elapsed().as_millis() as u64,
+        });
+        self.emit(
+            "finally.end",
+            match &error {
+                None => format!("cleanup returned: {} step(s) ran", ran_ids.len()),
+                Some(e) => format!("cleanup {}: {e}", outcome.as_str()),
+            },
+            report.clone(),
+        );
+        self.finally_report = Some(report);
+        match ran {
+            Err(f) if fin.outcome == Outcome::Returned => Finished {
+                outcome: f.outcome(),
+                result: json!({"partial": Self::partial(scope), "return": fin.result}),
+                error: Some(format!("finally: {}", f.message())),
+            },
+            _ => fin,
         }
     }
 
@@ -1475,6 +1616,7 @@ impl Run {
             actor: self.actor.clone(),
             done: 0,
             total: 0,
+            finally_report: None,
         };
         self.core.emit_with(
             &child_id,
@@ -1484,8 +1626,11 @@ impl Run {
             false,
         );
         let fin = run.execute();
-        self.core
-            .finish_summon(&child_id, &fin, json!("held by the calling summon"));
+        let cleanup = match run.finally_report.take() {
+            Some(report) => json!({"models": "held by the calling summon", "finally": report}),
+            None => json!("held by the calling summon"),
+        };
+        self.core.finish_summon(&child_id, &fin, cleanup);
         let persisted_cost = if self.meters[0].cost_known.load(Ordering::SeqCst) {
             Some(self.meters[0].cost_microusd.load(Ordering::SeqCst))
         } else {
@@ -2043,6 +2188,7 @@ mod tests {
                 actor: None,
                 done: 0,
                 total: 0,
+                finally_report: None,
             }
         }
 
@@ -2427,6 +2573,92 @@ return: {kept: "${steps.kept.output}"}
             }
         });
         (format!("http://{addr}"), rx)
+    }
+
+    fn cleanup_ritual(main: Value, finally: Value) -> Ritual {
+        definition(json!({
+            "ritual": "cleanup-imp",
+            "reagents": {"cmd": {"select": ["read"]}},
+            "essence": {"cleanup_time": "1s"},
+            "steps": main, "finally": finally,
+            "return": {"made": "${steps.made.output}"},
+        }))
+    }
+
+    fn trim(id: &str, text: &str) -> Value {
+        json!({"id": id, "operation": "data.trim", "arguments": {"text": text}})
+    }
+
+    #[test]
+    fn finally_runs_after_a_failure_sees_what_ran_and_keeps_the_failure() {
+        let f = Fixture::new();
+        let def = cleanup_ritual(
+            json!([trim("made", " thing "), trim("boom", "${inputs.nope}"), trim("later", "x")]),
+            json!([
+                trim("tidy", "${steps.made.output}"),
+                {"if": "steps.later.status == \"returned\"", "then": [trim("never", "x")]},
+            ]),
+        );
+        let mut run = f.run(def, None);
+        let fin = run.execute();
+        assert_eq!(fin.outcome, Outcome::Failed);
+        assert!(fin.error.as_deref().unwrap().contains("nope"), "{:?}", fin.error);
+        let report = run.finally_report.clone().expect("finally ran");
+        assert_eq!(report["outcome"], "returned", "{report}");
+        assert_eq!(report["ran"], json!(["tidy"]), "{report}");
+    }
+
+    #[test]
+    fn a_failing_finally_fails_a_returned_run_but_never_replaces_another_outcome() {
+        let f = Fixture::new();
+        let mut ok = f.run(cleanup_ritual(json!([trim("made", "a")]), json!([trim("tidy", "${inputs.nope}")])), None);
+        let fin = ok.execute();
+        assert_eq!(fin.outcome, Outcome::Failed);
+        assert!(fin.error.as_deref().unwrap().starts_with("finally: "), "{:?}", fin.error);
+        assert_eq!(fin.result["return"], json!({"made": "a"}), "the computed return is kept: {}", fin.result);
+        let mut bad = f.run(
+            cleanup_ritual(json!([trim("made", "a"), {"id": "x", "operation": "data.missing"}]), json!([trim("tidy", "${inputs.nope}")])),
+            None,
+        );
+        let fin = bad.execute();
+        assert_eq!(fin.outcome, Outcome::Invalid, "{:?}", fin.error);
+        assert!(!fin.error.as_deref().unwrap().starts_with("finally"), "the main failure is reported: {:?}", fin.error);
+        assert_eq!(bad.finally_report.clone().unwrap()["outcome"], "failed");
+    }
+
+    #[test]
+    fn finally_runs_after_a_stop_and_after_time_runs_out_within_its_own_window() {
+        let f = Fixture::with_config(
+            "commands:\n  snooze:\n    program: sleep\n    args: ['30']\n    cwd: ROOT/work\n",
+        );
+        let snooze = json!({"id": "z", "operation": "cmd.read", "arguments": {"command": "snooze"}});
+        let grants = Arc::new(vec![crate::reagent::need("cmd", "read", &[("command", "snooze")], &[])]);
+        // Stopped in the middle of a command: cleanup still runs, the run stays cancelled.
+        let mut run = f.run(cleanup_ritual(json!([trim("made", "a"), snooze.clone()]), json!([trim("tidy", "${steps.made.output}")])), None);
+        run.grants = grants.clone();
+        let cancel = run.cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            cancel.store(true, Ordering::SeqCst);
+        });
+        let fin = run.execute();
+        assert_eq!(fin.outcome, Outcome::Cancelled, "{:?}", fin.error);
+        assert_eq!(run.finally_report.clone().unwrap()["outcome"], "returned");
+        // Out of time: cleanup gets `cleanup_time` (1s here), so a cleanup
+        // that hangs is cut off, and the run keeps its own outcome.
+        let mut def = cleanup_ritual(json!([trim("made", "a"), snooze.clone()]), json!([trim("tidy", "a"), {"id": "hang", "operation": "cmd.read", "arguments": {"command": "snooze"}}]));
+        def.essence.time = Some("300ms".into());
+        let mut run = f.run(def, None);
+        run.grants = grants;
+        let started = Instant::now();
+        let fin = run.execute();
+        let took = started.elapsed();
+        assert_eq!(fin.outcome, Outcome::Exhausted, "{:?}", fin.error);
+        let report = run.finally_report.clone().unwrap();
+        assert_eq!(report["outcome"], "exhausted", "{report}");
+        assert_eq!(report["ran"], json!(["tidy"]), "{report}");
+        assert!(took < Duration::from_millis(2500), "cleanup was not bounded: {took:?}");
+        assert!(took > Duration::from_millis(1000), "cleanup got its window: {took:?}");
     }
 
     #[test]

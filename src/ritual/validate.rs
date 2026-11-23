@@ -1183,6 +1183,18 @@ fn validate_inner(
             v.errors.push(format!("essence time: {e}"));
         }
     }
+    if let Some(t) = &def.essence.cleanup_time {
+        match crate::util::parse_duration(t) {
+            Ok(ms) if ms > crate::exec::MAX_CLEANUP_MS => {
+                v.errors.push(format!("essence cleanup_time: at most 10m, not {t}"))
+            }
+            Ok(_) if def.finally.is_empty() => {
+                v.errors.push("essence cleanup_time: the ritual has no `finally` steps".into())
+            }
+            Ok(_) => {}
+            Err(e) => v.errors.push(format!("essence cleanup_time: {e}")),
+        }
+    }
     if let Some(c) = &def.essence.cost {
         if let Err(e) = crate::util::parse_cost_microusd(c) {
             v.errors.push(format!("essence cost: {e}"));
@@ -1204,6 +1216,9 @@ fn validate_inner(
         let t = v.check_values(val, &format!("return `{k}`"));
         ret_fields.insert(k.clone(), t);
     }
+    // Checked after `return`, so neither the return value nor a main step
+    // can name a cleanup step, and cleanup sees every main step.
+    v.steps(&def.finally, "finally");
     let inferred_ret = Ty::Obj {
         fields: ret_fields.clone(),
         closed: true,
@@ -1340,6 +1355,7 @@ pub fn model_sites(def: &Ritual, resolve: Resolver, invocation: Option<&str>) ->
                 if depth < 64 {
                     if let Some((_, _, child)) = resolve(name, s.version) {
                         walk(&child.steps, &child, resolve, invocation, depth + 1, out);
+                        walk(&child.finally, &child, resolve, invocation, depth + 1, out);
                     }
                 }
             }
@@ -1350,5 +1366,6 @@ pub fn model_sites(def: &Ritual, resolve: Resolver, invocation: Option<&str>) ->
     }
     let mut out = BTreeSet::new();
     walk(&def.steps, def, resolve, invocation, 0, &mut out);
+    walk(&def.finally, def, resolve, invocation, 0, &mut out);
     out
 }

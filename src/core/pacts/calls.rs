@@ -58,6 +58,7 @@ pub(in crate::core) fn stricter(a: &crate::ritual::Essence, b: &crate::ritual::E
         tokens: lower_u(a.tokens, b.tokens),
         time,
         cost,
+        cleanup_time: a.cleanup_time.clone(),
     }
 }
 

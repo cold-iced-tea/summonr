@@ -143,6 +143,7 @@ impl Core {
     ) -> Result<(), RpcErr> {
         let mut refs = Vec::new();
         collect_pinned_children(&def.steps, &mut refs);
+        collect_pinned_children(&def.finally, &mut refs);
         for (cname, cver, chash) in refs {
             let Some((v, h, cdef)) = self.load_ritual(&cname, cver)? else {
                 return Err(RpcErr::not_found(format!(

@@ -11,6 +11,7 @@ essence: {requests: 60, tokens: 400000, time: 30m}
 | `requests` | Model requests admitted | A failed or timed-out request still counts. A failure is never a free retry. |
 | `tokens` | Prompt + output tokens reported by the backend | See the limitation below. |
 | `time` | Wall-clock time from the start of the summon | `500ms`, `30s`, `10m`, `2h` |
+| `cleanup_time` | Wall-clock time for the [`finally` steps](../reference/ritual-format.md#finally) | Counted from when cleanup starts; default `30s`, at most `10m`. Only valid with `finally`. |
 
 Every field is optional. A field you leave out is unlimited.
 

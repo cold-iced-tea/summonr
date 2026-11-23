@@ -1903,3 +1903,43 @@ return: {{passed: "${{steps.t.output.passed}}", path: "${{steps.wt.output.path}}
     assert!(path.contains("summonr-sandbox-") && !path.starts_with(&root), "the worktree was made in the sandbox: {path}");
     assert!(!Path::new(&path).exists(), "the sandbox was deleted");
 }
+
+#[test]
+fn finally_removes_a_worktree_the_run_made_when_a_later_step_fails() {
+    let fx = crate::git_fixture::fixture();
+    let main = fx.main();
+    let h = super::test_home::Home::new(&format!(
+        "repos:\n  demo: {{path: {}, trunk: master, remote: origin}}\n",
+        main.display()
+    ));
+    let ritual = r#"ritual: leaves-no-worktree
+inputs: {branch: string}
+requires:
+  - {reagent: git, action: worktree_add}
+  - {reagent: git, action: remove_worktree}
+steps:
+  - {id: wt, operation: git.worktree_add, arguments: {repo: demo, branch: "${inputs.branch}"}}
+  - {id: again, operation: git.worktree_add, arguments: {repo: demo, branch: "${inputs.branch}"}}
+finally:
+  - if: steps.wt.status == "returned"
+    then:
+      - {id: remove, operation: git.remove_worktree, arguments: {repo: demo, path: "${steps.wt.output.path}"}}
+return: {path: "${steps.wt.output.path}"}
+"#;
+    let rpath = h.root.join("leaves-no-worktree.yaml");
+    std::fs::write(&rpath, ritual).unwrap();
+    h.inscribe(&rpath, false);
+    h.call("grant", json!({"ritual": "leaves-no-worktree", "scopes": [{"reagent": "git", "select": ["worktree_add", "remove_worktree"]}]})).unwrap();
+    let rec = h.run(json!({"target": "leaves-no-worktree", "args": {"branch": "tidy/one"}}));
+    assert_eq!(rec["outcome"], "invalid", "the main failure stands: {rec}");
+    assert!(rec["error"].as_str().unwrap().contains("already exists"));
+    let wt = fx.root.join("main-tidy-one");
+    assert!(!wt.exists(), "the worktree was left behind at {}", wt.display());
+    let listed = crate::git_fixture::sh(&main, &["worktree", "list"]);
+    assert!(!listed.contains("tidy-one"), "{listed}");
+    let shown = &rec;
+    let cleanup = shown["cleanup"].as_array().cloned().unwrap_or_default();
+    let fin = cleanup.iter().find_map(|c| c.get("finally")).unwrap_or_else(|| panic!("no finally in {shown}"));
+    assert_eq!(fin["outcome"], "returned", "{fin}");
+    assert_eq!(fin["ran"], json!(["remove"]));
+}

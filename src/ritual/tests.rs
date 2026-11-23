@@ -1422,6 +1422,48 @@ steps:
     }
 
     #[test]
+    fn finally_steps_are_checked_see_the_main_steps_and_declare_their_effects() {
+        let none = |_: &str, _: Option<u32>| None;
+        let compile = |text: &str| {
+            let mut def = crate::ritual::parse_file(text).map_err(|e| vec![e])?;
+            crate::ritual::prepare(&mut def, std::path::Path::new("."), &none).map_err(|e| vec![e])?;
+            crate::ritual::validate(&def, &none, &crate::reagent::tool, 3)
+        };
+        let good = r#"
+ritual: r
+inputs: {branch: string}
+requires:
+  - {reagent: git, action: worktree_add}
+  - {reagent: git, action: remove_worktree}
+steps:
+  - {id: wt, operation: git.worktree_add, arguments: {repo: demo, branch: "${inputs.branch}"}}
+  - {id: n, operation: data.trim, arguments: {text: " x "}}
+finally:
+  - if: steps.wt.status == "returned"
+    then:
+      - {id: remove, operation: git.remove_worktree, arguments: {repo: demo, path: "${steps.wt.output.path}"}}
+return: {n: "${steps.n.output}"}
+"#;
+        let effects = compile(good).unwrap();
+        assert!(effects.iter().any(|e| e.step == "finally/#1/remove" && e.what == "git.remove_worktree"), "{effects:?}");
+        let undeclared = good.replace("  - {reagent: git, action: remove_worktree}\n", "");
+        assert!(compile(&undeclared).unwrap_err().iter().any(|e| e.contains("remove_worktree")), "a finally effect needs a requirement too");
+        let bad = |from: &str, to: &str, want: &str| {
+            let text = good.replace(from, to);
+            let errs = compile(&text).unwrap_err();
+            assert!(errs.iter().any(|e| e.contains(want)), "`{want}` not in {errs:?}");
+        };
+        bad("return: {n: \"${steps.n.output}\"}", "return: {n: \"${steps.remove.output}\"}", "remove");
+        bad("{id: remove,", "{id: n,", "already used");
+        bad("{text: \" x \"}", "{text: \"${steps.remove.output}\"}", "remove");
+        let mut nested = crate::ritual::parse_file(good).unwrap();
+        crate::ritual::prepare(&mut nested, std::path::Path::new("."), &none).unwrap();
+        assert_eq!(nested.finally.len(), 1);
+        let plain = crate::ritual::parse_file("ritual: r\nsteps: [{id: a, operation: data.trim, arguments: {text: x}}]\n").unwrap();
+        assert!(!serde_json::to_string(&plain).unwrap().contains("finally"), "rituals without finally keep their hash");
+    }
+
+    #[test]
     fn number_inputs_are_finite_bounded_decimals() {
         let none = |_: &str, _: Option<u32>| None;
         let mut def = crate::ritual::parse_file(r#"

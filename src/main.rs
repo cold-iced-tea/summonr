@@ -264,8 +264,25 @@ pub(crate) fn elegy_summary(d: &Value) {
         println!("  {}", paint(Ink::Rubric, e));
     }
     for c in d["cleanup"].as_array().into_iter().flatten() {
-        row("release", &format!("{}: {}", s(c, "model"), s(c, "result")));
+        match c.get("finally") {
+            Some(f) => row("finally", &finally_line(f)),
+            None => row("release", &format!("{}: {}", s(c, "model"), s(c, "result"))),
+        }
     }
+}
+
+/// One line for what a ritual's `finally` steps did.
+pub(crate) fn finally_line(f: &Value) -> String {
+    let ran: Vec<&str> = f["ran"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    let mut line = format!(
+        "{} · ran {}",
+        f["outcome"].as_str().unwrap_or("?"),
+        if ran.is_empty() { "nothing".to_string() } else { ran.join(", ") }
+    );
+    if let Some(e) = f["error"].as_str() {
+        line.push_str(&format!(" · {e}"));
+    }
+    line
 }
 
 pub(crate) fn print_result(d: &Value) {

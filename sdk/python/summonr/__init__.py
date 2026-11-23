@@ -250,6 +250,21 @@ class Ritual:
 
     def ref(self, id): return Ref('steps.'+_segment(id)+'.output',self)
 
+    def status(self, id):
+        """How step `id` ended (`returned`, `skipped`, ...), for cleanup guards."""
+        return Ref('steps.'+_segment(id)+'.status',self)
+
+    @contextmanager
+    def cleanup(self):
+        """Steps that run once the main steps end, whatever the outcome (`finally:`)."""
+        if len(self._stack)!=1: raise ValueError('cleanup steps are top-level; leave other scopes first')
+        steps = self._definition.setdefault('finally',[])
+        self._stack.append(steps)
+        try: yield
+        finally:
+            self._stack.pop()
+            if not steps: del self._definition['finally']
+
     def _expression(self, expression):
         if not isinstance(expression, Expr) or expression.owner is not self:
             raise TypeError('expected an expression belonging to this ritual')

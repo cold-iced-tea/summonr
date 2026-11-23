@@ -192,7 +192,7 @@ impl Core {
             }
             Ok(())
         }
-        children(&mut def.steps, &mut |s| {
+        let mut repin = |s: &mut ritual::Step| {
             let child = s.ritual.clone().unwrap_or_default();
             let (cv, ch) = self.copy_into_sandbox(temp, sb, &child, s.version, pinned)?;
             if s.version.is_some() {
@@ -202,7 +202,9 @@ impl Core {
                 s.hash = Some(ch);
             }
             Ok(())
-        })?;
+        };
+        children(&mut def.steps, &mut repin)?;
+        children(&mut def.finally, &mut repin)?;
         let hash = ritual::content_hash(&def);
         temp.db
             .lock()
