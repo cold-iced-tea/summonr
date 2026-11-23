@@ -624,18 +624,7 @@ impl Run {
                     } else {
                         (&s.otherwise, &s.then)
                     };
-                    for skipped in skip {
-                        if let Some(sid) = skipped.id() {
-                            scope.frames.last_mut().unwrap().steps.insert(
-                                sid.clone(),
-                                StepRecord::new(
-                                    StepStatus::Skipped,
-                                    StepKind::Skipped,
-                                    Value::Null,
-                                ),
-                            );
-                        }
-                    }
+                    mark_skipped(skip, &mut scope.frames.last_mut().unwrap().steps);
                     self.run_steps(run, scope)?;
                 }
             }
@@ -1716,6 +1705,25 @@ fn chat_failure(sid: &str, e: &str) -> Fail {
     }
 }
 
+/// Record every step of an untaken branch as skipped with a null output,
+/// including the steps of `if`s nested in it, whose ids share the frame (the
+/// checker lets later steps reference them). `each` and fallback steps live in
+/// their own scope, so only the step's own id is recorded for those.
+fn mark_skipped(steps: &[Step], into: &mut BTreeMap<String, StepRecord>) {
+    for step in steps {
+        if let Some(sid) = step.id() {
+            into.insert(
+                sid.clone(),
+                StepRecord::new(StepStatus::Skipped, StepKind::Skipped, Value::Null),
+            );
+        }
+        if let Step::If(b) = step {
+            mark_skipped(&b.then, into);
+            mark_skipped(&b.otherwise, into);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -1820,6 +1828,32 @@ mod tests {
             "steps": [{"id": "answer", "model": {"prompt": "hello"}}],
             "return": {"answer": "${steps.answer.output}"},
         }))
+    }
+
+    #[test]
+    fn steps_in_an_if_nested_in_an_untaken_branch_are_skipped() {
+        let f = Fixture::new();
+        let def = definition(json!({
+            "ritual": "nested-if-imp",
+            "steps": [{
+                "if": "false",
+                "then": [{
+                    "if": "true",
+                    "then": [{"id": "deep", "operation": "data.trim", "arguments": {"text": " a "}}],
+                    "else": [{
+                        "each": "x in [1]",
+                        "id": "loop",
+                        "steps": [{"id": "in_loop", "operation": "data.trim", "arguments": {"text": "b"}}],
+                    }],
+                }],
+            }],
+            "return": {"deep": "${steps.deep.output}", "loop": "${steps.loop.output}"},
+        }));
+        let mut run = f.run(def, None);
+        let fin = run.execute();
+        assert_eq!(fin.outcome, Outcome::Returned, "{:?}", fin.error);
+        assert_eq!(fin.result["deep"], Value::Null);
+        assert_eq!(fin.result["loop"], Value::Null);
     }
 
     #[test]
