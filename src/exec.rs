@@ -34,6 +34,10 @@ pub struct Meter {
     pub tokens: AtomicU64,
     pub cost_microusd: AtomicU64,
     pub cost_known: AtomicBool,
+    /// Steps that were not pure (reads, writes, model calls) started under
+    /// this meter. Only the root meter, which every child and worker
+    /// shares, is counted; see `Run::impure_count`.
+    pub impure: AtomicU64,
 }
 
 impl Meter {
@@ -60,6 +64,7 @@ impl Meter {
             tokens: AtomicU64::new(0),
             cost_microusd: AtomicU64::new(0),
             cost_known: AtomicBool::new(true),
+            impure: AtomicU64::new(0),
         }
     }
 
@@ -231,6 +236,19 @@ fn brief(v: &Value) -> String {
 impl Run {
     fn emit(&self, kind: &str, text: impl Into<String>, data: Value) {
         self.core.emit(&self.id, kind, &text.into(), data);
+    }
+
+    /// Count a step that is not pure. Work done since a count was taken is
+    /// recomputable (and its bookkeeping need not be synced on its own)
+    /// only while the count is unchanged.
+    fn mark_impure(&self) {
+        if let Some(root) = self.meters.last() {
+            root.impure.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn impure_count(&self) -> u64 {
+        self.meters.last().map_or(0, |m| m.impure.load(Ordering::SeqCst))
     }
 
     /// A record of recomputable work; see `Core::emit_with`.
@@ -691,6 +709,9 @@ impl Run {
         let effect = reagent::tool_meta(Some(&self.core.cfg), reagent, tool)
             .map(|t| t.effect)
             .unwrap_or("unknown");
+        if effect != "pure" {
+            self.mark_impure();
+        }
         reagent::check_job_effect(self.job_claim.is_some(), effect)?;
         self.guard_reagent_rbac(sid, op, effect)?;
         if !matches!(effect, "read" | "pure") && scope.frames.iter().any(|f| f.abstained) {
@@ -1133,6 +1154,7 @@ impl Run {
     }
 
     fn model(&mut self, s: &plan::Model, scope: &Scope) -> Result<(Value, bool), Fail> {
+        self.mark_impure();
         let m = &s.model;
         let sid = s.id.as_deref().unwrap_or("model");
         let model = m
@@ -1399,7 +1421,12 @@ impl Run {
         }
         let child_id = new_id("s");
         let model = self.model_override.clone().or_else(|| def.model.clone());
-        self.core.insert_summon(
+        // The child's start records need no sync of their own: anything it
+        // does that others can see (a model call, a fenced write) is
+        // preceded by a durable record, which syncs these with it, in order.
+        // Its end, which carries its epitaph, is always durable.
+        let impure_before = self.impure_count();
+        self.core.insert_summon_with(
             &child_id,
             Some(&self.id),
             name,
@@ -1409,8 +1436,9 @@ impl Run {
             &inputs,
             &def.essence,
             None,
+            false,
         );
-        self.emit(
+        self.emit_light(
             "child",
             format!("{sid}: called {name} v{version} as {child_id}"),
             json!({"summon": child_id, "ritual": name, "version": version}),
@@ -1440,11 +1468,12 @@ impl Run {
             done: 0,
             total: 0,
         };
-        self.core.emit(
+        self.core.emit_with(
             &child_id,
             "summon.start",
             &format!("called by {} at depth {}", self.id, run.depth),
             json!({"parent": self.id}),
+            false,
         );
         let fin = run.execute();
         self.core
@@ -1454,11 +1483,13 @@ impl Run {
         } else {
             None
         };
-        self.core.usage(
+        // Usage only changes with model calls, which are impure.
+        self.core.usage_with(
             &self.id,
             self.meters[0].requests.load(Ordering::SeqCst),
             self.meters[0].tokens.load(Ordering::SeqCst),
             persisted_cost,
+            self.impure_count() != impure_before,
         );
         match fin.outcome {
             Outcome::Returned => Ok((fin.result, false)),
@@ -1482,6 +1513,7 @@ impl Run {
     #[allow(clippy::too_many_arguments)]
     fn record_batch_item(
         &mut self,
+        impure_before: u64,
         id: &str,
         keep: Option<&[String]>,
         top_level: bool,
@@ -1505,12 +1537,8 @@ impl Run {
             .collect();
         // Only pure work, which a revive can redo exactly: its bookkeeping
         // need not be durable on its own (the next durable write syncs it).
-        let durable = ran.is_err()
-            || !frame.effects.is_empty()
-            || frame
-                .steps
-                .values()
-                .any(|v| !matches!(v.kind, StepKind::Pure | StepKind::Skipped));
+        // The impure count also sees inside child rituals.
+        let durable = ran.is_err() || !frame.effects.is_empty() || self.impure_count() != impure_before;
         let (status, error) = match &ran {
             Ok(()) if frame.abstained => (Outcome::Abstained, None),
             Ok(()) => (Outcome::Returned, None),
@@ -1623,11 +1651,12 @@ impl Run {
                 });
                 let next_prefix = format!("{}{each_site}[{i}]/", self.fence_prefix);
                 let prev_prefix = std::mem::replace(&mut self.fence_prefix, next_prefix);
+                let impure_before = self.impure_count();
                 let ran = self.run_steps(body, scope);
                 self.fence_prefix = prev_prefix;
                 let frame = scope.frames.pop().unwrap();
                 if let Some(f) =
-                    self.record_batch_item(&id, s.keep.as_deref(), top_level, keep_going, &mut items, label, frame, ran)
+                    self.record_batch_item(impure_before, &id, s.keep.as_deref(), top_level, keep_going, &mut items, label, frame, ran)
                 {
                     stop = Some(f);
                     break;
@@ -1640,6 +1669,8 @@ impl Run {
                 .skip(resume_from)
                 .collect();
             let rem_len = remaining.len();
+            // Workers share the count, so one count for the whole batch.
+            let impure_before = self.impure_count();
             if rem_len > 0 {
                 let workers = (s.parallel as usize).min(rem_len).clamp(1, 32);
                 let next_idx = std::sync::atomic::AtomicUsize::new(0);
@@ -1707,6 +1738,7 @@ impl Run {
                         continue;
                     };
                     if let Some(f) = self.record_batch_item(
+                        impure_before,
                         &id,
                         s.keep.as_deref(),
                         top_level,
@@ -2114,6 +2146,39 @@ mod tests {
         assert_eq!(fin.result["partial"]["hunt"]["output"]["found"], "finding", "{}", fin.result);
         assert_eq!(fin.result["partial"]["hunt"]["status"], "returned");
         assert!(fin.result["partial"].get("gather").is_none());
+    }
+
+    #[test]
+    fn bookkeeping_is_synced_when_a_child_ritual_did_impure_work() {
+        let relaxed = || crate::core::RELAXED_WRITES.with(|n| n.get());
+        let f = Fixture::new();
+        f.save(&definition(json!({
+            "ritual": "pure-leaf-imp",
+            "steps": [{"id": "t", "operation": "data.trim", "arguments": {"text": " a "}}],
+            "return": {"t": "${steps.t.output}"},
+        })));
+        f.save(&definition(json!({
+            "ritual": "model-leaf-imp", "model": "mock/keyword",
+            "steps": [{"id": "m", "model": {"prompt": "hi"}}],
+            "return": {"m": "${steps.m.output}"},
+        })));
+        let parent = |leaf: &str| definition(json!({
+            "ritual": "fan-imp", "essence": {"requests": 10},
+            "steps": [{"id": "loop", "each": "x in [1, 2]", "steps": [
+                {"id": "leaf", "ritual": leaf, "version": 1}]}],
+            "return": {"n": "${steps.loop.counts.returned}"},
+        }));
+        let before = relaxed();
+        assert_eq!(f.run(parent("pure-leaf-imp"), None).execute().outcome, Outcome::Returned);
+        // Per item: the child's three start records, its pure op, the
+        // unchanged usage, and the item's progress, checkpoint and event.
+        assert_eq!(relaxed() - before, 2 * 8);
+        let before = relaxed();
+        let fin = f.run(parent("model-leaf-imp"), None).execute();
+        assert_eq!(fin.outcome, Outcome::Returned, "{:?}", fin.error);
+        // Only the child's start records: a model call makes the usage and
+        // the item's bookkeeping durable.
+        assert_eq!(relaxed() - before, 2 * 3);
     }
 
     #[test]

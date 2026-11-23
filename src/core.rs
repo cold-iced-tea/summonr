@@ -611,10 +611,17 @@ impl Core {
     }
 
     pub fn usage(&self, id: &str, requests: u64, tokens: u64, cost_microusd: Option<u64>) {
-        self.persisted(self.db.lock().unwrap().execute(
-            "UPDATE summons SET requests=?2, tokens=?3, cost_microusd=?4 WHERE id=?1",
-            params![id, requests as i64, tokens as i64, cost_microusd.map(|c| c as i64)],
-        ));
+        self.usage_with(id, requests, tokens, cost_microusd, true)
+    }
+
+    pub fn usage_with(&self, id: &str, requests: u64, tokens: u64, cost_microusd: Option<u64>, durable: bool) {
+        let db = self.db.lock().unwrap();
+        self.persisted(relaxed(&db, durable, |db| {
+            db.execute(
+                "UPDATE summons SET requests=?2, tokens=?3, cost_microusd=?4 WHERE id=?1",
+                params![id, requests as i64, tokens as i64, cost_microusd.map(|c| c as i64)],
+            )
+        }));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -630,11 +637,31 @@ impl Core {
         essence: &Essence,
         series: Option<&str>,
     ) {
-        self.persisted(self.db.lock().unwrap().execute(
-            "INSERT INTO summons (id, parent, series, ritual, version, hash, model, status, started, inputs, essence)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'running', ?8, ?9, ?10)",
-            params![id, parent, series, ritual, version, hash, model, now_ms(), inputs.to_string(), serde_json::to_string(essence).unwrap_or_default()],
-        ));
+        self.insert_summon_with(id, parent, ritual, version, hash, model, inputs, essence, series, true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_summon_with(
+        &self,
+        id: &str,
+        parent: Option<&str>,
+        ritual: &str,
+        version: u32,
+        hash: &str,
+        model: Option<&str>,
+        inputs: &Value,
+        essence: &Essence,
+        series: Option<&str>,
+        durable: bool,
+    ) {
+        let db = self.db.lock().unwrap();
+        self.persisted(relaxed(&db, durable, |db| {
+            db.execute(
+                "INSERT INTO summons (id, parent, series, ritual, version, hash, model, status, started, inputs, essence)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'running', ?8, ?9, ?10)",
+                params![id, parent, series, ritual, version, hash, model, now_ms(), inputs.to_string(), serde_json::to_string(essence).unwrap_or_default()],
+            )
+        }));
     }
 
     pub fn finish_summon(&self, id: &str, fin: &Finished, cleanup: Value) {
@@ -2941,6 +2968,12 @@ fn add_column(db: &rusqlite::Connection, table: &str, column: &str, decl: &str) 
     Ok(())
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Writes this thread committed without their own sync (tests only).
+    pub(crate) static RELAXED_WRITES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 /// Run one write with `synchronous=NORMAL` when it need not be durable on its
 /// own (the connection is otherwise FULL). Callers hold the database lock.
 fn relaxed<T>(
@@ -2951,6 +2984,8 @@ fn relaxed<T>(
     if durable {
         return write(db);
     }
+    #[cfg(test)]
+    RELAXED_WRITES.with(|n| n.set(n.get() + 1));
     db.execute_batch("PRAGMA synchronous=NORMAL")?;
     let out = write(db);
     db.execute_batch("PRAGMA synchronous=FULL")?;
@@ -2963,6 +2998,8 @@ mod robustness_tests;
 mod safe_build_tests;
 #[cfg(test)]
 mod test_home;
+#[cfg(test)]
+mod perf_bench;
 #[cfg(test)]
 mod assay_tests;
 #[cfg(test)]
