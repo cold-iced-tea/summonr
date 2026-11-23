@@ -1,56 +1,90 @@
 language_version: 1
 ritual: bughunt-gather
 description: >-
-  Merge the findings of several hunts, drop weak ones, collapse findings
-  that point at the same line for the same kind, and say whether the batch
-  is big enough to test. Pure: no model, no files.
+  Merge the findings of several hunts, drop unquoted, low-confidence, and
+  degenerate noise claims (angle echoes and no-bug statements), dedupe by
+  (file, kind, snippet), and say whether the batch is big enough to test.
+  Pure: no model, no files.
 inputs:
   hunts: list
   min_batch: {type: integer, default: 5, min: 1, max: 1000}
+  min_confidence: {type: number, default: 0.3, min: 0, max: 1}
 essence: {requests: 0, time: 30m}
 steps:
-  - id: all
-    operation: data.fold
-    arguments:
-      values: "${inputs.hunts}"
-      initial: []
-      operation: data.concat
-      arguments: {left: "${acc}", right: "${item.findings}"}
-  # Drop findings whose snippet was not found in the code (made up).
-  # Predicates cannot take a parameter (no ${...} inside them), so the
-  # confidence floor is fixed here. See LIMITS.md.
-  - id: confident
-    operation: data.filter
-    arguments: {values: "${steps.all.output}", predicate: "item.quoted and item.confidence >= 0.3"}
-  - id: keyed
-    each: found in steps.confident.output
-    steps:
-      - id: spot
-        operation: data.project
-        arguments: {value: "${found}", fields: [file, kind, snippet]}
-      - id: key
-        operation: data.canonical_json
-        arguments: {value: "${steps.spot.output}"}
-      # A loop item exposes only its steps' outputs, not the loop variable.
-      - id: whole
-        operation: data.get
-        arguments: {value: "${found}", path: ""}
-  - id: by_key
-    operation: data.fold
-    arguments:
-      values: "${steps.keyed.output}"
-      initial: {}
-      operation: data.set
-      arguments: {value: "${acc}", field: "${item.outputs.key}", item: "${item.outputs.whole}"}
-  - id: entries
-    operation: data.entries
-    arguments: {value: "${steps.by_key.output}"}
-  - id: findings
+  - id: hunt_lists
     operation: data.map
     arguments:
-      values: "${steps.entries.output}"
+      values: "${inputs.hunts}"
       operation: data.get
-      arguments: {value: "${item}", path: /value}
+      arguments: {value: "${item}", path: /findings}
+  - id: all
+    operation: data.flatten
+    arguments: {values: "${steps.hunt_lists.output}"}
+  - id: confident
+    operation: data.filter
+    arguments:
+      values: "${steps.all.output}"
+      predicate: "item.quoted and item.confidence >= params.floor"
+      params: {floor: "${inputs.min_confidence}"}
+  # Drop degenerate claims observed in small-model hunts: verbatim angle echoes
+  # and "no bug / does not panic" statements rated high confidence.
+  - id: checked
+    each: found in steps.confident.output
+    keep: [keep_item]
+    steps:
+      - id: lc
+        operation: data.case
+        arguments: {text: "${found.claim}", mode: lower}
+      - id: claim
+        operation: data.trim
+        arguments: {text: "${steps.lc.output}"}
+      - id: neg_panic
+        operation: data.contains
+        arguments: {value: "${steps.claim.output}", needle: "does not panic"}
+      - id: neg_vuln
+        operation: data.contains
+        arguments: {value: "${steps.claim.output}", needle: "does not have a vulnerability"}
+      - id: neg_no_vuln
+        operation: data.contains
+        arguments: {value: "${steps.claim.output}", needle: "no vulnerability"}
+      - id: neg_no_bug
+        operation: data.contains
+        arguments: {value: "${steps.claim.output}", needle: "no bug"}
+      - id: echo_inject
+        operation: data.starts_with
+        arguments: {text: "${steps.claim.output}", prefix: "untrusted text reaching a path"}
+      - id: echo_panic
+        operation: data.starts_with
+        arguments: {text: "${steps.claim.output}", prefix: "panics, overflows or unbounded work"}
+      - id: echo_bypass
+        operation: data.starts_with
+        arguments: {text: "${steps.claim.output}", prefix: "ways to bypass a permission"}
+      - id: is_noise
+        operation: data.any
+        arguments:
+          values:
+            - "${steps.neg_panic.output}"
+            - "${steps.neg_vuln.output}"
+            - "${steps.neg_no_vuln.output}"
+            - "${steps.neg_no_bug.output}"
+            - "${steps.echo_inject.output}"
+            - "${steps.echo_panic.output}"
+            - "${steps.echo_bypass.output}"
+      - id: keep_item
+        operation: data.select
+        arguments: {condition: "${steps.is_noise.output}", then: [], else: ["${found}"]}
+  - id: kept_lists
+    operation: data.map
+    arguments:
+      values: "${steps.checked.output}"
+      operation: data.get
+      arguments: {value: "${item}", path: /outputs/keep_item}
+  - id: clean
+    operation: data.flatten
+    arguments: {values: "${steps.kept_lists.output}"}
+  - id: findings
+    operation: data.unique_by
+    arguments: {values: "${steps.clean.output}", fields: [file, kind, snippet]}
   - id: count
     operation: data.count
     arguments: {value: "${steps.findings.output}"}

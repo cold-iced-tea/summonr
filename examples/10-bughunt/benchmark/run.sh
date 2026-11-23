@@ -21,11 +21,10 @@ bench() {  # name commit gold dirs
   if [ ${#only[@]} -gt 0 ] && [[ ! " ${only[*]} " == *" $name "* ]]; then return; fi
   "$here/../setup.sh" "$lab" "$repo" "$commit" "$bin" >/dev/null || { echo "$name: setup failed"; return; }
   local s=$SECONDS
-  # A big run's full record can exceed the RPC frame ("frame too large"), so
-  # the CLI reply is ignored and results are read from the lab's state
-  # database (AGENT-NOTES 26).
+  # --brief avoids oversized RPC frames; --cancel-on-drop stops the summon if
+  # this script is killed. Results are also extracted from SQLite for hunts-*.
   SUMMONR_HOME="$lab/home" "$bin" run bughunt-bench --arg "dirs=$dirs" --arg "angles=$angles" \
-    --arg "gold=$gold" --wait --json --timeout 4h > /dev/null 2>&1
+    --arg "gold=$gold" --wait --brief --cancel-on-drop --json --timeout 4h > /dev/null 2>&1
   local took=$((SECONDS - s)) db="$lab/home/state/summonr.db"
   sqlite3 "$db" "select json_object('outcome', outcome, 'error', error, 'requests', requests, 'tokens', tokens, 'result', json(result)) from summons where ritual='bughunt-bench' order by started desc limit 1" > "$out/bench-$name.json"
   sqlite3 "$db" "select '[' || coalesce(group_concat(result, ','), '') || ']' from summons where ritual='bughunt-hunt' and outcome='returned'" > "$out/hunts-$name.json"

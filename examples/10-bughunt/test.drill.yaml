@@ -1,0 +1,45 @@
+# Sandboxed drill for bughunt-test: runs the real git worktree + file write +
+# trial + verdict + cleanup path against disposable copies (no model calls).
+# Run through ./drill.sh, which sets up a tiny fixture git repo for bughunt-target.
+drill: bughunt-test-cases
+ritual: bughunt-test
+sandbox: {repos: [bughunt-target]}
+cases:
+  - id: triage-dismisses-false-positive-without-writing-test
+    inputs:
+      triage: true
+      findings:
+        - {kind: bug, severity: high, confidence: 0.9, claim: "false alarm", trigger: "none", snippet: "role.starts_with(\"admin\")", file: src/auth.rs, start: 0, quoted: true}
+    model:
+      triaged:
+        - {real_bug: false, diagnosis: "Code is safe.", target_fn: "allowed", test_strategy: "none"}
+    expect:
+      outcome: returned
+      result: {confirmed: 0, dismissed: 1, untested: 0}
+      model_calls: 1
+  - id: triage-confirms-and-repro-proves-bug
+    inputs:
+      triage: true
+      findings:
+        - {kind: bypass, severity: high, confidence: 0.9, claim: "wrong 4b claim", trigger: "x", snippet: "role.starts_with(\"admin\")", file: src/auth.rs, start: 0, quoted: true}
+    model:
+      triaged:
+        - {real_bug: true, diagnosis: "prefix match allows adminx", target_fn: "crate::auth::allowed", test_strategy: "call allowed(\"adminx\")"}
+      write_big:
+        - rust_source: "use crate::auth::allowed;\n#[test]\nfn repro() {\n    assert!(!allowed(\"adminx\"), \"BUGHUNT-CONFIRMED: prefix bypass\");\n}\n"
+    expect:
+      outcome: returned
+      result: {confirmed: 1, dismissed: 0, untested: 0}
+      model_calls: 2
+  - id: passing-repro-refutes-without-triage
+    inputs:
+      triage: false
+      findings:
+        - {kind: bug, severity: low, confidence: 0.8, claim: "maybe panics", trigger: "x", snippet: "role.starts_with(\"admin\")", file: src/auth.rs, start: 0, quoted: true}
+    model:
+      write_small:
+        - rust_source: "use crate::auth::allowed;\n#[test]\nfn repro() {\n    // PASS_CASE\n    assert!(allowed(\"admin\"));\n}\n"
+    expect:
+      outcome: returned
+      result: {confirmed: 0, dismissed: 0, untested: 0}
+      model_calls: 1

@@ -11,12 +11,12 @@ not say is in [LIMITS.md](LIMITS.md).
 | Ritual | Does | Model |
 | --- | --- | --- |
 | `bughunt-hunt` | Lists source files in `dirs` and runs `bughunt-scan-file` on each; reports `files_failed` and `chunks_failed`, and fails if every file failed (model or backend down) | |
-| `bughunt-scan-file` | Reads one file in chunks up to its `mod tests {`, asks for findings from one `angle`; marks each finding `quoted` when its snippet (8+ characters) really appears in the code; a chunk the model chokes on is skipped and counted | `qwen3:4b`, one call per chunk |
-| `bughunt-gather` | Merges hunts, drops unquoted and low-confidence findings, collapses duplicates, `pass` when `count ≥ min_batch` | none |
+| `bughunt-scan-file` | Reads one file up to `stop_at` (`data.index_of`) in dynamic `data.range` chunks, asks for findings from one `angle`; marks each finding `quoted` when its snippet (8+ characters) really appears in the code; uses `each` `keep:` so file text never leaves the loop | `qwen3:4b`, one call per chunk |
+| `bughunt-gather` | Merges hunts (`data.flatten`), drops unquoted, below-`min_confidence` (`data.filter` `params:`), angle-echo, and no-bug findings, collapses duplicates (`data.unique_by`), `pass` when `count ≥ min_batch` | none |
 | `bughunt-batch-ready` | Touchstone gate on gather's `pass` | none |
-| `bughunt-test` | Per finding (first `max_batch`, default 25): model writes `src/bughunt_repro.rs`, `trial` runs it in a throwaway worktree with a 300 s timeout, one retry when it does not build; cleanup never fails the run | `qwen3:4b` for low/medium, `Qwen3.6-35B-A3B` for high/critical, optional Codex for critical |
-| `bughunt-verdict` | `confirmed` (failed with `BUGHUNT-CONFIRMED`), `refuted` (one test ran and passed), else `untestable`; a test that never names the suspect module, or uses `#[should_panic]`, can be neither | none |
-| `bughunt-score` | Hits and noise against a gold set | none |
+| `bughunt-test` | Per finding (first `max_batch`, default 25, `keep: [result]`): optional `triage` re-reads a wider code window on `Qwen3.6-35B-A3B` and dismisses false leads before building; otherwise writes `src/bughunt_repro.rs`, `trial` runs it in a throwaway worktree (300 s timeout), one retry on build failure; cleanup never fails the run | `qwen3:4b` for low/medium, `Qwen3.6-35B-A3B` for triage and high/critical, optional Codex/Gemini for critical |
+| `bughunt-verdict` | `confirmed` (failed with `BUGHUNT-CONFIRMED`), `refuted` (one test ran and passed), else `untestable`; rejects copied-logic tests (accepting both `<module>::` and `reagent::call`/`authorize` for `*_reagent.rs`), `#[should_panic]`, multiple `BUGHUNT-CONFIRMED` branches, and setup-deserialization markers | none |
+| `bughunt-score` | Hits and noise against a gold set (normalizes per-line indentation so multi-line snippets match) | none |
 | `bughunt-bench` | One hunt per angle, gather, and score against a gold file; reports failed hunts | as hunt |
 | `bughunt.rite.yaml` | Three hunts → gather (gated) → test | |
 
@@ -96,8 +96,10 @@ examples/10-bughunt/drill.sh "$PWD/target/release/summonr"
 ```
 
 Runs every `*.drill.yaml` offline with scripted model answers against
-`fixtures/`. The git/trial path of `bughunt-test` cannot be drilled (writes
-are simulated, so no worktree exists); it is checked live.
+`fixtures/` (including `test.drill.yaml`, which uses `sandbox: {repos:
+[bughunt-target]}` to drill the real worktree/write/trial/cleanup path on
+disposable copies) and checks that all inscribed rituals produce zero
+compile-time lint warnings.
 
 ## If a test run is interrupted
 

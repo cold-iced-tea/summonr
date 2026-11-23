@@ -87,3 +87,31 @@ cases:
       passed: false
       tail: "BUGHUNT-CONFIRMED: x\ntest result: FAILED. 0 passed; 1 failed"
     expect: {outcome: returned, result: {verdict: confirmed}}
+  - id: reagent-dispatcher-call-counts-as-honest
+    inputs:
+      file: src/reagents/file_reagent.rs
+      test_file: "use crate::reagent;\n#[test] fn t() { let _ = reagent::call(None, \"file\", \"write_text\", &v, &a); }"
+      passed: true
+      tail: "running 1 test\n.\ntest result: ok. 1 passed; 0 failed"
+    expect: {outcome: returned, result: {verdict: refuted, honest: true}}
+  - id: reagent-dispatcher-authorize-counts-as-honest
+    inputs:
+      file: src/reagents/http_reagent.rs
+      test_file: "use crate::reagent;\n#[test] fn t() { assert!(reagent::authorize(None, \"http.post\", &v, &a).is_err(), \"BUGHUNT-CONFIRMED: crlf\"); }"
+      passed: false
+      tail: "BUGHUNT-CONFIRMED: crlf\ntest result: FAILED. 0 passed; 1 failed"
+    expect: {outcome: returned, result: {verdict: confirmed, honest: true}}
+  - id: both-branches-marker-cheat-is-untestable
+    inputs:
+      file: src/ritual.rs
+      test_file: "use crate::ritual::Ritual;\n#[test] fn t() { if ok { panic!(\"BUGHUNT-CONFIRMED: a\"); } else { assert!(false, \"BUGHUNT-CONFIRMED: b\"); } }"
+      passed: false
+      tail: "BUGHUNT-CONFIRMED: a\ntest result: FAILED. 0 passed; 1 failed"
+    expect: {outcome: returned, result: {verdict: untestable, honest: false}}
+  - id: setup-deserialization-marker-is-untestable
+    inputs:
+      file: src/ritual.rs
+      test_file: "use crate::ritual::Ritual;\n#[test] fn t() { assert!(r.is_ok(), \"BUGHUNT-CONFIRMED: Failed to deserialize ritual\"); }"
+      passed: false
+      tail: "BUGHUNT-CONFIRMED: Failed to deserialize ritual\ntest result: FAILED. 0 passed; 1 failed"
+    expect: {outcome: returned, result: {verdict: untestable, honest: false}}

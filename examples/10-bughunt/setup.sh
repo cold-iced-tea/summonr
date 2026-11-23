@@ -49,7 +49,7 @@ git -C "$target" archive HEAD | tar -x -C "$snap"
 chmod -R a-w "$snap"
 
 export SUMMONR_HOME="$lab/home"
-mkdir -p "$SUMMONR_HOME/config"
+mkdir -p "$SUMMONR_HOME/config" "$SUMMONR_HOME/rituals"
 cat > "$SUMMONR_HOME/config/config.yaml" <<EOF
 ollama_url: "${OLLAMA_HOST:-http://127.0.0.1:11434}"
 repos:
@@ -61,38 +61,43 @@ repos:
     # here, so timeout and env are plain programs). -q keeps the tail short.
     test: timeout 300 env CARGO_TARGET_DIR=$lab/cargo-target cargo test --offline -q $only bughunt_repro
     disposable: [target/, Cargo.lock]
-# Optional cloud escalation (test.yaml, escalate=codex, critical findings
-# only). Needs the codex CLI on PATH and logged in. Read-only sandbox: codex
-# prints the test file; Summonr writes it.
+# Optional cloud escalation (test.yaml, escalate=codex|gemini, critical
+# findings only). Uses explicit env allowlist and stdin for multi-line prompts.
 commands:
   bughunt-gemini:
     # Gemini 4 Neon through the Antigravity CLI, print mode, sandboxed.
-    program: env
-    args: ["HOME=$HOME", "PATH=$PATH", agy, -p, "\${prompt}", --model, gemini-4-neon-medium, --sandbox, --disable-slash-commands, --print-timeout, 600s]
+    program: agy
+    args: [-p, --model, gemini-4-neon-medium, --sandbox, --disable-slash-commands, --print-timeout, 600s]
     cwd: $snap
     effect: read
+    env: [HOME, PATH]
+    stdin: prompt
     params:
       prompt: {max_length: 20000}
   bughunt-codex:
-    # cmd starts commands with an empty environment; codex (and wrappers
-    # around it) need HOME and PATH, so env passes exactly those.
-    program: env
-    args: ["HOME=$HOME", "PATH=$PATH", codex, exec, --sandbox, read-only, --skip-git-repo-check, -C, $target, "\${prompt}"]
+    # Codex CLI in read-only sandbox; "-" reads the multi-line prompt from stdin.
+    program: codex
+    args: [exec, --sandbox, read-only, --skip-git-repo-check, -C, $target, "-"]
     cwd: $target
     effect: read
+    env: [HOME, PATH]
+    stdin: prompt
     params:
       prompt: {max_length: 20000}
 EOF
 
-# Children before parents: a ritual step needs its child already inscribed.
-for name in verdict batch-ready gather scan-file hunt test score bench rescore; do
-  f="$here/$name.yaml"; [ -f "$f" ] || continue
+# Rewrite root placeholders into a staging dir and inscribe the directory in
+# automatic dependency order.
+rm -f "$SUMMONR_HOME/rituals"/*.yaml
+for f in "$here"/*.yaml; do
+  base="$(basename "$f")"
+  case "$base" in *.drill.yaml|*.rite.yaml) continue ;; esac
   sed -e "s|/absolute/path/to/lab|$lab|g" \
       -e "s|/absolute/path/to/target-repro|$target-repro|g" \
-      -e "s|/absolute/path/to/target|$target|g" "$f" > "$SUMMONR_HOME/$(basename "$f")"
-  "$bin" inscribe "$SUMMONR_HOME/$(basename "$f")" --replace --json >/dev/null \
-    || { echo "inscribe failed: $name" >&2; "$bin" inscribe "$SUMMONR_HOME/$(basename "$f")" --json >&2; exit 1; }
+      -e "s|/absolute/path/to/target|$target|g" "$f" > "$SUMMONR_HOME/rituals/$base"
 done
+"$bin" inscribe "$SUMMONR_HOME/rituals" --replace --json >/dev/null \
+  || { echo "inscribe failed" >&2; "$bin" inscribe "$SUMMONR_HOME/rituals" --replace --json >&2; exit 1; }
 "$here/grant.sh" "$bin" "$target" "$lab"
 mkdir -p "$lab/benchmark"
 cp "$here"/benchmark/*.json "$lab/benchmark/" 2>/dev/null || true

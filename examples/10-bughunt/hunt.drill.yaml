@@ -27,7 +27,7 @@ cases:
       result: {angle: panics, findings: []}
       model_calls: 1
   - id: chunks-cover-the-whole-file
-    inputs: {dirs: [src], angle: panics, chunk: 3, starts: [0, 3, 6]}
+    inputs: {dirs: [src], angle: panics, chunk: 3}
     model:
       scan:
         - findings: []
@@ -52,8 +52,9 @@ cases:
         angle: panics
         findings:
           - {kind: bug, severity: high, confidence: 0.9, claim: c, trigger: t, snippet: "let status = loop { ... }", file: src/auth.rs, start: 0, quoted: false}
+      model_calls: 1
   - id: one-bad-chunk-does-not-sink-the-hunt
-    inputs: {dirs: [src], angle: panics, chunk: 3, starts: [0, 3]}
+    inputs: {dirs: [src], angle: panics, chunk: 3}
     model:
       scan:
         - "not json at all"
@@ -67,7 +68,7 @@ cases:
           - {kind: bug, severity: low, confidence: 0.5, claim: c, trigger: t, snippet: // end, file: src/auth.rs, start: 3, quoted: false}
       model_calls: 2
   - id: test-module-chunks-are-not-scanned
-    inputs: {dirs: [lib], angle: panics, chunk: 3, starts: [0, 3, 6]}
+    inputs: {dirs: [lib], angle: panics, chunk: 3}
     model:
       scan:
         - findings: []

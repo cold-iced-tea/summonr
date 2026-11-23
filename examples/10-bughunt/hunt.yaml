@@ -8,11 +8,6 @@ inputs:
   angle: string
   ext: {type: string, default: ".rs"}
   chunk: {type: integer, default: 150, min: 1, max: 2000}
-  # No range operation exists, so chunk starts are listed; starts past the
-  # end of a file are skipped. Covers files up to 4,500 lines at chunk 150.
-  starts:
-    type: list
-    default: [0, 150, 300, 450, 600, 750, 900, 1050, 1200, 1350, 1500, 1650, 1800, 1950, 2100, 2250, 2400, 2550, 2700, 2850, 3000, 3150, 3300, 3450, 3600, 3750, 3900, 4050, 4200, 4350]
 requires:
   - {reagent: file, action: list, on: {root: /absolute/path/to/target}}
   - {reagent: file, action: read_text, on: {root: /absolute/path/to/target}}
@@ -20,6 +15,7 @@ essence: {requests: 400, time: 3h}
 steps:
   - id: per_dir
     each: dir in inputs.dirs
+    keep: [dir_findings, dir_chunks_failed, dir_files_failed, dir_files_wanted]
     steps:
       - id: listing
         operation: file.list
@@ -28,6 +24,7 @@ steps:
       - id: per_entry
         each: entry in steps.listing.output.entries
         on_failure: continue
+        keep: [entry_out, entry_chunks_failed, wanted]
         steps:
           - id: is_source
             operation: data.ends_with
@@ -42,7 +39,7 @@ steps:
             then:
               - id: scanned
                 ritual: bughunt-scan-file
-                arguments: {path: "${dir}/${entry.name}", angle: "${inputs.angle}", chunk: "${inputs.chunk}", starts: "${inputs.starts}"}
+                arguments: {path: "${dir}/${entry.name}", angle: "${inputs.angle}", chunk: "${inputs.chunk}"}
           - id: entry_out
             operation: data.select
             arguments:
@@ -58,20 +55,24 @@ steps:
       - id: entries_ok
         operation: data.filter
         arguments: {values: "${steps.per_entry.output}", predicate: 'item.status == "returned"'}
+      - id: entry_lists
+        operation: data.map
+        arguments:
+          values: "${steps.entries_ok.output}"
+          operation: data.get
+          arguments: {value: "${item}", path: /outputs/entry_out}
       - id: dir_findings
-        operation: data.fold
+        operation: data.flatten
+        arguments: {values: "${steps.entry_lists.output}"}
+      - id: entry_fail_counts
+        operation: data.map
         arguments:
           values: "${steps.entries_ok.output}"
-          initial: []
-          operation: data.concat
-          arguments: {left: "${acc}", right: "${item.outputs.entry_out}"}
+          operation: data.get
+          arguments: {value: "${item}", path: /outputs/entry_chunks_failed}
       - id: dir_chunks_failed
-        operation: data.fold
-        arguments:
-          values: "${steps.entries_ok.output}"
-          initial: 0
-          operation: data.arithmetic
-          arguments: {left: "${acc}", right: "${item.outputs.entry_chunks_failed}", operator: add}
+        operation: data.sum_integers
+        arguments: {values: "${steps.entry_fail_counts.output}"}
       # Files that were wanted (source files) but failed to scan.
       - id: dir_files_failed_list
         operation: data.filter
@@ -85,34 +86,42 @@ steps:
       - id: dir_files_wanted
         operation: data.count
         arguments: {value: "${steps.dir_files_wanted_list.output}"}
+  - id: dir_finding_lists
+    operation: data.map
+    arguments:
+      values: "${steps.per_dir.output}"
+      operation: data.get
+      arguments: {value: "${item}", path: /outputs/dir_findings}
   - id: all_findings
-    operation: data.fold
+    operation: data.flatten
+    arguments: {values: "${steps.dir_finding_lists.output}"}
+  - id: dir_cf_list
+    operation: data.map
     arguments:
       values: "${steps.per_dir.output}"
-      initial: []
-      operation: data.concat
-      arguments: {left: "${acc}", right: "${item.outputs.dir_findings}"}
+      operation: data.get
+      arguments: {value: "${item}", path: /outputs/dir_chunks_failed}
   - id: chunks_failed
-    operation: data.fold
+    operation: data.sum_integers
+    arguments: {values: "${steps.dir_cf_list.output}"}
+  - id: dir_ff_list
+    operation: data.map
     arguments:
       values: "${steps.per_dir.output}"
-      initial: 0
-      operation: data.arithmetic
-      arguments: {left: "${acc}", right: "${item.outputs.dir_chunks_failed}", operator: add}
+      operation: data.get
+      arguments: {value: "${item}", path: /outputs/dir_files_failed}
   - id: files_failed
-    operation: data.fold
+    operation: data.sum_integers
+    arguments: {values: "${steps.dir_ff_list.output}"}
+  - id: dir_fw_list
+    operation: data.map
     arguments:
       values: "${steps.per_dir.output}"
-      initial: 0
-      operation: data.arithmetic
-      arguments: {left: "${acc}", right: "${item.outputs.dir_files_failed}", operator: add}
+      operation: data.get
+      arguments: {value: "${item}", path: /outputs/dir_files_wanted}
   - id: files_wanted
-    operation: data.fold
-    arguments:
-      values: "${steps.per_dir.output}"
-      initial: 0
-      operation: data.arithmetic
-      arguments: {left: "${acc}", right: "${item.outputs.dir_files_wanted}", operator: add}
+    operation: data.sum_integers
+    arguments: {values: "${steps.dir_fw_list.output}"}
   - id: some_wanted
     operation: data.compare
     arguments: {left: "${steps.files_wanted.output}", right: 0, operator: gt}

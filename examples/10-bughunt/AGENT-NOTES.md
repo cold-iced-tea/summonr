@@ -136,9 +136,14 @@ guide already says `result` is a subset match. The rest are open.
     config field to pass a variable through, so `codex` (a wrapper that
     needs `HOME`) exited at once. The step recorded "0 chars"; neither the
     exit code nor stderr appeared in the events, so finding the cause took
-    running the command by hand with `env -i`. *Suggestion:* an `env:`
-    allowlist per command (`env: [HOME, PATH]`), and always record the
-    exit code and a stderr tail in the step's event, as `trial` does.
+    running the command by hand with `env -i`. *Correction (2026-11-23):*
+    `cmd` actually inherited the core's environment minus secrets rather
+    than clearing it; `codex` lacked `HOME` because of the environment
+    that lab core started with. Explicit `env: [NAME, ...]`, `stdin:`,
+    and exit-code/stderr diagnostics are now implemented on `master`
+    (`5b464b5`). *Suggestion:* an `env:` allowlist per command (`env:
+    [HOME, PATH]`), and always record the exit code and a stderr tail in
+    the step's event, as `trial` does.
 
 32. **Steps inside an `if` nested in an untaken branch are never
     recorded.** The docs say steps in a branch not taken are `skipped` with a

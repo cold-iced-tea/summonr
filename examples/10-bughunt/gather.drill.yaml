@@ -27,6 +27,18 @@ cases:
     expect:
       outcome: returned
       result: {count: 0, findings: [], pass: false}
+  - id: custom-min-confidence-param
+    inputs:
+      min_batch: 1
+      min_confidence: 0.85
+      hunts:
+        - angle: a
+          findings:
+            - {kind: bug, severity: high, confidence: 0.8, claim: below floor, trigger: t, snippet: a(), file: src/a.rs, start: 0, quoted: true}
+            - {kind: bug, severity: high, confidence: 0.9, claim: above floor, trigger: t, snippet: b(), file: src/a.rs, start: 0, quoted: true}
+    expect:
+      outcome: returned
+      result: {count: 1, pass: true}
   - id: small-batch-does-not-pass
     inputs:
       min_batch: 3
@@ -52,3 +64,16 @@ cases:
     expect:
       outcome: returned
       result: {count: 0, findings: [], pass: false}
+  - id: angle-echo-and-no-bug-claims-dropped
+    inputs:
+      min_batch: 1
+      hunts:
+        - angle: a
+          findings:
+            - {kind: bug, severity: high, confidence: 0.95, claim: "Untrusted text reaching a path, command, header, query or prompt", trigger: t, snippet: "let a = 1;", file: src/a.rs, start: 0, quoted: true}
+            - {kind: bug, severity: high, confidence: 0.90, claim: "The code does not panic on hostile input", trigger: t, snippet: "let b = 2;", file: src/a.rs, start: 0, quoted: true}
+            - {kind: bug, severity: low, confidence: 0.95, claim: "The code does not have a vulnerability where untrusted text reaches a path.", trigger: t, snippet: "let c = 3;", file: src/a.rs, start: 0, quoted: true}
+            - {kind: bug, severity: high, confidence: 0.90, claim: "Division by zero when n == 0", trigger: "n = 0", snippet: "let d = x / n;", file: src/a.rs, start: 0, quoted: true}
+    expect:
+      outcome: returned
+      result: {count: 1, pass: true}

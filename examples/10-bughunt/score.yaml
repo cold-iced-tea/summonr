@@ -2,8 +2,8 @@ language_version: 1
 ritual: bughunt-score
 description: >-
   Score findings against a gold set of known-bug hunks. A finding hits a gold
-  hunk when it names the same file and its trimmed snippet (8+ characters)
-  appears in the hunk text. Pure.
+  hunk when it names the same file and its per-line-trimmed snippet (8+
+  characters) appears in the hunk text. Pure.
 inputs:
   findings: list
   # {total, by_file: {FILE: [{id, text}]}}, made by benchmark/make_gold.py
@@ -12,6 +12,7 @@ essence: {requests: 0, time: 30m}
 steps:
   - id: per_finding
     each: found in inputs.findings
+    keep: [ids, is_hit]
     steps:
       # JSON pointer escaping: ~ then / (file names contain /).
       - id: esc_tilde
@@ -23,9 +24,23 @@ steps:
       - id: hunks
         operation: data.get
         arguments: {value: "${inputs.gold.by_file}", path: "/${steps.esc_slash.output}", default: []}
+      # Normalize indentation per line so multi-line verbatim snippets match
+      # make_gold.py's per-line-stripped hunk text.
+      - id: raw_lines
+        operation: data.split
+        arguments: {text: "${found.snippet}", separator: "\n"}
+      - id: trimmed_lines
+        operation: data.map
+        arguments:
+          values: "${steps.raw_lines.output}"
+          operation: data.trim
+          arguments: {text: "${item}"}
+      - id: non_empty_lines
+        operation: data.filter
+        arguments: {values: "${steps.trimmed_lines.output}", predicate: 'item != ""'}
       - id: needle
-        operation: data.trim
-        arguments: {text: "${found.snippet}"}
+        operation: data.join
+        arguments: {values: "${steps.non_empty_lines.output}", separator: "\n"}
       - id: needle_len
         operation: data.count
         arguments: {value: "${steps.needle.output}"}
@@ -34,6 +49,7 @@ steps:
         arguments: {left: "${steps.needle_len.output}", right: 8, operator: ge}
       - id: per_hunk
         each: hunk in steps.hunks.output
+        keep: [hit]
         steps:
           - id: inside
             operation: data.contains
@@ -44,26 +60,30 @@ steps:
           - id: hit
             operation: data.select
             arguments: {condition: "${steps.counts.output}", then: ["${hunk.id}"], else: []}
-      - id: ids
-        operation: data.fold
+      - id: hit_lists
+        operation: data.map
         arguments:
           values: "${steps.per_hunk.output}"
-          initial: []
-          operation: data.concat
-          arguments: {left: "${acc}", right: "${item.outputs.hit}"}
+          operation: data.get
+          arguments: {value: "${item}", path: /outputs/hit}
+      - id: ids
+        operation: data.flatten
+        arguments: {values: "${steps.hit_lists.output}"}
       - id: n_ids
         operation: data.count
         arguments: {value: "${steps.ids.output}"}
       - id: is_hit
         operation: data.compare
         arguments: {left: "${steps.n_ids.output}", right: 0, operator: gt}
-  - id: all_ids
-    operation: data.fold
+  - id: id_lists
+    operation: data.map
     arguments:
       values: "${steps.per_finding.output}"
-      initial: []
-      operation: data.concat
-      arguments: {left: "${acc}", right: "${item.outputs.ids}"}
+      operation: data.get
+      arguments: {value: "${item}", path: /outputs/ids}
+  - id: all_ids
+    operation: data.flatten
+    arguments: {values: "${steps.id_lists.output}"}
   - id: hit_ids
     operation: data.unique
     arguments: {values: "${steps.all_ids.output}"}
@@ -71,12 +91,11 @@ steps:
     operation: data.count
     arguments: {value: "${steps.hit_ids.output}"}
   - id: flags
-    operation: data.fold
+    operation: data.map
     arguments:
       values: "${steps.per_finding.output}"
-      initial: []
-      operation: data.concat
-      arguments: {left: "${acc}", right: ["${item.outputs.is_hit}"]}
+      operation: data.get
+      arguments: {value: "${item}", path: /outputs/is_hit}
   - id: hit_flags
     operation: data.filter
     arguments: {values: "${steps.flags.output}", predicate: "item"}

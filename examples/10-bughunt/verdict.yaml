@@ -5,9 +5,10 @@ description: >-
   test ran and failed with the BUGHUNT-CONFIRMED marker. refuted: exactly one
   test ran and passed. untestable: anything else (did not build, other
   panic, nothing ran), and always when the test is not honest: it never
-  names the suspect module (so it can only have tested its own copy of the
-  logic) or uses #[should_panic] (which passes exactly when a panic bug is
-  real). Also reports build_failed, for the retry.
+  names the suspect module (or reagent dispatcher for *_reagent.rs), uses
+  #[should_panic], places BUGHUNT-CONFIRMED in multiple branches, or trips
+  BUGHUNT-CONFIRMED on deserialization/parse setup failure. Also reports
+  build_failed, for the retry.
 inputs:
   file: string        # the suspect source file, e.g. src/reagents/x.rs
   test_file: string   # the repro test source that ran
@@ -54,18 +55,83 @@ steps:
   - id: needle
     operation: data.select
     arguments: {condition: "${steps.is_root.output}", then: "crate::", else: "${steps.module.output}::"}
-  - id: names_code
+  - id: names_module
     operation: data.contains
     arguments: {value: "${inputs.test_file}", needle: "${steps.needle.output}"}
+  # For src/reagents/<name>_reagent.rs, also accept honest calls through
+  # reagent::call / reagent::authorize naming "<name>".
+  - id: is_reagent_file
+    operation: data.ends_with
+    arguments: {text: "${steps.last.output}", suffix: "_reagent.rs"}
+  - id: reagent_name
+    operation: data.replace
+    arguments: {text: "${steps.stem.output}", from: "_reagent", to: ""}
+  - id: calls_reagent_call
+    operation: data.contains
+    arguments: {value: "${inputs.test_file}", needle: "reagent::call("}
+  - id: calls_reagent_auth
+    operation: data.contains
+    arguments: {value: "${inputs.test_file}", needle: "reagent::authorize("}
+  - id: calls_dispatcher
+    operation: data.logic
+    arguments: {operator: or, left: "${steps.calls_reagent_call.output}", right: "${steps.calls_reagent_auth.output}"}
+  - id: names_reagent_quoted
+    operation: data.contains
+    arguments: {value: "${inputs.test_file}", needle: "\"${steps.reagent_name.output}\""}
+  - id: names_reagent_prefix
+    operation: data.contains
+    arguments: {value: "${inputs.test_file}", needle: "\"${steps.reagent_name.output}."}
+  - id: names_reagent
+    operation: data.logic
+    arguments: {operator: or, left: "${steps.names_reagent_quoted.output}", right: "${steps.names_reagent_prefix.output}"}
+  - id: via_dispatcher
+    operation: data.all
+    arguments: {values: ["${steps.is_reagent_file.output}", "${steps.calls_dispatcher.output}", "${steps.names_reagent.output}"]}
+  - id: names_code
+    operation: data.logic
+    arguments: {operator: or, left: "${steps.names_module.output}", right: "${steps.via_dispatcher.output}"}
   - id: should_panic
     operation: data.contains
     arguments: {value: "${inputs.test_file}", needle: should_panic}
   - id: no_should_panic
     operation: data.logic
     arguments: {operator: not, left: "${steps.should_panic.output}"}
-  - id: honest
+  # Reject tests that plant BUGHUNT-CONFIRMED in multiple branches (e.g. both
+  # arms of an if/else) so they fail no matter what the code does.
+  - id: marker_parts
+    operation: data.split
+    arguments: {text: "${inputs.test_file}", separator: BUGHUNT-CONFIRMED}
+  - id: marker_part_count
+    operation: data.count
+    arguments: {value: "${steps.marker_parts.output}"}
+  - id: single_marker_site
+    operation: data.compare
+    arguments: {left: "${steps.marker_part_count.output}", right: 2, operator: le}
+  # Reject false confirmations where the model tripped its own BUGHUNT-CONFIRMED
+  # marker on a broken JSON/YAML fixture setup.
+  - id: tail_lc
+    operation: data.case
+    arguments: {text: "${inputs.tail}", mode: lower}
+  - id: failed_deser
+    operation: data.contains
+    arguments: {value: "${steps.tail_lc.output}", needle: "bughunt-confirmed: failed to deserialize"}
+  - id: failed_parse
+    operation: data.contains
+    arguments: {value: "${steps.tail_lc.output}", needle: "bughunt-confirmed: failed to parse"}
+  - id: setup_marker_fail
     operation: data.logic
-    arguments: {operator: and, left: "${steps.names_code.output}", right: "${steps.no_should_panic.output}"}
+    arguments: {operator: or, left: "${steps.failed_deser.output}", right: "${steps.failed_parse.output}"}
+  - id: no_setup_marker_fail
+    operation: data.logic
+    arguments: {operator: not, left: "${steps.setup_marker_fail.output}"}
+  - id: honest
+    operation: data.all
+    arguments:
+      values:
+        - "${steps.names_code.output}"
+        - "${steps.no_should_panic.output}"
+        - "${steps.single_marker_site.output}"
+        - "${steps.no_setup_marker_fail.output}"
   # Did it build? cargo always ends a build failure with "could not compile";
   # a test that ran prints "test result:".
   - id: could_not_compile
