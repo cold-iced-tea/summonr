@@ -719,6 +719,9 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
 
     let mut returning_seen = false;
     let mut scope_open = false;
+    // Where a `--select VALUE` ended, and its value: a bare tool name right
+    // after it means the author wrote `--select a b` for `--select a,b`.
+    let mut after_select: Option<(usize, String)> = None;
 
     while let Some(tok) = cur.next() {
         let pos = cur.i - 1;
@@ -783,6 +786,12 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
             }
         } else if KEYWORDS.contains(&name) {
             name
+        } else if let Some((_, first)) = after_select.as_ref().filter(|(end, _)| *end == pos) {
+            return Err(cur.err(
+                pos,
+                "`--select` takes one value; name several tools with commas",
+                format!("--select {first},{tok}"),
+            ));
         } else {
             return Err(cur.err(pos, "expected a clause here", "summonr help"));
         };
@@ -979,6 +988,7 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
                 let mut names: Vec<String> = Vec::new();
                 if is_flag {
                     let v = value(&mut cur, pos, attached, true, "--select read,search")?;
+                    after_select = Some((cur.i, v.clone()));
                     names.extend(v.split(',').filter(|s| !s.is_empty()).map(String::from));
                 } else {
                     while let Some(t) = cur.peek() {
@@ -1297,7 +1307,18 @@ mod tests {
         ("elegy s-1 brief returning json", "record s-1 --brief --json"),
         ("rite start ./r.yaml reading hunts=./h.json given n=2", "workflow start ./r.yaml --arg-file hunts=./h.json --arg n=2"),
         ("graveyard children s-1 returning json", "history --children s-1 --json"),
+        ("grant check bughunt-bench", "allow check bughunt-bench"),
     ];
+
+    #[test]
+    fn a_second_bare_tool_after_select_suggests_commas() {
+        let e = p("allow r --from file --select list read_text").unwrap_err();
+        assert!(e.msg.contains("name several tools with commas"), "{e:?}");
+        assert_eq!(e.hint, "--select list,read_text");
+        assert!(p("allow r --from file --select list,read_text").is_ok());
+        // Elsewhere a stray word keeps the general message.
+        assert!(p("allow r --from file stray").unwrap_err().msg.contains("expected a clause"));
+    }
 
     #[test]
     fn children_belongs_to_history() {

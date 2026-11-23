@@ -519,23 +519,39 @@ fn run(op: Op, paths: &Paths, style: Style) -> i32 {
                     )
                 })
             };
-            finish(res, json_out, |d| {
-                if d["unchanged"] == true {
-                    println!(
-                        "{} is already inscribed as version {} with these exact contents.",
-                        s(d, "ritual"),
-                        d["version"]
-                    );
-                } else {
-                    println!(
-                        "Inscribed {} as version {}.",
-                        bold(Ink::Bone, s(d, "ritual")),
-                        d["version"]
-                    );
+            finish(res, json_out, |d| match d["inscribed"].as_array() {
+                // A directory, children first.
+                Some(all) => {
+                    for r in all {
+                        let state = if r["unchanged"] == true { "unchanged" } else { "inscribed" };
+                        println!(
+                            "  {} v{} {}",
+                            bold(Ink::Bone, s(r, "ritual")),
+                            r["version"],
+                            paint(Ink::Dim, state)
+                        );
+                        print_warnings(&r["warnings"]);
+                    }
+                    println!("{} rituals from {}, in dependency order.", all.len(), s(d, "directory"));
                 }
-                row("hash", s(d, "hash"));
-                effects(&d["effects"]);
-                print_warnings(&d["warnings"]);
+                None => {
+                    if d["unchanged"] == true {
+                        println!(
+                            "{} is already inscribed as version {} with these exact contents.",
+                            s(d, "ritual"),
+                            d["version"]
+                        );
+                    } else {
+                        println!(
+                            "Inscribed {} as version {}.",
+                            bold(Ink::Bone, s(d, "ritual")),
+                            d["version"]
+                        );
+                    }
+                    row("hash", s(d, "hash"));
+                    effects(&d["effects"]);
+                    print_warnings(&d["warnings"]);
+                }
             })
         }
         "grimoire" => match op.positionals.first().map(String::as_str) {
@@ -621,6 +637,32 @@ fn run(op: Op, paths: &Paths, style: Style) -> i32 {
                 }
             }),
         },
+        // `allow check [RITUAL]`; a ritual named `check` is still granted with `--from`.
+        "grant" if op.positionals.first().map(String::as_str) == Some("check") && op.scopes.is_empty() => {
+            let ritual = op.positionals.get(1).cloned();
+            let res = client.call("grant_check", json!({"ritual": ritual}));
+            finish(res, json_out, |d| {
+                for r in d["rituals"].as_array().into_iter().flatten() {
+                    let missing = r["missing"].as_array().cloned().unwrap_or_default();
+                    let state = match (missing.is_empty(), r["called_by"].as_str()) {
+                        (true, _) => paint(Ink::Verdigris, "granted"),
+                        (false, Some(by)) => paint(Ink::Dim, &format!("runs under {by}'s grants; needs these only if invoked directly")),
+                        (false, None) => paint(Ink::Rubric, "missing"),
+                    };
+                    println!("{} v{} {}", bold(Ink::Bone, s(r, "ritual")), r["version"], state);
+                    for (m, c) in missing.iter().zip(r["grant_commands"].as_array().into_iter().flatten()) {
+                        println!("  {}", m.as_str().unwrap_or(""));
+                        println!("    {}", paint(Ink::Dim, c.as_str().unwrap_or("")));
+                    }
+                    for t in r["scoped_by_inputs"].as_array().into_iter().flatten() {
+                        println!("  {} {}", t.as_str().unwrap_or(""), paint(Ink::Dim, "is scoped by an input; checked when the ritual is run"));
+                    }
+                }
+                if d["ready"] == true {
+                    println!("Ready: every ritual that can be invoked has the authority it declares.");
+                }
+            })
+        }
         "grant" | "revoke" => {
             let res = target(&op, "a ritual name").and_then(|name| {
                 client.call(

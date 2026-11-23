@@ -1737,3 +1737,67 @@ fn compile_and_inscribe_warn_about_an_unbounded_loop() {
     let saved = h.call("inscribe", json!({"path": path.to_str().unwrap(), "cwd": "/"})).unwrap();
     assert_eq!(saved["warnings"], compiled["warnings"], "{saved}");
 }
+
+#[test]
+fn inscribing_a_directory_orders_children_before_parents() {
+    let h = super::test_home::Home::new("");
+    let dir = h.root.join("rituals");
+    std::fs::create_dir_all(&dir).unwrap();
+    let leaf = "ritual: c-leaf\nsteps:\n  - {id: t, operation: data.trim, arguments: {text: ' a '}}\nreturn: {t: \"${steps.t.output}\"}\n";
+    let mid = "ritual: b-mid\nsteps:\n  - {id: l, ritual: c-leaf}\nreturn: {t: \"${steps.l.output.t}\"}\n";
+    let top = "ritual: a-top\nsteps:\n  - {id: m, ritual: b-mid}\n  - {id: l, ritual: c-leaf}\nreturn: {t: \"${steps.m.output.t}\"}\n";
+    std::fs::write(dir.join("a-top.yaml"), top).unwrap();
+    std::fs::write(dir.join("b-mid.yml"), mid).unwrap();
+    std::fs::write(dir.join("c-leaf.yaml"), leaf).unwrap();
+    std::fs::write(dir.join("a-top.drill.yaml"), "not: a ritual\n").unwrap();
+    std::fs::write(dir.join("big.rite.yaml"), "not: a ritual\n").unwrap();
+    let out = h.call("inscribe", json!({"path": dir.to_str().unwrap(), "cwd": "/"})).unwrap();
+    let order: Vec<&str> = out["inscribed"].as_array().unwrap().iter().map(|r| r["ritual"].as_str().unwrap()).collect();
+    assert_eq!(order, ["c-leaf", "b-mid", "a-top"], "{out}");
+    let rec = h.run(json!({"target": "a-top"}));
+    assert_eq!(rec["result"]["t"], "a", "{rec}");
+    // Again: nothing changed.
+    let again = h.call("inscribe", json!({"path": dir.to_str().unwrap(), "cwd": "/"})).unwrap();
+    assert!(again["inscribed"].as_array().unwrap().iter().all(|r| r["unchanged"] == true), "{again}");
+}
+
+#[test]
+fn inscribing_a_directory_with_a_cycle_names_it_and_inscribes_nothing() {
+    let h = super::test_home::Home::new("");
+    let dir = h.root.join("cyclic");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("p.yaml"), "ritual: p\nsteps:\n  - {id: q, ritual: q}\n").unwrap();
+    std::fs::write(dir.join("q.yaml"), "ritual: q\nsteps:\n  - {id: p, ritual: p}\n").unwrap();
+    std::fs::write(dir.join("r.yaml"), "ritual: r\nsteps:\n  - {id: t, operation: data.trim, arguments: {text: x}}\n").unwrap();
+    let err = h.call("inscribe", json!({"path": dir.to_str().unwrap(), "cwd": "/"})).unwrap_err();
+    assert!(err.message.contains("p -> q -> p") || err.message.contains("q -> p -> q"), "{}", err.message);
+    assert_eq!(h.call("rituals", json!({})).unwrap().as_array().map(Vec::len), Some(0));
+}
+
+#[test]
+fn grant_check_lists_what_a_ritual_and_its_children_still_need() {
+    let h = super::test_home::Home::new("");
+    let root = h.root.to_str().unwrap().to_string();
+    let req = format!("requires:\n  - {{reagent: file, action: read_text, on: {{root: {root}}}}}\n");
+    let leaf = format!("ritual: reader\n{req}steps:\n  - {{id: r, operation: file.read_text, arguments: {{root: {root}, path: a.txt}}}}\nreturn: {{t: \"${{steps.r.output.text}}\"}}\n");
+    let top = format!("ritual: wrapper\n{req}steps:\n  - {{id: c, ritual: reader}}\nreturn: {{t: \"${{steps.c.output.t}}\"}}\n");
+    let dir = h.root.join("pair");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("reader.yaml"), leaf).unwrap();
+    std::fs::write(dir.join("wrapper.yaml"), top).unwrap();
+    h.call("inscribe", json!({"path": dir.to_str().unwrap(), "cwd": "/"})).unwrap();
+    let before = h.call("grant_check", json!({"ritual": "wrapper"})).unwrap();
+    assert_eq!(before["ready"], false, "{before}");
+    let rows = before["rituals"].as_array().unwrap();
+    assert_eq!(rows[0]["ritual"], "wrapper");
+    assert_eq!(rows[1]["ritual"], "reader");
+    assert_eq!(rows[1]["called_by"], "wrapper");
+    let cmd = rows[0]["grant_commands"][0].as_str().unwrap();
+    assert_eq!(cmd, format!("summonr allow wrapper --from file --select read_text --on root={root}"));
+    h.call("grant", json!({"ritual": "wrapper", "scopes": [{"reagent": "file", "select": ["read_text"]}], "on": {"root": root}})).unwrap();
+    let after = h.call("grant_check", json!({"ritual": "wrapper"})).unwrap();
+    assert_eq!(after["ready"], true, "a child runs under its caller's grants: {after}");
+    assert_eq!(after["rituals"][0]["missing"], json!([]));
+    let all = h.call("grant_check", json!({})).unwrap();
+    assert_eq!(all["rituals"].as_array().unwrap().len(), 2, "{all}");
+}

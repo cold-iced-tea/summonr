@@ -434,6 +434,15 @@ impl Validate for List {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct GrantCheck {
+    /// One ritual and its children; absent: every ritual.
+    #[serde(default)]
+    pub ritual: Option<String>,
+}
+impl Validate for GrantCheck {}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Inscribe {
     #[serde(deserialize_with = "nonempty")]
     pub path: String,

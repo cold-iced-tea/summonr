@@ -15,9 +15,9 @@ Scripts and agents should use the flag spelling with `--json`. `summonr help` li
 | --- | --- | --- |
 | `invoke` | `run` | Execute a saved ritual, or a ritual file |
 | `rehearse` | `run --dry-run` | Validate and preview an invocation, executing nothing |
-| `inscribe` | `save` | Save a ritual file as a new version |
+| `inscribe` | `save` | Save a ritual file as a new version; given a directory, save every ritual in it (`*.yaml`, `*.yml`, not drills or rites) with children before the parents that call them, refusing a cycle before saving anything |
 | `grimoire` | `rituals` | List saved rituals; `grimoire read NAME` shows one |
-| `grant` | `allow` | Authorize a ritual to use reagent tools within a scope |
+| `grant` | `allow` | Authorize a ritual to use reagent tools within a scope; several tools go comma-separated (`--select list,read_text`). `allow check [RITUAL]` lists what a ritual and the children it calls declare under `requires` but have not been granted, with the `allow` command for each (no name: every ritual). A child runs under its caller's grants, so it needs its own only to be invoked directly |
 | `revoke` | `disallow` | Withdraw matching authority |
 | `circle` | `list` | List active summons |
 | `console` | `shell` | Open the persistent command workbench |

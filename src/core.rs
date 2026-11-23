@@ -263,6 +263,18 @@ pub(crate) const TREE_EFFECTS_SQL: &str = "WITH RECURSIVE tree(id) AS (SELECT id
 pub(crate) const TREE_PETITIONS_SQL: &str = "WITH RECURSIVE tree(id) AS (SELECT id FROM summons WHERE id=?1 UNION ALL SELECT s.id FROM summons s JOIN tree t ON s.parent=t.id) SELECT p.id,p.status,p.operation FROM tree t CROSS JOIN petitions p ON p.summon=t.id ORDER BY p.created";
 pub(crate) const TREE_EACH_FAILED_SQL: &str = "WITH RECURSIVE tree(id) AS (SELECT id FROM summons WHERE id=?1 UNION ALL SELECT s.id FROM summons s JOIN tree t ON s.parent=t.id) SELECT s.id, s.ritual, e.text FROM tree t CROSS JOIN events e ON e.summon=t.id JOIN summons s ON s.id=e.summon WHERE e.kind='each.failed' ORDER BY e.ts, e.seq";
 
+/// The `summonr allow` command that grants one missing atom.
+fn allow_command(ritual: &str, g: &Grant) -> String {
+    let mut c = format!("summonr allow {ritual} --from {} --select {}", g.reagent, g.action);
+    for (k, v) in &g.on {
+        c.push_str(&format!(" --on {k}={v}"));
+    }
+    for (k, v) in &g.into {
+        c.push_str(&format!(" --into {k}={v}"));
+    }
+    c
+}
+
 pub(crate) enum FenceAcquire {
     Proceed { fence_key: String },
     Cached { output: Value, evidence: crate::records::Evidence },
@@ -1151,23 +1163,7 @@ impl Core {
             return Ok(());
         }
         let lines: Vec<String> = r.missing.iter().map(Grant::describe).collect();
-        let commands: Vec<String> = r
-            .missing
-            .iter()
-            .map(|g| {
-                let mut c = format!(
-                    "summonr allow {} --from {} --select {}",
-                    r.def.ritual, g.reagent, g.action
-                );
-                for (k, v) in &g.on {
-                    c.push_str(&format!(" --on {k}={v}"));
-                }
-                for (k, v) in &g.into {
-                    c.push_str(&format!(" --into {k}={v}"));
-                }
-                c
-            })
-            .collect();
+        let commands: Vec<String> = r.missing.iter().map(|g| allow_command(&r.def.ritual, g)).collect();
         Err(RpcErr::new(
             "not_authorized",
             4,
@@ -2237,6 +2233,14 @@ impl Core {
     fn inscribe(&self, p: Value) -> Result<Value, RpcErr> {
         let p: requests::Inscribe = decode(p)?;
         let path = PathBuf::from(&p.cwd).join(&p.path);
+        if path.is_dir() {
+            return self.inscribe_dir(&path, &p);
+        }
+        self.inscribe_one(&path, &p)
+    }
+
+    fn inscribe_one(&self, path: &Path, p: &requests::Inscribe) -> Result<Value, RpcErr> {
+        let path = path.to_path_buf();
         let mut def = self.load_file(&path)?;
         if let Some(name) = &p.name {
             def.ritual = name.to_string();
@@ -2253,6 +2257,105 @@ impl Core {
         let mut saved = self.save_ritual_version(&def, p.replace, &effects)?;
         saved["warnings"] = json!(ritual::lint(&def));
         Ok(saved)
+    }
+
+    /// Inscribe every ritual file in a directory (`*.yaml`, `*.yml`; not
+    /// drills or rites), children before the parents that call them. Rituals
+    /// named but not in the directory must already be inscribed. A cycle is
+    /// refused before anything is inscribed.
+    fn inscribe_dir(&self, dir: &Path, p: &requests::Inscribe) -> Result<Value, RpcErr> {
+        if p.name.is_some() {
+            return Err(RpcErr::invalid("`as NAME` names one ritual; it cannot be used when inscribing a directory"));
+        }
+        let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+            .map_err(|e| RpcErr::not_found(format!("cannot read {}: {e}", dir.display())))?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|f| {
+                let name = f.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                f.is_file()
+                    && (name.ends_with(".yaml") || name.ends_with(".yml"))
+                    && ![".drill.yaml", ".drill.yml", ".rite.yaml", ".rite.yml"].iter().any(|x| name.ends_with(x))
+            })
+            .collect();
+        files.sort();
+        // name -> (file, children named in its steps)
+        let mut found: BTreeMap<String, (PathBuf, BTreeSet<String>)> = BTreeMap::new();
+        for f in &files {
+            let text = std::fs::read_to_string(f)
+                .map_err(|e| RpcErr::not_found(format!("cannot read {}: {e}", f.display())))?;
+            let def = ritual::parse_definition(f, &text)
+                .map_err(|e| RpcErr::invalid(format!("{}: {e}", f.display())))?;
+            let mut children = BTreeSet::new();
+            fn named(steps: &[ritual::Step], out: &mut BTreeSet<String>) {
+                for s in steps {
+                    if let Some(r) = &s.ritual {
+                        out.insert(r.clone());
+                    }
+                    for inner in [&s.steps, &s.then, &s.otherwise, &s.fallback].into_iter().flatten() {
+                        named(inner, out);
+                    }
+                }
+            }
+            named(&def.steps, &mut children);
+            if let Some((other, _)) = found.get(&def.ritual) {
+                return Err(RpcErr::invalid(format!(
+                    "{} and {} both define ritual `{}`",
+                    other.display(),
+                    f.display(),
+                    def.ritual
+                )));
+            }
+            found.insert(def.ritual.clone(), (f.clone(), children));
+        }
+        // Depth-first order: a ritual after every ritual in the directory it calls.
+        fn visit(
+            name: &str,
+            found: &BTreeMap<String, (PathBuf, BTreeSet<String>)>,
+            path: &mut Vec<String>,
+            done: &mut Vec<String>,
+        ) -> Result<(), String> {
+            if done.iter().any(|d| d == name) {
+                return Ok(());
+            }
+            if let Some(i) = path.iter().position(|p| p == name) {
+                let mut cycle = path[i..].to_vec();
+                cycle.push(name.to_string());
+                return Err(cycle.join(" -> "));
+            }
+            path.push(name.to_string());
+            for child in &found[name].1 {
+                if found.contains_key(child) {
+                    visit(child, found, path, done)?;
+                }
+            }
+            path.pop();
+            done.push(name.to_string());
+            Ok(())
+        }
+        let mut order = Vec::new();
+        for name in found.keys() {
+            visit(name, &found, &mut Vec::new(), &mut order).map_err(|cycle| {
+                RpcErr::invalid(format!(
+                    "rituals in {} call each other in a cycle: {cycle}; nothing was inscribed",
+                    dir.display()
+                ))
+            })?;
+        }
+        let mut inscribed = Vec::new();
+        for name in &order {
+            match self.inscribe_one(&found[name].0, p) {
+                Ok(v) => inscribed.push(v),
+                Err(mut e) => {
+                    let done: Vec<&str> = inscribed.iter().filter_map(|v| v["ritual"].as_str()).collect();
+                    if !done.is_empty() {
+                        e.message = format!("{} (already inscribed from this directory: {})", e.message, done.join(", "));
+                    }
+                    e.data = json!({"inscribed": inscribed});
+                    return Err(e);
+                }
+            }
+        }
+        Ok(json!({"directory": dir.display().to_string(), "inscribed": inscribed}))
     }
 
     pub(crate) fn save_ritual_version(
@@ -2416,6 +2519,79 @@ impl Core {
         }
         self.record_audit("grant.add", ritual, "ok", json!({"granted": atoms}));
         Ok(json!({"ritual": ritual, "granted": atoms}))
+    }
+
+    /// Which declared requirements are not yet granted: for one ritual and
+    /// every child in its tree, or for every ritual in the grimoire. Only a
+    /// ritual invoked directly needs grants; a child runs under its caller's.
+    /// A requirement scoped by an input (`${inputs.x}`) is listed apart: it
+    /// can be checked only with that input.
+    fn grant_check(&self, p: Value) -> Result<Value, RpcErr> {
+        let p: requests::GrantCheck = decode(p)?;
+        let mut names: Vec<(String, Option<String>)> = Vec::new();
+        match &p.ritual {
+            Some(root) => {
+                if self.load_ritual(root, None)?.is_none() {
+                    return Err(RpcErr::not_found(format!("no ritual `{root}` in the grimoire")));
+                }
+                // Breadth first through `ritual:` steps; each name once.
+                let mut queue = std::collections::VecDeque::from([(root.clone(), None)]);
+                while let Some((name, called_by)) = queue.pop_front() {
+                    if names.iter().any(|(n, _)| *n == name) {
+                        continue;
+                    }
+                    if let Some((_, _, def)) = self.load_ritual(&name, None)? {
+                        fn children(steps: &[ritual::Step], out: &mut Vec<String>) {
+                            for s in steps {
+                                if let Some(r) = &s.ritual {
+                                    out.push(r.clone());
+                                }
+                                for inner in [&s.steps, &s.then, &s.otherwise, &s.fallback].into_iter().flatten() {
+                                    children(inner, out);
+                                }
+                            }
+                        }
+                        let mut kids = Vec::new();
+                        children(&def.steps, &mut kids);
+                        for k in kids {
+                            queue.push_back((k, Some(name.clone())));
+                        }
+                    }
+                    names.push((name, called_by));
+                }
+            }
+            None => {
+                for r in self.rituals()?.as_array().into_iter().flatten() {
+                    if let Some(n) = r["ritual"].as_str().or_else(|| r["name"].as_str()) {
+                        names.push((n.to_string(), None));
+                    }
+                }
+            }
+        }
+        let mut report = Vec::new();
+        for (name, called_by) in names {
+            let Some((version, _, def)) = self.load_ritual(&name, None)? else { continue };
+            let grants = self.grants_for(&name)?;
+            let (templated, fixed): (Vec<_>, Vec<_>) = def
+                .requires
+                .iter()
+                .partition(|r| r.on.values().any(|v| v.contains("${")) || r.into.values().any(|v| v.to_string().contains("${")));
+            let missing: Vec<Grant> = fixed
+                .iter()
+                .flat_map(|r| r.atoms())
+                .filter(|need| !grants.iter().any(|g| g.covers(need)))
+                .collect();
+            report.push(json!({
+                "ritual": name,
+                "version": version,
+                "called_by": called_by,
+                "missing": missing.iter().map(Grant::describe).collect::<Vec<_>>(),
+                "grant_commands": missing.iter().map(|g| allow_command(&name, g)).collect::<Vec<_>>(),
+                "scoped_by_inputs": templated.iter().map(|r| format!("{}.{}", r.reagent, r.action)).collect::<Vec<_>>(),
+            }));
+        }
+        let ready = report.iter().all(|r| r["missing"].as_array().is_some_and(Vec::is_empty) || !r["called_by"].is_null());
+        Ok(json!({"rituals": report, "ready": ready}))
     }
 
     fn revoke(&self, p: Value) -> Result<Value, RpcErr> {
@@ -2659,6 +2835,7 @@ impl Core {
             }
             "ritual_read" => self.ritual_read(p),
             "grant" => self.grant(p),
+            "grant_check" => self.grant_check(p),
             "revoke" => self.revoke(p),
             "assay" => self.assay(p),
             "assay_compare" => self.assay_compare(p),
