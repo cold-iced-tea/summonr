@@ -20,6 +20,16 @@ class BuilderTests(unittest.TestCase):
             for _ in value:
                 self.fail('runtime iteration became a Python loop')
 
+    def test_filter_params_are_arguments_not_predicate_text(self):
+        r=Ritual('test', essence={'requests':0})
+        floor=r.input('floor',Int)
+        values=r.input('values',List)
+        kept=r.filter(values,lambda item: item['score'] >= 1,params={'floor':floor},id='kept')
+        r.returns({'kept':kept})
+        step=r.definition()['steps'][0]
+        self.assertEqual(step['arguments']['params'],{'floor':'${inputs.floor}'})
+        self.assertNotIn('${',step['arguments']['predicate'])
+
     def test_scopes_expressions_and_literal_types(self):
         r=Ritual('test', essence={'requests':0})
         values=r.input('values',List)

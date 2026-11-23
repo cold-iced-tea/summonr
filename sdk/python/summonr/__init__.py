@@ -283,9 +283,11 @@ class Ritual:
         body = arguments(Ref('item',self)) if callable(arguments) else arguments
         return self.op('data.map',id=id,values=values,operation=operation,arguments=body)
 
-    def filter(self, values, predicate, *, id=None):
+    def filter(self, values, predicate, *, params=None, id=None):
+        # params values are bound as params.NAME, never pasted into the predicate.
         expression = predicate(Ref('item',self)) if callable(predicate) else predicate
-        return self.op('data.filter',id=id,values=values,predicate=self._expression(expression))
+        extra = {} if params is None else {'params': params}
+        return self.op('data.filter',id=id,values=values,predicate=self._expression(expression),**extra)
 
     def fold(self, values, initial, operation, arguments, *, id=None):
         self._select(operation)
