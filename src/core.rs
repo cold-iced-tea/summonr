@@ -293,6 +293,27 @@ pub(crate) fn watch_for_drop(
     }))
 }
 
+/// A run's descendants (each row with `parent`, in start order) arranged
+/// depth first under `root`, each with its `depth` (1 for direct children).
+fn depth_first(root: &str, rows: Vec<Value>) -> Vec<Value> {
+    let mut by_parent: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    for r in rows {
+        let parent = r["parent"].as_str().unwrap_or_default().to_string();
+        by_parent.entry(parent).or_default().push(r);
+    }
+    fn place(id: &str, depth: u64, by_parent: &mut BTreeMap<String, Vec<Value>>, out: &mut Vec<Value>) {
+        for mut r in by_parent.remove(id).unwrap_or_default() {
+            r["depth"] = json!(depth);
+            let child = r["id"].as_str().unwrap_or_default().to_string();
+            out.push(r);
+            place(&child, depth + 1, by_parent, out);
+        }
+    }
+    let mut out = Vec::new();
+    place(root, 1, &mut by_parent, &mut out);
+    out
+}
+
 /// The `summonr allow` command that grants one missing atom.
 fn allow_command(ritual: &str, g: &Grant) -> String {
     let mut c = format!("summonr allow {ritual} --from {} --select {}", g.reagent, g.action);
@@ -2843,6 +2864,16 @@ impl Core {
                         limit,
                         false,
                     ),
+                    requests::ListScope::Children if p.recursive => {
+                        let root = p.summon.as_deref().expect("validated child scope");
+                        self.summons(
+                            "id IN (WITH RECURSIVE tree(id) AS (SELECT id FROM summons WHERE parent = ?1 UNION ALL SELECT s.id FROM summons s JOIN tree t ON s.parent = t.id) SELECT id FROM tree) ORDER BY started",
+                            root,
+                            limit,
+                            false,
+                        )
+                        .map(|rows| depth_first(root, rows))
+                    }
                     requests::ListScope::Children => self.summons(
                         "parent = ?1 ORDER BY started",
                         p.summon.as_deref().expect("validated child scope"),

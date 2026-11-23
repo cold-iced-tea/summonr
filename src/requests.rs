@@ -425,10 +425,16 @@ pub struct List {
     pub summon: Option<String>,
     #[serde(default = "list_limit")]
     pub limit: u32,
+    /// With the children scope: every descendant, depth first, with `depth`.
+    #[serde(default)]
+    pub recursive: bool,
 }
 impl Validate for List {
     fn validate(&self) -> Result<(), String> {
         range(self.limit.into(), 10000, "limit")?;
+        if self.recursive && !matches!(self.scope, ListScope::Children) {
+            return Err("recursive applies only to the children scope".into());
+        }
         match (&self.scope, &self.summon) {
             (ListScope::Children, Some(id)) if !id.trim().is_empty() => Ok(()),
             (ListScope::Children, _) => Err("children scope requires summon".into()),

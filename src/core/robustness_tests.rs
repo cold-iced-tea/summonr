@@ -1833,3 +1833,24 @@ fn a_dropped_waiting_client_is_noticed_and_a_finished_wait_is_not() {
     drop(client_end);
     assert_eq!(dropped.load(Ordering::SeqCst), 0);
 }
+
+#[test]
+fn history_children_recursive_lists_the_whole_tree_depth_first() {
+    let h = super::test_home::Home::new("");
+    let dir = h.root.join("tree");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("leaf.yaml"), "ritual: leaf\nsteps:\n  - {id: t, operation: data.trim, arguments: {text: ' a '}}\nreturn: {t: \"${steps.t.output}\"}\n").unwrap();
+    std::fs::write(dir.join("mid.yaml"), "ritual: mid\nsteps:\n  - {id: l, ritual: leaf}\nreturn: {t: \"${steps.l.output.t}\"}\n").unwrap();
+    std::fs::write(dir.join("top.yaml"), "ritual: top\nsteps:\n  - {id: m, ritual: mid}\n  - {id: l, ritual: leaf}\nreturn: {t: \"${steps.m.output.t}\"}\n").unwrap();
+    h.call("inscribe", json!({"path": dir.to_str().unwrap(), "cwd": "/"})).unwrap();
+    let rec = h.run(json!({"target": "top"}));
+    let tree = h.call("list", json!({"scope": "children", "summon": rec["id"], "recursive": true})).unwrap();
+    let shape: Vec<(String, u64)> = tree.as_array().unwrap().iter()
+        .map(|r| (r["ritual"].as_str().unwrap().to_string(), r["depth"].as_u64().unwrap()))
+        .collect();
+    assert_eq!(shape, [("mid".into(), 1), ("leaf".into(), 2), ("leaf".into(), 1)], "{tree}");
+    assert!(tree[0]["requests"].is_u64() && tree[0]["tokens"].is_u64() && tree[0]["outcome"] == "returned", "{tree}");
+    let direct = h.call("list", json!({"scope": "children", "summon": rec["id"]})).unwrap();
+    assert_eq!(direct.as_array().unwrap().len(), 2);
+    assert!(h.call("list", json!({"scope": "ended", "recursive": true})).is_err());
+}

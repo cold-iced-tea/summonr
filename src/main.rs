@@ -715,6 +715,28 @@ fn run(op: Op, paths: &Paths, style: Style) -> i32 {
             );
         }),
         "graveyard" => match &op.children {
+            Some(parent) if op.recursive => finish(
+                client.call("list", json!({"scope": "children", "summon": parent, "limit": 10000, "recursive": true})),
+                json_out,
+                |d| {
+                    let rows = d.as_array().cloned().unwrap_or_default();
+                    if rows.is_empty() {
+                        println!("{}", paint(Ink::Dim, "That run has no child summons."));
+                    }
+                    for r in rows {
+                        let indent = "  ".repeat(r["depth"].as_u64().unwrap_or(1).saturating_sub(1) as usize);
+                        let (word, ink) = theme::state_word(s(&r, "status"), r["outcome"].as_str());
+                        println!(
+                            "{indent}{} {} v{} {} {}",
+                            s(&r, "id"),
+                            bold(Ink::Bone, s(&r, "ritual")),
+                            r["version"],
+                            paint(ink, word),
+                            paint(Ink::Dim, &format!("{} requests · {} tokens", r["requests"], r["tokens"]))
+                        );
+                    }
+                },
+            ),
             // A big run's children (hunts, chunks) without reading its record.
             Some(parent) => finish(
                 client.call("list", json!({"scope": "children", "summon": parent, "limit": 1000})),

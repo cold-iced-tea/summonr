@@ -42,6 +42,8 @@ pub struct Op {
     pub via: Option<String>,
     /// With `graveyard` / `history`: list this run's child summons instead.
     pub children: Option<String>,
+    /// With `children`: every descendant as a tree (`recursive` / `--recursive`).
+    pub recursive: bool,
     /// A pact a familiar may call under, for `familiar allow`.
     pub pact: Option<String>,
     /// Why, for `pact decline`, `reject` or `end`.
@@ -492,6 +494,11 @@ pub const CLAUSES: &[(&str, &str, &str)] = &[
         "With history: list a run's child summons, ended or not",
     ),
     (
+        "recursive",
+        "--recursive",
+        "With history children: the whole tree of descendants, with requests and tokens",
+    ),
+    (
         "baseline",
         "--baseline",
         "Record the account as the baseline",
@@ -543,6 +550,7 @@ const KEYWORDS: &[&str] = &[
     "url",
     "via",
     "children",
+    "recursive",
     "tsa-ca",
     "pact",
     "because",
@@ -745,7 +753,7 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
         // Normalize flag names onto the keyword they spell.
         let clause = if is_flag {
             match name {
-                "json" | "wait" | "dry-run" | "replace" | "simulate" | "baseline" | "live" | "brief" | "all" | "cancel-on-drop"
+                "json" | "wait" | "dry-run" | "replace" | "simulate" | "baseline" | "live" | "brief" | "all" | "cancel-on-drop" | "recursive"
                     if attached.is_some() =>
                 {
                     return Err(cur.err(
@@ -783,6 +791,7 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
                 "url" => "url",
                 "via" => "via",
                 "children" => "children",
+                "recursive" => "recursive",
                 "tsa-ca" => "tsa-ca",
                 "pact" => "pact",
                 "reason" => "because",
@@ -972,6 +981,12 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
                 }
                 op.brief = true;
             }
+            "recursive" => {
+                if op.recursive {
+                    return Err(cur.err(pos, "recursive is given more than once", ""));
+                }
+                op.recursive = true;
+            }
             "tethered" => {
                 if op.cancel_on_drop {
                     return Err(cur.err(pos, "tethered is given more than once", ""));
@@ -1096,6 +1111,9 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
     if op.cancel_on_drop && !op.wait {
         return Err(cur.err(last, "`tethered` (`--cancel-on-drop`) ties a summon to a client that waits for it; add `then return` (`--wait`)", "run bench --wait --cancel-on-drop"));
     }
+    if op.recursive && op.children.is_none() {
+        return Err(cur.err(last, "`recursive` lists the tree under `children RUN`", "history children s-1234 recursive"));
+    }
     if op.children.is_some() && op.verb != "graveyard" {
         return Err(cur.err(last, "`children` lists a run's child summons only with history", "history children s-1234"));
     }
@@ -1216,6 +1234,9 @@ pub fn render(op: &Op, style: Style) -> Vec<String> {
     }
     if op.cancel_on_drop {
         out.push(if kw { "tethered".into() } else { "--cancel-on-drop".into() });
+    }
+    if op.recursive {
+        out.push(if kw { "recursive".into() } else { "--recursive".into() });
     }
     if op.replace {
         out.push(if kw {
@@ -1338,6 +1359,7 @@ mod tests {
         ("grant check bughunt-bench", "allow check bughunt-bench"),
         ("invoke bench then return tethered", "run bench --wait --cancel-on-drop"),
         ("banish all", "stop --all"),
+        ("graveyard children s-1 recursive", "history --children s-1 --recursive"),
     ];
 
     #[test]
