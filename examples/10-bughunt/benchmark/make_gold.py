@@ -2,13 +2,17 @@
 """Build bughunt gold sets for bughunt-score.
 
 Gold format: {"target": COMMIT, "source": ..., "total": N,
-              "by_file": {FILE: [{"id": ..., "text": ...}]}}
+              "by_file": {FILE: [{"id": ..., "text": ...}]},
+              ...optional metadata: fix_commit, category, tags, dirs, summary}
 
-  make_gold.py fix REPO FIX_COMMIT [FIX_COMMIT...] > gold.json
+  make_gold.py fix REPO FIX_COMMIT [FIX_COMMIT...] [--category CAT] [--tags A,B] [--summary TEXT] [--paths src,crates] > gold.json
       One gold set per fix commit's parent is the honest unit; with several
       commits they must share a parent (otherwise run once per commit).
-      Each src/ hunk the fix changed becomes a gold item whose text is the
-      old side of the hunk: removed lines plus surrounding context.
+      Each hunk under --paths (default: src) the fix changed becomes a gold
+      item whose text is the old side of the hunk: removed lines plus context.
+
+  make_gold.py suite REPO SUITE_JSON OUT_DIR
+      Generate all fix-commit gold files declared in SUITE_JSON into OUT_DIR.
 
   make_gold.py gemini REPO AUDIT_MD COMMIT [DIR...] > gold.json
       Each finding's file#Lx-Ly link in the audit markdown becomes a gold
@@ -16,7 +20,9 @@ Gold format: {"target": COMMIT, "source": ..., "total": N,
       (e.g. src/reagents), only files directly in them are kept, so recall
       is measured against what a hunt over those directories can see.
 """
+import argparse
 import json
+import pathlib
 import re
 import subprocess
 import sys
@@ -30,12 +36,12 @@ def add(by_file, file, item):
     by_file.setdefault(file, []).append(item)
 
 
-def fix_gold(repo, commits):
+def fix_gold(repo, commits, paths=("src",), category=None, tags=None, summary=None):
     by_file, parents = {}, set()
     for c in commits:
         parent = git(repo, "rev-parse", "--short", f"{c}^").strip()
         parents.add(parent)
-        diff = git(repo, "diff", "-U3", f"{c}^", c, "--", "src")
+        diff = git(repo, "diff", "-U3", f"{c}^", c, "--", *paths)
         file, old, n, skip, tests_at = None, [], 0, False, None
 
         def flush():
@@ -72,7 +78,24 @@ def fix_gold(repo, commits):
     if len(parents) != 1:
         sys.exit(f"fix commits have different parents {sorted(parents)}; make one gold set per parent")
     total = sum(len(v) for v in by_file.values())
-    return {"target": parents.pop(), "source": "fix commits " + " ".join(commits), "total": total, "by_file": by_file}
+    dirs = sorted({f.rsplit("/", 1)[0] for f in by_file if "/" in f})
+    out = {
+        "target": parents.pop(),
+        "source": "fix commits " + " ".join(commits),
+        "total": total,
+        "by_file": by_file,
+    }
+    if len(commits) == 1:
+        out["fix_commit"] = commits[0]
+    if dirs:
+        out["dirs"] = dirs
+    if category:
+        out["category"] = category
+    if tags:
+        out["tags"] = list(tags)
+    if summary:
+        out["summary"] = summary
+    return out
 
 
 def gemini_gold(repo, audit, commit, dirs=()):
@@ -99,15 +122,60 @@ def gemini_gold(repo, audit, commit, dirs=()):
     return {"target": commit, "source": "gemini audit (unverified)" + (f" in {', '.join(dirs)}" if dirs else ""), "total": total, "by_file": by_file}
 
 
+def build_suite(repo, suite_path, out_dir):
+    suite = json.load(open(suite_path, encoding="utf-8"))
+    out_dir = pathlib.Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    built = 0
+    for case in suite.get("cases", []):
+        fix_commit = case.get("fix_commit")
+        if not fix_commit:
+            continue
+        paths = tuple(case.get("paths") or ["src"])
+        gold = fix_gold(
+            repo,
+            [fix_commit],
+            paths=paths,
+            category=case.get("category"),
+            tags=case.get("tags"),
+            summary=case.get("summary"),
+        )
+        dest = out_dir / case["gold"]
+        dest.write_text(json.dumps(gold, indent=1) + "\n", encoding="utf-8")
+        built += 1
+    print(f"Generated {built} fix-commit gold files in {out_dir}")
+
+
 def main():
-    if len(sys.argv) >= 4 and sys.argv[1] == "fix":
-        out = fix_gold(sys.argv[2], sys.argv[3:])
-    elif len(sys.argv) >= 5 and sys.argv[1] == "gemini":
+    if len(sys.argv) < 2:
+        sys.exit(__doc__)
+    mode = sys.argv[1]
+    if mode == "fix":
+        p = argparse.ArgumentParser(prog="make_gold.py fix")
+        p.add_argument("repo")
+        p.add_argument("commits", nargs="+")
+        p.add_argument("--category")
+        p.add_argument("--tags", help="comma-separated tags")
+        p.add_argument("--summary")
+        p.add_argument("--paths", default="src", help="comma-separated source paths (default: src)")
+        args = p.parse_args(sys.argv[2:])
+        tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
+        paths = tuple(x.strip() for x in args.paths.split(",") if x.strip()) or ("src",)
+        out = fix_gold(args.repo, args.commits, paths=paths, category=args.category, tags=tags, summary=args.summary)
+        json.dump(out, sys.stdout, indent=1)
+        print()
+    elif mode == "suite":
+        if len(sys.argv) != 5:
+            sys.exit("usage: make_gold.py suite REPO SUITE_JSON OUT_DIR")
+        build_suite(sys.argv[2], sys.argv[3], sys.argv[4])
+    elif mode == "gemini":
+        if len(sys.argv) < 5:
+            sys.exit(__doc__)
         out = gemini_gold(sys.argv[2], sys.argv[3], sys.argv[4], tuple(sys.argv[5:]))
+        json.dump(out, sys.stdout, indent=1)
+        print()
     else:
         sys.exit(__doc__)
-    json.dump(out, sys.stdout, indent=1)
-    print()
 
 
 if __name__ == "__main__":

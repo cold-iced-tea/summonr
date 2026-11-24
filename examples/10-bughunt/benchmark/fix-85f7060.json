@@ -1,0 +1,27 @@
+{
+ "target": "b1cf4bc",
+ "source": "fix commits 85f7060",
+ "total": 2,
+ "by_file": {
+  "src/exec.rs": [
+   {
+    "id": "85f7060:src/exec.rs:1",
+    "text": "} else {\n(&s.otherwise, &s.then)\n};\nfor skipped in skip {\nif let Some(sid) = skipped.id() {\nscope.frames.last_mut().unwrap().steps.insert(\nsid.clone(),\nStepRecord::new(\nStepStatus::Skipped,\nStepKind::Skipped,\nValue::Null,\n),\n);\n}\n}\nself.run_steps(run, scope)?;\n}\n}"
+   },
+   {
+    "id": "85f7060:src/exec.rs:2",
+    "text": "}\n}\n#[cfg(test)]\nmod tests {\n#[test]"
+   }
+  ]
+ },
+ "fix_commit": "85f7060",
+ "dirs": [
+  "src"
+ ],
+ "category": "logic-state",
+ "tags": [
+  "branch-skip",
+  "ritual-exec"
+ ],
+ "summary": "Steps of an if nested in an untaken branch are recorded as skipped"
+}

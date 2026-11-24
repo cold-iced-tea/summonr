@@ -1,0 +1,73 @@
+{
+ "target": "5ae7ab9",
+ "source": "fix commits f7779ab",
+ "total": 11,
+ "by_file": {
+  "src/core.rs": [
+   {
+    "id": "f7779ab:src/core.rs:1",
+    "text": "let _ = std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600));\n}\nlistener.set_nonblocking(true).map_err(|e| e.to_string())?;\nlet poller = self.clone();\nstd::thread::spawn(move || poller.pact_poller());\neprintln!("
+   },
+   {
+    "id": "f7779ab:src/core.rs:2",
+    "text": "}\nErr(e) => eprintln!(\"accept failed: {e}\"),\n}\n}\nlet _ = std::fs::remove_file(&sock);\nOk(())"
+   }
+  ],
+  "src/main.rs": [
+   {
+    "id": "f7779ab:src/main.rs:3",
+    "text": "}\n}\n#[test]\nfn stop_running_core_reports_absent_and_waits_for_shutdown() {\nlet dir = std::env::temp_dir().join(format!("
+   }
+  ],
+  "src/reagents/git_reagent.rs": [
+   {
+    "id": "f7779ab:src/reagents/git_reagent.rs:4",
+    "text": "/// Run a program in its own process group with separate arguments (never a\n/// shell) and no input. At the deadline the whole group is stopped; when the\n/// program exits, anything it left running is stopped too, so a background\n/// child can neither outlive the run nor hold its output open.\npub(crate) fn run_bounded_as(prog: &str, args: &[&str], cwd: &Path, deadline: Option<Instant>, git: bool) -> Result<(i32, String, String), Fail> {\nrun_bounded_inner(prog, args, cwd, deadline, git, false)\n}\n/// The same, with stdout and stderr written to one pipe, so the output keeps\n/// the order the program wrote it in (a test runner's build log on stderr\n/// comes before its results on stdout, not after them).\npub(crate) fn run_bounded_merged(prog: &str, args: &[&str], cwd: &Path, deadline: Option<Instant>) -> Result<(i32, String), Fail> {\nrun_bounded_inner(prog, args, cwd, deadline, false, true).map(|(code, out, _)| (code, out))\n}\nfn run_bounded_inner(prog: &str, args: &[&str], cwd: &Path, deadline: Option<Instant>, git: bool, merge: bool) -> Result<(i32, String, String), Fail> {\nuse std::os::unix::process::CommandExt;\nlet mut cmd = command(prog, git);\ncmd.args(args).current_dir(cwd).stdin(Stdio::null()).process_group(0);\n// With `merge`, both streams share one pipe; the reader is kept here and\n// the writers are dropped (by `cmd`) once the child holds them.\nlet merged = if merge {\nlet (reader, writer) = std::io::pipe().map_err(|e| Fail::Failed(format!(\"cannot run {prog}: {e}\")))?;\nlet writer2 = writer.try_clone().map_err(|e| Fail::Failed(format!(\"cannot run {prog}: {e}\")))?;\ncmd.stdout(writer).stderr(writer2);\nSome(reader)\n} else {\ncmd.stdout(Stdio::piped()).stderr(Stdio::piped());\nNone\n};\nlet spawned = cmd.spawn();\ndrop(cmd);\nlet mut child = spawned.map_err(|e| Fail::Failed(format!(\"cannot run {prog}: {e}\")))?;\nlet group = child.id() as i32;\nlet stop_group = || unsafe {\nlibc::kill(-group, libc::SIGKILL);\n};\n// Drain output on threads so a full pipe can never stall the wait.\nlet drain = |mut r: Box<dyn std::io::Read + Send>| {\nstd::thread::spawn(move || {\nlet mut s = Vec::new();\nlet _ = r.read_to_end(&mut s);\ns\n})\n};\nlet (o, e) = match merged {\nSome(reader) => (drain(Box::new(reader)), drain(Box::new(std::io::empty()))),\nNone => (drain(Box::new(child.stdout.take().unwrap())), drain(Box::new(child.stderr.take().unwrap()))),\n};\nlet status = loop {\nif let Some(st) = child.try_wait().map_err(|e| Fail::Failed(e.to_string()))? {\nbreak st;\n}\nif deadline.is_some_and(|d| Instant::now() >= d) {\nstop_group();\nlet _ = child.wait();\nlet _ = (o.join(), e.join());\nreturn Err(Fail::Exhausted(format!(\"{prog} ran past the time limit\")));\n}\nstd::thread::sleep(Duration::from_millis(10));\n};\n// The program is done; nothing it started may keep running or keep its\n// output open.\nstop_group();\nlet stdout = String::from_utf8_lossy(&o.join().unwrap_or_default()).into_owned();\nlet stderr = String::from_utf8_lossy(&e.join().unwrap_or_default()).into_owned();\nOk((status.code().unwrap_or(-1), stdout, stderr))\n}\n/// Run git; a non-zero exit is a failure carrying git's last error line.\npub(crate) fn git(cfg: &Config, cwd: &Path, args: &[&str], deadline: Option<Instant>) -> Result<String, Fail> {\nlet prog = cfg.git.as_deref().unwrap_or(\"git\");"
+   },
+   {
+    "id": "f7779ab:src/reagents/git_reagent.rs:5",
+    "text": "\"status\" => {\nlet path = checkout_path(cfg, r, args, d)?;\nlet (branch, changed) = checkout_state(cfg, &path, d)?;\nOk(json!({\"branch\": branch, \"clean\": changed.is_empty(), \"changed\": changed}))\n}\n\"ahead_behind\" => {\nlet range = format!(\"{}...{}\", arg(args, \"from\")?, arg(args, \"to\")?);"
+   },
+   {
+    "id": "f7779ab:src/reagents/git_reagent.rs:6",
+    "text": "match list_worktrees(cfg, r, d)?.into_iter().find(|w| !w.main && !w.prunable && w.branch.as_deref() == Some(branch)) {\nSome(w) => {\nlet (_, changed) = checkout_state(cfg, &w.path, d)?;\nOk(json!({\"path\": w.path, \"clean\": changed.is_empty(), \"changed\": changed}))\n}\nNone => Ok(json!({\"path\": null, \"clean\": null, \"changed\": []})),\n}\n}\n\"branch_exists\" => {"
+   }
+  ],
+  "src/reagents/trial_reagent.rs": [
+   {
+    "id": "f7779ab:src/reagents/trial_reagent.rs:7",
+    "text": "//! The `trial` reagent: run a repository's test command, as the owner wrote\n//! it in config.yaml, split into words and never given to a shell.\nuse crate::git_reagent::{checkout_path, config, repo, run_bounded_merged};\nuse crate::reagent::{self, Authority, Fail, Reagent, ToolSpec};\nuse serde_json::{json, Value};"
+   },
+   {
+    "id": "f7779ab:src/reagents/trial_reagent.rs:8",
+    "text": "/// The most a tail may hold, so it fits in a 1024-byte message with room for a prefix.\npub(crate) const TAIL_BYTES: usize = 900;\n/// The last `n` lines, then at most the last `TAIL_BYTES` of those, cut on a\n/// character boundary. The end of a test log is where the failure is.\nfn tail(text: &str, n: usize) -> String {\nlet lines: Vec<&str> = text.trim_end().lines().collect();\nlet joined = lines[lines.len().saturating_sub(n)..].join(\"\\n\");\nlet mut start = joined.len().saturating_sub(TAIL_BYTES);\nwhile !joined.is_char_boundary(start) {\nstart += 1;\n}\njoined[start..].to_string()\n}\nimpl Reagent for Trial {\nfn name(&self) -> &'static str {\n\"trial\""
+   },
+   {
+    "id": "f7779ab:src/reagents/trial_reagent.rs:9",
+    "text": "let r = repo(auth, args[\"repo\"].as_str().unwrap_or(\"\"))?;\nlet cwd = checkout_path(cfg, r, args, auth.deadline)?;\nlet words: Vec<&str> = r.test.as_deref().unwrap_or(\"\").split_whitespace().collect();\nmatch run_bounded_merged(words[0], &words[1..], &cwd, auth.deadline) {\nOk((code, out)) => Ok(json!({\"passed\": code == 0, \"code\": code, \"tail\": tail(&out, 30)})),\nErr(Fail::Exhausted(_)) => Ok(json!({\"passed\": false, \"code\": null, \"tail\": \"stopped: the tests ran past the time limit\"})),\nErr(e) => Err(e),\n}"
+   }
+  ],
+  "src/ritual.rs": [
+   {
+    "id": "f7779ab:src/ritual.rs:10",
+    "text": "\"git.status\" => closed_obj([\n(\"branch\", nullable(Ty::Str)),\n(\"clean\", Ty::Bool),\n(\"changed\", Ty::List(Box::new(Ty::Str))),\n]),\n\"git.ahead_behind\" => closed_obj([(\"ahead\", Ty::Int), (\"behind\", Ty::Int)]),"
+   },
+   {
+    "id": "f7779ab:src/ritual.rs:11",
+    "text": "\"git.worktree_for\" => closed_obj([\n(\"path\", nullable(Ty::Str)),\n(\"clean\", nullable(Ty::Bool)),\n(\"changed\", Ty::List(Box::new(Ty::Str))),\n]),\n\"git.branch_exists\" => closed_obj([(\"exists\", Ty::Bool)]),"
+   }
+  ]
+ },
+ "fix_commit": "f7779ab",
+ "dirs": [
+  "src",
+  "src/reagents"
+ ],
+ "category": "process-sandbox",
+ "tags": [
+  "process-group",
+  "orphan-exit",
+  "hang"
+ ],
+ "summary": "Bound and unstick child processes; orphaned cores exit"
+}

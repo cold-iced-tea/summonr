@@ -1,0 +1,27 @@
+{
+ "target": "d8bdf6c",
+ "source": "fix commits 3290c61",
+ "total": 2,
+ "by_file": {
+  "src/exec.rs": [
+   {
+    "id": "3290c61:src/exec.rs:1",
+    "text": "format!(\"{sid}: {e}\"),\njson!({\"model\": model}),\n);\nself.check_live()\n.err()\n.unwrap_or_else(|| Fail::Failed(format!(\"step {sid}: {e}\")))\n})?;\nlet tokens = resp.prompt_tokens + resp.output_tokens;\nlet (turn_cost, cost_source) = match &pricing {"
+   },
+   {
+    "id": "3290c61:src/exec.rs:2",
+    "text": "}\n}\n#[cfg(test)]\nmod tests {\nuse super::*;\nuse crate::util::Paths;\nuse std::path::PathBuf;"
+   }
+  ]
+ },
+ "fix_commit": "3290c61",
+ "dirs": [
+  "src"
+ ],
+ "category": "logic-state",
+ "tags": [
+  "repetition-loop",
+  "outcome-classification"
+ ],
+ "summary": "A model stuck repeating itself is invalid output, not a failed backend"
+}

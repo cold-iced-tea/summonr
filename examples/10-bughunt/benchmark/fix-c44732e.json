@@ -1,0 +1,41 @@
+{
+ "target": "d916741",
+ "source": "fix commits c44732e",
+ "total": 5,
+ "by_file": {
+  "src/exec.rs": [
+   {
+    "id": "c44732e:src/exec.rs:1",
+    "text": "if top_level && !id.is_empty() && scope.frames[0].steps.contains_key(&id) {\n// A restored read happened in an earlier run, so this run's\n// issue key for its handle is re-issued; only a step that\n// is statically a sight read earns one, never a model output.\nif let Step::Operation(op) = s {\nif op.operation == \"sight.read_image\" {\nlet auth = Authority {\ngrants: &self.grants,\ndeadline: None,"
+   },
+   {
+    "id": "c44732e:src/exec.rs:2",
+    "text": "}\nmatch s {\nStep::Operation(s) => {\nlet (out, abstained) = self.run_with_recovery(\n&id,\ns.retry,\n&s.fallback,\nscope,\n|this, sc| this.operation(s, step_idx, sc).map(|v| (v, false)),\n)?;\nlet kind = if s.operation.starts_with(\"data.\") {\nStepKind::Pure"
+   },
+   {
+    "id": "c44732e:src/exec.rs:3",
+    "text": "};\nlet frame = scope.frames.last_mut().unwrap();\nframe.abstained |= abstained;\nframe\n.steps\n.insert(id, StepRecord::new(StepStatus::Returned, kind, out));\n}\nStep::Model(s) => {\nlet (out, abstained) = self.run_with_recovery("
+   }
+  ],
+  "src/records.rs": [
+   {
+    "id": "c44732e:src/records.rs:4",
+    "text": "pub output: Value,\n#[serde(default, skip_serializing_if = \"Option::is_none\")]\npub counts: Option<BatchCounts>,\n}\nimpl StepRecord {\npub fn new(status: StepStatus, kind: StepKind, output: Value) -> Self {"
+   },
+   {
+    "id": "c44732e:src/records.rs:5",
+    "text": "kind,\noutput,\ncounts: None,\n}\n}\n}"
+   }
+  ]
+ },
+ "fix_commit": "c44732e",
+ "dirs": [
+  "src"
+ ],
+ "category": "logic-state",
+ "tags": [
+  "revive",
+  "fallback-adoption"
+ ],
+ "summary": "Revive adopts only live read output, never a fallback's"
+}

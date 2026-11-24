@@ -1,0 +1,257 @@
+{
+ "version": 1,
+ "description": "Curated bughunt benchmark suite across bug categories and tiers.",
+ "categories": [
+  "auth-rbac",
+  "injection",
+  "http-framing",
+  "recursion-dos",
+  "process-sandbox",
+  "crypto-secrets",
+  "input-validation",
+  "logic-state",
+  "audit-mixed"
+ ],
+ "cases": [
+  {
+   "name": "fix-c06fd86",
+   "fix_commit": "c06fd86",
+   "gold": "fix-c06fd86.json",
+   "dirs": ["src"],
+   "category": "injection",
+   "tags": ["predicate-injection", "ritual-exec"],
+   "tier": "smoke",
+   "summary": "Values can no longer rewrite a data.filter predicate"
+  },
+  {
+   "name": "fix-4979f5c",
+   "fix_commit": "4979f5c",
+   "gold": "fix-4979f5c.json",
+   "dirs": ["src", "src/reagents"],
+   "category": "auth-rbac",
+   "tags": ["grant-scope", "mcp"],
+   "tier": "smoke",
+   "summary": "MCP grants cannot carry a scope they never enforce"
+  },
+  {
+   "name": "fix-ea61a3b",
+   "fix_commit": "ea61a3b",
+   "gold": "fix-ea61a3b.json",
+   "dirs": ["src"],
+   "category": "http-framing",
+   "tags": ["chunked-encoding", "integer-overflow", "unbounded-read"],
+   "tier": "smoke",
+   "summary": "Bound cancellable HTTP response framing and reads"
+  },
+  {
+   "name": "fix-8b1890e",
+   "fix_commit": "8b1890e",
+   "gold": "fix-8b1890e.json",
+   "dirs": ["src/reagents"],
+   "category": "process-sandbox",
+   "tags": ["wasm", "resource-limit", "stderr-cap"],
+   "tier": "smoke",
+   "summary": "WASM stderr over its cap fails the call and stops the runner"
+  },
+  {
+   "name": "fix-35f37f0",
+   "fix_commit": "35f37f0",
+   "gold": "fix-35f37f0.json",
+   "dirs": ["src"],
+   "category": "auth-rbac",
+   "tags": ["dry-run", "mcp", "write-bypass"],
+   "tier": "core",
+   "summary": "Dry runs never perform MCP-backed writes"
+  },
+  {
+   "name": "fix-2d4bdd7",
+   "fix_commit": "2d4bdd7",
+   "gold": "fix-2d4bdd7.json",
+   "dirs": ["src"],
+   "category": "injection",
+   "tags": ["crlf-smuggling", "http-header", "tls-panic"],
+   "tier": "core",
+   "summary": "Reject CRLF/control chars in cancellable_http and use try_with in cancel TLS"
+  },
+  {
+   "name": "fix-c2f25ec",
+   "fix_commit": "c2f25ec",
+   "gold": "fix-c2f25ec.json",
+   "dirs": ["src/ritual"],
+   "category": "recursion-dos",
+   "tags": ["stack-overflow", "unbounded-recursion", "parser-validate"],
+   "tier": "core",
+   "summary": "Bound stack use when linting and validating ritual steps"
+  },
+  {
+   "name": "fix-5fb6bbe",
+   "fix_commit": "5fb6bbe",
+   "gold": "fix-5fb6bbe.json",
+   "dirs": ["src", "src/core"],
+   "category": "auth-rbac",
+   "tags": ["rbac", "path-write", "integer-overflow"],
+   "tier": "core",
+   "summary": "Block non-admin audit_export writes, gate subscribe/shutdown, prevent audit_prune i64 overflow"
+  },
+  {
+   "name": "fix-26613c7",
+   "fix_commit": "26613c7",
+   "gold": "fix-26613c7.json",
+   "dirs": ["src"],
+   "category": "crypto-secrets",
+   "tags": ["secret-leak", "error-scrubbing", "unbounded-error"],
+   "tier": "core",
+   "summary": "Scrub and bound image request errors"
+  },
+  {
+   "name": "fix-ac6e0f0",
+   "fix_commit": "ac6e0f0",
+   "gold": "fix-ac6e0f0.json",
+   "dirs": ["src", "src/reagents"],
+   "category": "input-validation",
+   "tags": ["oversize-input", "outcome-classification"],
+   "tier": "core",
+   "summary": "Oversize images at send are invalid or stale, never exhausted"
+  },
+  {
+   "name": "fix-85f7060",
+   "fix_commit": "85f7060",
+   "gold": "fix-85f7060.json",
+   "dirs": ["src"],
+   "category": "logic-state",
+   "tags": ["branch-skip", "ritual-exec"],
+   "tier": "core",
+   "summary": "Steps of an if nested in an untaken branch are recorded as skipped"
+  },
+  {
+   "name": "fix-1afdabd",
+   "fix_commit": "1afdabd",
+   "gold": "fix-1afdabd.json",
+   "dirs": ["src"],
+   "category": "auth-rbac",
+   "tags": ["isolation", "cassette-ownership"],
+   "tier": "full",
+   "summary": "Named cassettes belong to the caller that recorded them"
+  },
+  {
+   "name": "fix-a2f4c0b",
+   "fix_commit": "a2f4c0b",
+   "gold": "fix-a2f4c0b.json",
+   "dirs": ["src", "src/core"],
+   "category": "auth-rbac",
+   "tags": ["nonce", "signed-refusal", "replay"],
+   "tier": "full",
+   "summary": "A signed refusal no longer answers an unverified nonce"
+  },
+  {
+   "name": "fix-63b53bd",
+   "fix_commit": "63b53bd",
+   "gold": "fix-63b53bd.json",
+   "dirs": ["src", "src/core"],
+   "category": "auth-rbac",
+   "tags": ["resource-limit", "familiar-caps"],
+   "tier": "full",
+   "summary": "Familiars keep their limits in drills and compiles"
+  },
+  {
+   "name": "fix-5f10670",
+   "fix_commit": "5f10670",
+   "gold": "fix-5f10670.json",
+   "dirs": ["src"],
+   "category": "http-framing",
+   "tags": ["http-server", "deadlines", "pre-body-auth", "rate-limit"],
+   "tier": "full",
+   "summary": "Enforce request deadlines, pre-body auth, and per-IP limits on HTTP servers"
+  },
+  {
+   "name": "fix-c4c5856",
+   "fix_commit": "c4c5856",
+   "gold": "fix-c4c5856.json",
+   "dirs": ["src", "src/reagents"],
+   "category": "injection",
+   "tags": ["ssrf", "header-override", "env-injection"],
+   "tier": "full",
+   "summary": "Harden HTTP egress, header overrides, and child process env"
+  },
+  {
+   "name": "fix-27613bd",
+   "fix_commit": "27613bd",
+   "gold": "fix-27613bd.json",
+   "dirs": ["src"],
+   "category": "process-sandbox",
+   "tags": ["path-mapping", "temp-cleanup", "sandbox"],
+   "tier": "full",
+   "summary": "Harden sandbox path mapping and temporary copy cleanup"
+  },
+  {
+   "name": "fix-d48ca09",
+   "fix_commit": "d48ca09",
+   "gold": "fix-d48ca09.json",
+   "dirs": ["src", "src/core", "src/reagents"],
+   "category": "process-sandbox",
+   "tags": ["wasm", "bundle-chain", "actor-propagation"],
+   "tier": "full",
+   "summary": "Harden bundle chain verification, wasm_reagent process safety, and actor propagation"
+  },
+  {
+   "name": "fix-f7779ab",
+   "fix_commit": "f7779ab",
+   "gold": "fix-f7779ab.json",
+   "dirs": ["src", "src/reagents"],
+   "category": "process-sandbox",
+   "tags": ["process-group", "orphan-exit", "hang"],
+   "tier": "full",
+   "summary": "Bound and unstick child processes; orphaned cores exit"
+  },
+  {
+   "name": "fix-ac3d9eb",
+   "fix_commit": "ac3d9eb",
+   "gold": "fix-ac3d9eb.json",
+   "dirs": ["src", "src/core", "src/reagents"],
+   "category": "crypto-secrets",
+   "tags": ["key-encryption", "root-grants", "atomic-write"],
+   "tier": "full",
+   "summary": "Harden key encryption, root grants, atomic file/mail writes, and MCP process groups"
+  },
+  {
+   "name": "fix-eab0cd4",
+   "fix_commit": "eab0cd4",
+   "gold": "fix-eab0cd4.json",
+   "dirs": ["src", "src/reagents"],
+   "category": "input-validation",
+   "tags": ["oversize-input", "base64-scrub", "config-limit"],
+   "tier": "full",
+   "summary": "Sight oversize is invalid, config limit at read, scrub partial base64"
+  },
+  {
+   "name": "fix-3290c61",
+   "fix_commit": "3290c61",
+   "gold": "fix-3290c61.json",
+   "dirs": ["src"],
+   "category": "logic-state",
+   "tags": ["repetition-loop", "outcome-classification"],
+   "tier": "full",
+   "summary": "A model stuck repeating itself is invalid output, not a failed backend"
+  },
+  {
+   "name": "fix-c44732e",
+   "fix_commit": "c44732e",
+   "gold": "fix-c44732e.json",
+   "dirs": ["src"],
+   "category": "logic-state",
+   "tags": ["revive", "fallback-adoption"],
+   "tier": "full",
+   "summary": "Revive adopts only live read output, never a fallback's"
+  },
+  {
+   "name": "gemini-reagents",
+   "target_commit": "5fb6bbe",
+   "gold": "gemini-reagents.json",
+   "dirs": ["src/reagents"],
+   "category": "audit-mixed",
+   "tags": ["audit", "reagents"],
+   "tier": "full",
+   "summary": "Unverified Gemini audit claims across src/reagents at 5fb6bbe"
+  }
+ ]
+}

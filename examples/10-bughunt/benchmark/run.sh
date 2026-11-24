@@ -1,15 +1,29 @@
 #!/usr/bin/env bash
 # Run the bughunt benchmark: one lab per gold set, the rite's three angles.
-#   benchmark/run.sh REPO OUT_DIR SUMMONR_BIN [NAME...]
-# Fix-commit gold sets run at the fix's parent; the Gemini set at 5fb6bbe.
-# With NAMEs (e.g. fix-c06fd86 gemini-reagents), runs only those.
-# Prints one summary line per gold set. Results: OUT_DIR/bench-NAME.json (the
-# bench's outcome and result) and OUT_DIR/hunts-NAME.json (the raw hunts, for
-# bughunt-rescore). Needs sqlite3.
+#   benchmark/run.sh REPO OUT_DIR SUMMONR_BIN [--tier smoke|core|full] [--category CAT] [NAME...]
+#
+# Reads cases from benchmark/suite.json (default: --tier smoke unless NAMEs or
+# --category are given). Fix-commit gold sets run at the fix's parent commit;
+# audit sets run at their target_commit.
+#
+# Prints a live workbench attach hint for each lab, one summary line per gold
+# set, and a category rollup table at the end. Results: OUT_DIR/bench-NAME.json
+# and OUT_DIR/hunts-NAME.json (raw hunts, for bughunt-rescore). Needs sqlite3.
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$1"; out="$(mkdir -p "$2" && cd "$2" && pwd)"; bin="$3"; shift 3
-only=("$@")
+
+tier=""
+category=""
+only=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --tier) tier="$2"; shift 2 ;;
+    --category) category="$2"; shift 2 ;;
+    *) only+=("$1"); shift ;;
+  esac
+done
+
 angles='["ways to bypass a permission, scope or resource limit", "panics, overflows or unbounded work on hostile input", "injection: untrusted text reaching a path, command, header, query or prompt"]'
 
 summary() {  # name took
@@ -18,8 +32,8 @@ summary() {  # name took
 
 bench() {  # name commit gold dirs
   local name="$1" commit="$2" gold="$3" dirs="$4" lab="$out/$1"
-  if [ ${#only[@]} -gt 0 ] && [[ ! " ${only[*]} " == *" $name "* ]]; then return; fi
   "$here/../setup.sh" "$lab" "$repo" "$commit" "$bin" >/dev/null || { echo "$name: setup failed"; return; }
+  echo "[$name] watch live: SUMMONR_HOME=\"$lab/home\" $bin console"
   local s=$SECONDS
   # --brief avoids oversized RPC frames; --cancel-on-drop stops the summon if
   # this script is killed. Results are also extracted from SQLite for hunts-*.
@@ -32,9 +46,45 @@ bench() {  # name commit gold dirs
   SUMMONR_HOME="$lab/home" "$bin" core stop --json >/dev/null 2>&1 || true
 }
 
-parent() { git -C "$repo" rev-parse --short "$1^"; }
-# Directories are the ones holding each gold set's files.
-bench fix-c06fd86 "$(parent c06fd86)" fix-c06fd86.json '["src"]'
-bench fix-4979f5c "$(parent 4979f5c)" fix-4979f5c.json '["src","src/reagents"]'
-bench fix-35f37f0 "$(parent 35f37f0)" fix-35f37f0.json '["src"]'
-bench gemini-reagents 5fb6bbe gemini-reagents.json '["src/reagents"]'
+# Resolve selected cases from suite.json.
+mapfile -t selected < <(python3 -I - "$here/suite.json" "$repo" "$tier" "$category" "${only[@]}" <<'PY'
+import json, subprocess, sys
+
+suite_path, repo, tier, category, *only = sys.argv[1:]
+suite = json.load(open(suite_path, encoding="utf-8"))
+tier_rank = {"smoke": 0, "core": 1, "full": 2}
+if not tier and not category and not only:
+    tier = "smoke"
+max_rank = tier_rank.get(tier, 2) if tier else 2
+
+for c in suite.get("cases", []):
+    if only and c["name"] not in only:
+        continue
+    if category and c.get("category") != category:
+        continue
+    if tier and tier_rank.get(c.get("tier", "full"), 2) > max_rank:
+        continue
+    if c.get("fix_commit"):
+        commit = subprocess.check_output(
+            ["git", "-C", repo, "rev-parse", "--short", f"{c['fix_commit']}^"],
+            text=True,
+        ).strip()
+    else:
+        commit = c["target_commit"]
+    dirs = json.dumps(c["dirs"])
+    print(f"{c['name']}\t{commit}\t{c['gold']}\t{dirs}")
+PY
+)
+
+if [ ${#selected[@]} -eq 0 ]; then
+  echo "No matching cases in $here/suite.json" >&2
+  exit 1
+fi
+
+for row in "${selected[@]}"; do
+  IFS=$'\t' read -r name commit gold dirs <<< "$row"
+  bench "$name" "$commit" "$gold" "$dirs"
+done
+
+echo ""
+python3 -I "$here/report.py" "$out" --suite "$here/suite.json"

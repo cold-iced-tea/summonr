@@ -1,0 +1,38 @@
+{
+ "target": "3c29208",
+ "source": "fix commits ac6e0f0",
+ "total": 4,
+ "by_file": {
+  "src/exec.rs": [
+   {
+    "id": "ac6e0f0:src/exec.rs:1",
+    "text": "// `issue_key` succeeded, so these are strings.\nlet root = h[\"root\"].as_str().unwrap_or_default();\nlet path = h[\"path\"].as_str().unwrap_or_default();\nreagent::authorize(\nself.core.cfg.mail_root.as_deref(),\n\"sight.read_image\","
+   },
+   {
+    "id": "ac6e0f0:src/exec.rs:2",
+    "text": "))\n})?;\nlet in_step = |m: String| format!(\"step {sid}: {m}\");\nlet bytes = load_verified(h, max_bytes).map_err(|e| match e {\nFail::Exhausted(m) => Fail::Exhausted(in_step(m)),\nFail::Invalid(m) => Fail::Invalid(in_step(m)),\nFail::Denied(m) => Fail::Denied(in_step(m)),\nother => Fail::Failed(in_step(other.message())),"
+   }
+  ],
+  "src/reagents/sight_reagent.rs": [
+   {
+    "id": "ac6e0f0:src/reagents/sight_reagent.rs:3",
+    "text": "};\nlet (root, path, sha) = (field(\"root\")?, field(\"path\")?, field(\"sha256\")?);\nlet data = match read_image_bytes(root, path, max_bytes, None) {\nErr(Fail::Exhausted(m)) => return Err(Fail::Exhausted(m)),\nErr(e) => return Err(Fail::Failed(format!(\"stale image `{path}`: cannot reread ({e:?})\"))),\nOk(d) => d,\n};"
+   },
+   {
+    "id": "ac6e0f0:src/reagents/sight_reagent.rs:4",
+    "text": "assert!(matches!(load_verified(&h, DEFAULT_MAX_BYTES), Err(Fail::Failed(m)) if m.contains(\"stale image\")));\nstd::fs::remove_dir_all(dir).unwrap();\n}\n}"
+   }
+  ]
+ },
+ "fix_commit": "ac6e0f0",
+ "dirs": [
+  "src",
+  "src/reagents"
+ ],
+ "category": "input-validation",
+ "tags": [
+  "oversize-input",
+  "outcome-classification"
+ ],
+ "summary": "Oversize images at send are invalid or stale, never exhausted"
+}

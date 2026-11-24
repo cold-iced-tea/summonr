@@ -50,7 +50,7 @@ EOF
 
 for f in "$here"/*.yaml; do
   base="$(basename "$f")"
-  case "$base" in *.drill.yaml|*.rite.yaml) continue ;; esac
+  case "$base" in *.drill.yaml|*.rite.yaml|*.assay.yaml) continue ;; esac
   sed -e "s|/absolute/path/to/lab|$here/fixtures|g" \
       -e "s|/absolute/path/to/target-repro|$repo-repro|g" \
       -e "s|/absolute/path/to/target|$repo|g" "$f" > "$home/rituals/$base"

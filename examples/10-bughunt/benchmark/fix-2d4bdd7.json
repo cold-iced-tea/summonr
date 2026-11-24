@@ -1,0 +1,34 @@
+{
+ "target": "ea39640",
+ "source": "fix commits 2d4bdd7",
+ "total": 3,
+ "by_file": {
+  "src/cancel.rs": [
+   {
+    "id": "2d4bdd7:src/cancel.rs:1",
+    "text": "impl Drop for Guard {\nfn drop(&mut self) {\nlet prev = self.0.take();\nCURRENT.with(|c| *c.borrow_mut() = prev);\n}\n}\n/// Work on this thread now belongs to a run cancelled through `flag`.\npub fn enter(flag: Arc<AtomicBool>) -> Guard {\nGuard(CURRENT.with(|c| c.borrow_mut().replace(flag)))\n}\n/// The current run's signal, to hand to a helper thread.\npub fn current() -> Option<Arc<AtomicBool>> {\nCURRENT.with(|c| c.borrow().clone())\n}\n/// Whether the run this thread works for has been asked to stop.\npub fn requested() -> bool {\nCURRENT.with(|c| c.borrow().as_ref().is_some_and(|f| f.load(Ordering::SeqCst)))\n}"
+   }
+  ],
+  "src/cancellable_http.rs": [
+   {
+    "id": "2d4bdd7:src/cancellable_http.rs:2",
+    "text": "}\nfn target(url: &str) -> Result<Target<'_>, String> {\nlet rest = url\n.strip_prefix(\"http://\")\n.ok_or_else(|| format!(\"not a plain http URL: {url}\"))?;"
+   },
+   {
+    "id": "2d4bdd7:src/cancellable_http.rs:3",
+    "text": "return Outcome::Cancelled;\n}\nlet unreachable = |e: String| Outcome::Done(Err(format!(\"backend unreachable at {url}: {e}\")));\nlet t = match target(url) {\nOk(t) => t,\nErr(e) => return unreachable(e),"
+   }
+  ]
+ },
+ "fix_commit": "2d4bdd7",
+ "dirs": [
+  "src"
+ ],
+ "category": "injection",
+ "tags": [
+  "crlf-smuggling",
+  "http-header",
+  "tls-panic"
+ ],
+ "summary": "Reject CRLF/control chars in cancellable_http and use try_with in cancel TLS"
+}

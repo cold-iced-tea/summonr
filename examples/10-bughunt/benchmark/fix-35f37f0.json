@@ -45,5 +45,16 @@
     "text": ".ok_or_else(|| Fail::Failed(format!(\"bad operation `{operation}`\")))?;\nlet out = io.call(mail_root, operation, args, auth)?;\n// The Io says whether it simulated this call; its output is never inspected.\nif io.simulates(operation) {\nreturn Ok((out.clone(), Evidence::Simulated { would: out }));\n}\nlet Some(c) = check else {"
    }
   ]
- }
+ },
+ "fix_commit": "35f37f0",
+ "dirs": [
+  "src"
+ ],
+ "category": "auth-rbac",
+ "tags": [
+  "dry-run",
+  "mcp",
+  "write-bypass"
+ ],
+ "summary": "Dry runs never perform MCP-backed writes"
 }

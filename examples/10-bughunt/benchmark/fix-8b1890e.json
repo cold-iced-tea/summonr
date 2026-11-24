@@ -1,0 +1,40 @@
+{
+ "target": "44fc898",
+ "source": "fix commits 8b1890e",
+ "total": 5,
+ "by_file": {
+  "src/reagents/wasm_reagent.rs": [
+   {
+    "id": "8b1890e:src/reagents/wasm_reagent.rs:1",
+    "text": "use std::io::{Read, Write};\nuse std::os::unix::process::CommandExt;\nuse std::process::{Command, Stdio};\nuse std::time::{Duration, Instant};\nconst WASM_MAGIC_V1: &[u8; 8] = b\"\\0asm\\x01\\0\\0\\0\";"
+   },
+   {
+    "id": "8b1890e:src/reagents/wasm_reagent.rs:2",
+    "text": "let mut stdout = child.stdout.take().expect(\"piped stdout\");\nlet mut stderr = child.stderr.take().expect(\"piped stderr\");\nlet out_handle = std::thread::spawn(move || read_bounded(&mut stdout, max_out));\nlet err_handle = std::thread::spawn(move || read_bounded(&mut stderr, 16_384));\nlet started = Instant::now();\nlet status = loop {"
+   },
+   {
+    "id": "8b1890e:src/reagents/wasm_reagent.rs:3",
+    "text": "timeout.as_millis()\n));\n}\nif crate::cancel::requested() {\nlet pid = child.id() as libc::pid_t;\nunsafe {"
+   },
+   {
+    "id": "8b1890e:src/reagents/wasm_reagent.rs:4",
+    "text": ".map_err(|_| \"stdout reader panicked\".to_string())??;\nlet err_bytes = err_handle\n.join()\n.map_err(|_| \"stderr reader panicked\".to_string())?\n.unwrap_or_default();\nif !status.success() {\nlet err_s = String::from_utf8_lossy(&err_bytes);"
+   },
+   {
+    "id": "8b1890e:src/reagents/wasm_reagent.rs:5",
+    "text": ".map_err(|e| format!(\"wasm reagent stdout was not valid JSON: {e}\"))\n}\nfn read_bounded(r: &mut impl Read, limit: usize) -> Result<Vec<u8>, String> {\nlet mut buf = Vec::new();\nlet mut chunk = [0u8; 4096];\nloop {\nlet n = r.read(&mut chunk).map_err(|e| e.to_string())?;\nif n == 0 {\nreturn Ok(buf);\n}\nif buf.len().saturating_add(n) > limit {\nreturn Err(format!(\"wasm reagent output exceeded {limit} bytes\"));\n}\nbuf.extend_from_slice(&chunk[..n]);\n}"
+   }
+  ]
+ },
+ "fix_commit": "8b1890e",
+ "dirs": [
+  "src/reagents"
+ ],
+ "category": "process-sandbox",
+ "tags": [
+  "wasm",
+  "resource-limit",
+  "stderr-cap"
+ ],
+ "summary": "WASM stderr over its cap fails the call and stops the runner"
+}

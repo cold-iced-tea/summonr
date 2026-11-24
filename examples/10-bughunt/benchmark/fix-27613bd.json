@@ -1,0 +1,32 @@
+{
+ "target": "ea61a3b",
+ "source": "fix commits 27613bd",
+ "total": 3,
+ "by_file": {
+  "src/core/sandbox.rs": [
+   {
+    "id": "27613bd:src/core/sandbox.rs:1",
+    "text": "//! copies, so a write the ritual makes can only land in the sandbox; the\n//! directory is deleted when the sandbox is dropped.\nuse super::*;\nuse std::process::Command;\npub(crate) struct Sandbox {\npub dir: PathBuf,\n/// Real path prefix -> its copy, longest first.\nmap: Vec<(String, String)>,\npub repos: Vec<String>,\npub roots: Vec<String>,\n}\nimpl Drop for Sandbox {\nfn drop(&mut self) {\nlet _ = std::fs::remove_dir_all(&self.dir);\n}\n}\nfn git(cwd: &Path, args: &[&str]) -> Result<String, RpcErr> {\nlet out = Command::new(\"git\")\n.args(args)\n.current_dir(cwd)\n.env(\"GIT_TERMINAL_PROMPT\", \"0\")\n.output()\n.map_err(|e| RpcErr::invalid(format!(\"sandbox: cannot run git: {e}\")))?;\nif !out.status.success() {"
+   },
+   {
+    "id": "27613bd:src/core/sandbox.rs:2",
+    "text": "Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())\n}\nimpl Sandbox {\n/// `s` with a real path prefix replaced by its copy. Only a whole path\n/// or a path under it is rewritten (`/a/b` and `/a/b/c`, not `/a/bc`).\npub fn rewrite_str(&self, s: &str) -> String {\nfor (real, copy) in &self.map {\nif s == real {\nreturn copy.clone();\n}\nif let Some(rest) = s.strip_prefix(real.as_str()) {\nif rest.starts_with('/') {\nreturn format!(\"{copy}{rest}\");\n}\n}\n}\ns.to_string()\n}\npub fn rewrite(&self, v: &Value) -> Value {\nmatch v {\nValue::String(s) => Value::String(self.rewrite_str(s)),\nValue::Array(a) => Value::Array(a.iter().map(|x| self.rewrite(x)).collect()),\nValue::Object(m) => Value::Object(m.iter().map(|(k, x)| (k.clone(), self.rewrite(x))).collect()),\nother => other.clone(),\n}\n}\nfn add_map(&mut self, real: String, copy: String) {\nself.map.push((real, copy));\nself.map.sort_by_key(|(real, _)| std::cmp::Reverse(real.len()));\n}\n/// Clone `repos` (from `cfg`) and copy `roots` into a new temporary\n/// directory. The real repositories and roots are only read.\npub fn build(cfg: &Config, repos: &[String], roots: &[String]) -> Result<Sandbox, RpcErr> {\nlet dir = std::env::temp_dir().join(new_id(\"summonr-sandbox\"));\nstd::fs::create_dir_all(dir.join(\"remotes\"))\n.map_err(|e| RpcErr::invalid(format!(\"sandbox: cannot create {}: {e}\", dir.display())))?;\nlet mut sb = Sandbox { dir: dir.clone(), map: Vec::new(), repos: Vec::new(), roots: Vec::new() };\n// A worktree is made beside its main checkout, so each repository's\n// parent directory maps to a temporary one, shared by repositories\n// that share a parent.\nlet mut parents: Vec<(String, PathBuf)> = Vec::new();\nfor name in repos {\nlet r = cfg.repos.get(name).ok_or_else(|| {\nRpcErr::invalid(format!(\"sandbox: `{name}` is not a repository in config.yaml `repos:`\"))\n})?;\nlet real = PathBuf::from(&r.path);\nlet (Some(parent), Some(leaf)) = (real.parent(), real.file_name()) else {\nreturn Err(RpcErr::invalid(format!(\"sandbox: repository path {} has no parent\", r.path)));\n};\nlet parent_s = parent.to_string_lossy().into_owned();\nlet temp_parent = match parents.iter().find(|(p, _)| *p == parent_s) {\nSome((_, t)) => t.clone(),\nNone => {\nlet t = dir.join(format!(\"p{}\", parents.len()));\nstd::fs::create_dir_all(&t).map_err(|e| RpcErr::invalid(format!(\"sandbox: {e}\")))?;\nparents.push((parent_s.clone(), t.clone()));\nsb.add_map(parent_s.clone(), t.to_string_lossy().into_owned());\nt\n}\n};\n// Committed history only: a bare copy stands in for the remote,\n// and the checkout is cloned from it, so pushes stay here too.\nlet bare = dir.join(\"remotes\").join(format!(\"{name}.git\"));\nlet bare_s = bare.to_string_lossy().into_owned();\ngit(&dir, &[\"clone\", \"--bare\", \"--quiet\", &r.path, &bare_s])?;\nlet main = temp_parent.join(leaf);\nlet main_s = main.to_string_lossy().into_owned();\ngit(&dir, &[\"clone\", \"--quiet\", \"--origin\", &r.remote, \"--branch\", &r.trunk, &bare_s, &main_s])?;\nfor key in [\"user.name\", \"user.email\"] {\nif let Ok(v) = git(&real, &[\"config\", \"--get\", key]) {\nif !v.is_empty() {"
+   },
+   {
+    "id": "27613bd:src/core/sandbox.rs:3",
+    "text": "}\n}\n}\nsb.repos.push(name.clone());\n}\nfor (i, root) in roots.iter().enumerate() {\nlet mapped = sb.rewrite_str(root);\nlet copy = if mapped != *root {\nPathBuf::from(mapped)\n} else {\nlet leaf = Path::new(root).file_name().map(|l| l.to_os_string()).unwrap_or_else(|| \"root\".into());\nlet copy = dir.join(format!(\"r{i}\")).join(leaf);\nsb.add_map(root.clone(), copy.to_string_lossy().into_owned());\ncopy\n};\n// A root that does not exist yet (a worktree the ritual will add)\n// or that is inside a cloned checkout needs no copy.\nif Path::new(root).is_dir() && !copy.exists() {\nif let Some(p) = copy.parent() {\nstd::fs::create_dir_all(p).map_err(|e| RpcErr::invalid(format!(\"sandbox: {e}\")))?;\n}\nlet st = Command::new(\"cp\")\n.args([\"-a\", \"--reflink=auto\", root, &copy.to_string_lossy()])\n.status()\n.map_err(|e| RpcErr::invalid(format!(\"sandbox: cannot copy {root}: {e}\")))?;\nif !st.success() {\nreturn Err(RpcErr::invalid(format!(\"sandbox: copying {root} failed\")));\n}\n}\nsb.roots.push(root.clone());\n}\nOk(sb)\n}"
+   }
+  ]
+ },
+ "fix_commit": "27613bd",
+ "dirs": [
+  "src/core"
+ ],
+ "category": "process-sandbox",
+ "tags": [
+  "path-mapping",
+  "temp-cleanup",
+  "sandbox"
+ ],
+ "summary": "Harden sandbox path mapping and temporary copy cleanup"
+}

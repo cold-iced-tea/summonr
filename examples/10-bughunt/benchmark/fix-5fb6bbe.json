@@ -1,0 +1,39 @@
+{
+ "target": "d48ca09",
+ "source": "fix commits 5fb6bbe",
+ "total": 4,
+ "by_file": {
+  "src/core.rs": [
+   {
+    "id": "5fb6bbe:src/core.rs:1",
+    "text": "continue;\n}\nlet method = req[\"method\"].as_str().unwrap_or(\"\").to_string();\nif method == \"subscribe\" {\ncore.serve_subscribe(&mut stream, id, &req[\"params\"]);\nbreak;\n}\nif core.cfg.rbac.enforce\n&& !matches!(\nmethod.as_str(),\n\"ping\" | \"identity\" | \"chain_verify\" | \"audit_verify\" | \"shutdown\"\n)\n{\ncore.record_audit("
+   },
+   {
+    "id": "5fb6bbe:src/core.rs:2",
+    "text": "}\ncontinue;\n}\nlet reply = match core.dispatch(&method, req[\"params\"].clone()) {\nOk(result) => json!({\"jsonrpc\": \"2.0\", \"id\": id, \"result\": result}),\nErr(e) => {"
+   }
+  ],
+  "src/core/audit.rs": [
+   {
+    "id": "5fb6bbe:src/core/audit.rs:3",
+    "text": "\"unknown export format `{fmt}`; use `json` or `ndjson`\"\n)));\n}\nlet audit_ver = self.audit_verify()?;\nlet chain_ver = self.chain_verify(json!({}))?;\nlet exported_at = now_ms();"
+   },
+   {
+    "id": "5fb6bbe:src/core/audit.rs:4",
+    "text": "pub(super) fn audit_prune(&self, p: Value) -> Result<Value, RpcErr> {\nlet args: AuditPruneArgs =\nserde_json::from_value(p).map_err(|e| RpcErr::invalid(e.to_string()))?;\nlet window_ms = args\n.days\n.checked_mul(86_400_000)\n.ok_or_else(|| RpcErr::invalid(\"days overflow\"))?;\nlet cutoff_ms = now_ms().saturating_sub(window_ms as i64);\nlet victims: Vec<String> = {\nlet db = self.db.lock().unwrap();"
+   }
+  ]
+ },
+ "fix_commit": "5fb6bbe",
+ "dirs": [
+  "src",
+  "src/core"
+ ],
+ "category": "auth-rbac",
+ "tags": [
+  "rbac",
+  "path-write",
+  "integer-overflow"
+ ],
+ "summary": "Block non-admin audit_export writes, gate subscribe/shutdown, prevent audit_prune i64 overflow"
+}

@@ -1,0 +1,117 @@
+{
+ "target": "1afdabd",
+ "source": "fix commits c4c5856",
+ "total": 21,
+ "by_file": {
+  "src/reagent.rs": [
+   {
+    "id": "c4c5856:src/reagent.rs:1",
+    "text": "let timeout = auth\n.deadline\n.map(|d| d.saturating_duration_since(std::time::Instant::now()));\ncrate::mcp_reagent::call_tool(mcp_cfg, tool, args, timeout).map_err(Fail::Failed)\n}\n/// Run every check a live `call` of `operation` would make before its"
+   }
+  ],
+  "src/reagents/cmd_reagent.rs": [
+   {
+    "id": "c4c5856:src/reagents/cmd_reagent.rs:2",
+    "text": "let dargs = json!({\"command\": dname, \"params\": Value::Object(dparams)});\nlet (_, dcfg, rendered) = prepare_command(cfg, \"read\", &dargs)?;\nlet arg_refs: Vec<&str> = rendered.iter().map(String::as_str).collect();\nlet (code, out, err) = run_bounded_kept(&dcfg.program, &arg_refs, Path::new(&dcfg.cwd), deadline, KEEP_BYTES)?;\nif code != 0 && !dcfg.allow_nonzero {\nlet last = err\n.lines()"
+   },
+   {
+    "id": "c4c5856:src/reagents/cmd_reagent.rs:3",
+    "text": "Path::new(&cmd_cfg.cwd),\nauth.deadline,\nKEEP_BYTES,\n) {\nOk((code, out, err)) => {\nif code != 0 && !cmd_cfg.allow_nonzero {"
+   }
+  ],
+  "src/reagents/gh_reagent.rs": [
+   {
+    "id": "c4c5856:src/reagents/gh_reagent.rs:4",
+    "text": "];\nfn gh(auth: &Authority, cwd: &Path, args: &[&str]) -> Result<String, Fail> {\nlet prog = config(auth)?.gh.clone().unwrap_or_else(|| \"gh\".into());\nlet (code, out, err) = run_bounded_kept(&prog, args, cwd, auth.deadline, 1 << 20)?;\nif code != 0 {\nlet last = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or(\"\").trim().to_string();\nreturn Err(Fail::Failed(format!(\"gh {}: {last}\", args.first().unwrap_or(&\"\"))));"
+   }
+  ],
+  "src/reagents/git_reagent.rs": [
+   {
+    "id": "c4c5856:src/reagents/git_reagent.rs:5",
+    "text": "auth.config.ok_or_else(|| Fail::Denied(\"no repositories are configured\".into()))\n}\n/// A command that cannot prompt, read input, or be redirected to another\n/// repository by inherited environment. `git` commands also get a fixed locale\n/// for parsing; other programs (the user's tests) keep theirs.\npub(crate) fn command(prog: &str, git: bool) -> Command {\nlet mut c = Command::new(prog);\nfor var in [\"GIT_DIR\", \"GIT_WORK_TREE\", \"GIT_INDEX_FILE\", \"GIT_COMMON_DIR\", \"GIT_OBJECT_DIRECTORY\", \"GIT_ALTERNATE_OBJECT_DIRECTORIES\", \"GIT_NAMESPACE\", \"GIT_PREFIX\"] {\nc.env_remove(var);\n}\nc.env(\"GIT_TERMINAL_PROMPT\", \"0\")\n.env(\"GIT_EDITOR\", \"true\")\n.env(\"GH_PROMPT_DISABLED\", \"1\")"
+   },
+   {
+    "id": "c4c5856:src/reagents/git_reagent.rs:6",
+    "text": "/// program exits, anything it left running in its group is stopped too. A\n/// child that left the group (`setsid`) and still holds the output open is\n/// not waited for beyond a short grace period.\npub(crate) fn run_bounded_as(prog: &str, args: &[&str], cwd: &Path, deadline: Option<Instant>, git: bool) -> Result<(i32, String, String), Fail> {\nrun_bounded_inner(prog, args, cwd, deadline, git, None)\n}\n/// The same, keeping only the last `keep` bytes of stdout and of stderr, so a\n/// program that writes without end cannot fill memory.\npub(crate) fn run_bounded_kept(prog: &str, args: &[&str], cwd: &Path, deadline: Option<Instant>, keep: usize) -> Result<(i32, String, String), Fail> {\nrun_bounded_inner(prog, args, cwd, deadline, false, Some(keep))\n}\n/// How long to keep reading after the program ended, for output a child"
+   },
+   {
+    "id": "c4c5856:src/reagents/git_reagent.rs:7",
+    "text": "}\n}\nfn run_bounded_inner(prog: &str, args: &[&str], cwd: &Path, deadline: Option<Instant>, git: bool, keep: Option<usize>) -> Result<(i32, String, String), Fail> {\nuse std::os::unix::process::CommandExt;\nlet mut child = command(prog, git)\n.args(args)\n.current_dir(cwd)\n.stdin(Stdio::null())"
+   },
+   {
+    "id": "c4c5856:src/reagents/git_reagent.rs:8",
+    "text": "let prog = cfg.git.as_deref().unwrap_or(\"git\");\nlet mut full = vec![\"-c\", \"core.quotepath=false\"];\nfull.extend_from_slice(args);\nlet (code, out, err) = run_bounded_as(prog, &full, cwd, deadline, true)?;\nif code != 0 {\nlet last = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or(\"\").trim().to_string();\nreturn Err(Fail::Failed(format!(\"git {}: {last}\", args.first().unwrap_or(&\"\"))));"
+   },
+   {
+    "id": "c4c5856:src/reagents/git_reagent.rs:9",
+    "text": "/// git, but an exit code of 1 is an answer (`false`), not a failure.\nfn git_test(cfg: &Config, cwd: &Path, args: &[&str], deadline: Option<Instant>) -> Result<bool, Fail> {\nlet prog = cfg.git.as_deref().unwrap_or(\"git\");\nlet (code, _, err) = run_bounded_as(prog, args, cwd, deadline, true)?;\nmatch code {\n0 => Ok(true),\n1 => Ok(false),"
+   },
+   {
+    "id": "c4c5856:src/reagents/git_reagent.rs:10",
+    "text": "/// (branch or None when detached, changed paths) of a checkout.\npub(crate) fn checkout_state(cfg: &Config, path: &Path, deadline: Option<Instant>) -> Result<(Option<String>, Vec<String>), Fail> {\nlet prog = cfg.git.as_deref().unwrap_or(\"git\");\nlet (code, out, _) = run_bounded_as(prog, &[\"symbolic-ref\", \"-q\", \"--short\", \"HEAD\"], path, deadline, true)?;\nlet branch = (code == 0).then(|| out.trim().to_string());\nlet changed = status_entries(cfg, path, deadline)?.into_iter().map(|e| e.path).collect();\nOk((branch, changed))"
+   }
+  ],
+  "src/reagents/http_reagent.rs": [
+   {
+    "id": "c4c5856:src/reagents/http_reagent.rs:11",
+    "text": "parse_url(text).map_err(Fail::Invalid)\n}\nfn host_matches(pattern: &str, host: &str) -> bool {\nlet p = pattern.trim().to_ascii_lowercase();\nif let Some(suffix) = p.strip_prefix(\"*.\") {\nhost == suffix || host.ends_with(&format!(\".{suffix}\"))\n} else {\nhost == p\n}\n}\nfn is_non_public_ip(ip: std::net::IpAddr) -> bool {\nmatch ip {\nstd::net::IpAddr::V4(v4) => {\nv4.is_loopback()\n|| v4.is_private()\n|| v4.is_link_local()\n|| v4.is_unspecified()\n|| v4.is_multicast()\n|| v4.is_broadcast()\n|| (v4.octets()[0] == 100 && (v4.octets()[1] & 0b1100_0000) == 64)\n}\nstd::net::IpAddr::V6(v6) => {\nif let Some(v4) = v6.to_ipv4_mapped() {\nreturn is_non_public_ip(std::net::IpAddr::V4(v4));\n}\nlet seg0 = v6.segments()[0];\nv6.is_loopback()\n|| v6.is_unspecified()\n|| v6.is_multicast()\n|| (seg0 & 0xfe00) == 0xfc00\n|| (seg0 & 0xffc0) == 0xfe80\n}\n}\n}\npub fn check_egress(cfg: Option<&crate::util::Config>, u: &url::Url) -> Result<(), Fail> {\nlet Some(egress) = cfg.map(|c| &c.egress) else {\nreturn Ok(());\n};\nlet raw_host = u\n.host_str()"
+   },
+   {
+    "id": "c4c5856:src/reagents/http_reagent.rs:12",
+    "text": "let host = raw_host\n.trim_start_matches('[')\n.trim_end_matches(']')\n.to_ascii_lowercase();\nif egress.deny_hosts.iter().any(|p| host_matches(p, &host)) {\nreturn Err(Fail::Denied(format!("
+   },
+   {
+    "id": "c4c5856:src/reagents/http_reagent.rs:13",
+    "text": "\"egress policy blocks loopback host `{host}`\"\n)));\n}\nif let Ok(ip) = host.parse::<std::net::IpAddr>() {\nif is_non_public_ip(ip) {\nreturn Err(Fail::Denied(format!(\n\"egress policy blocks non-public IP `{ip}`\"\n)));\n}\n} else if let Some(port) = u.port_or_known_default() {\nif let Ok(addrs) = std::net::ToSocketAddrs::to_socket_addrs(&(host.as_str(), port)) {\nfor addr in addrs {\nif is_non_public_ip(addr.ip()) {\nreturn Err(Fail::Denied(format!(\n\"egress policy blocks host `{host}` resolving to non-public IP `{}`\",\naddr.ip()\n)));\n}\n}\n}\n}\n}\nOk(())\n}\npub fn validate_origin(text: &str) -> Result<(), String> {"
+   },
+   {
+    "id": "c4c5856:src/reagents/http_reagent.rs:14",
+    "text": "\"HTTP access requires an explicit origin grant\".into(),\n));\n}\nif let Some(auth_name) = args.get(\"auth\").and_then(Value::as_str) {\nlet cfg = auth\n.config"
+   },
+   {
+    "id": "c4c5856:src/reagents/http_reagent.rs:15",
+    "text": "entry.token_env\n)));\n}\n}\nif let Some(hdrs) = args.get(\"headers\").and_then(Value::as_object) {\nfor (k, v) in hdrs {\nif !v.is_string() || k.contains('\\r') || k.contains('\\n') {\nreturn Err(Fail::Invalid(format!(\"invalid HTTP header `{k}`\")));\n}\n}\n}\nOk(())"
+   },
+   {
+    "id": "c4c5856:src/reagents/http_reagent.rs:16",
+    "text": "self.authorize(mail_root, name, args, auth)?;\n// The same parse `authorize` just accepted; the request uses it.\nlet u = request_url(args)?;\nlet mut timeout = Duration::from_millis(args[\"timeout_ms\"].as_u64().unwrap_or(5000));\nif let Some(d) = auth.deadline {\ntimeout = timeout.min(d.saturating_duration_since(Instant::now()));"
+   },
+   {
+    "id": "c4c5856:src/reagents/http_reagent.rs:17",
+    "text": "return Err(Fail::Exhausted(\"HTTP deadline\".into()));\n}\nlet deadline = Instant::now() + timeout;\nlet agent = ureq::AgentBuilder::new()\n.try_proxy_from_env(false)\n.redirects(0)\n.timeout(timeout)\n.build();\nlet is_write = matches!(name, \"post\" | \"put\" | \"patch\" | \"delete\");\nif is_write {\nif let Some(want) = auth.expected_digest {"
+   },
+   {
+    "id": "c4c5856:src/reagents/http_reagent.rs:18",
+    "text": "pub fn target_digest(cfg: Option<&crate::util::Config>, args: &Value) -> Result<Option<String>, Fail> {\nlet u = request_url(args)?;\ncheck_egress(cfg, &u)?;\nlet agent = ureq::AgentBuilder::new()\n.try_proxy_from_env(false)\n.redirects(0)\n.timeout(Duration::from_millis(args[\"timeout_ms\"].as_u64().unwrap_or(5000)))\n.build();\nlet mut req = agent.get(u.as_str());\nif let Some(auth_name) = args.get(\"auth\").and_then(Value::as_str) {\nif let Some(entry) = cfg.and_then(|c| c.http_auth.get(auth_name)) {"
+   }
+  ],
+  "src/reagents/mcp_reagent.rs": [
+   {
+    "id": "c4c5856:src/reagents/mcp_reagent.rs:19",
+    "text": "tool_name: &str,\nargs: &Value,\ntimeout: Option<Duration>,\n) -> Result<Value, String> {\nlet deadline = Instant::now() + timeout.unwrap_or(DEFAULT_TIMEOUT);\nlet (prog, rest) = cfg"
+   },
+   {
+    "id": "c4c5856:src/reagents/mcp_reagent.rs:20",
+    "text": ".split_first()\n.ok_or_else(|| \"mcp reagent `command` must not be empty\".to_string())?;\nlet mut cmd = Command::new(prog);\ncmd.args(rest)\n.stdin(Stdio::piped())\n.stdout(Stdio::piped())"
+   }
+  ],
+  "src/reagents/trial_reagent.rs": [
+   {
+    "id": "c4c5856:src/reagents/trial_reagent.rs:21",
+    "text": "let r = repo(auth, args[\"repo\"].as_str().unwrap_or(\"\"))?;\nlet cwd = checkout_path(cfg, r, args, auth.deadline)?;\nlet words: Vec<&str> = r.test.as_deref().unwrap_or(\"\").split_whitespace().collect();\nmatch run_bounded_kept(words[0], &words[1..], &cwd, auth.deadline, KEEP_BYTES) {\nOk((code, out, err)) => Ok(json!({\"passed\": code == 0, \"code\": code, \"tail\": report(&out, &err)})),\nErr(Fail::Exhausted(_)) => Ok(json!({\"passed\": false, \"code\": null, \"tail\": \"stopped: the tests ran past the time limit\"})),\nErr(e) => Err(e),"
+   }
+  ]
+ },
+ "fix_commit": "c4c5856",
+ "dirs": [
+  "src",
+  "src/reagents"
+ ],
+ "category": "injection",
+ "tags": [
+  "ssrf",
+  "header-override",
+  "env-injection"
+ ],
+ "summary": "Harden HTTP egress, header overrides, and child process env"
+}

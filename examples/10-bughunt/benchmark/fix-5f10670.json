@@ -1,0 +1,59 @@
+{
+ "target": "c4c5856",
+ "source": "fix commits 5f10670",
+ "total": 9,
+ "by_file": {
+  "src/listen.rs": [
+   {
+    "id": "5f10670:src/listen.rs:1",
+    "text": "use crate::tls::{load_server_config, NetStream};\nuse crate::util::{Config, Paths};\nuse serde_json::{json, Value};\nuse std::io::{BufRead, BufReader, Read, Write};\nuse std::net::TcpListener;\nuse std::sync::atomic::{AtomicUsize, Ordering};\nuse std::sync::Arc;\nuse std::time::Duration;\npub const PATH: &str = \"/summonr/v1/signed\";\n/// Bodies over this are refused before any signature work.\npub const MAX_BODY: usize = 1_048_576;\nconst MAX_CONNECTIONS: usize = 32;\npub fn listen(paths: &Paths, addr: &str) -> i32 {\nlet cfg = match Config::load(paths) {"
+   },
+   {
+    "id": "5f10670:src/listen.rs:2",
+    "text": "deadline: Duration,\ntls: Option<Arc<rustls::ServerConfig>>,\n) {\nlet open = Arc::new(AtomicUsize::new(0));\nfor stream in listener.incoming().flatten() {\nif open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {\nopen.fetch_sub(1, Ordering::SeqCst);\ncontinue;\n}\nlet (open, paths, tls) = (open.clone(), paths.clone(), tls.clone());\nstd::thread::spawn(move || {\nif let Ok(net) = NetStream::wrap(stream, tls.as_ref()) {\nserve_one(net, &paths, deadline);\n}\nopen.fetch_sub(1, Ordering::SeqCst);\n});\n}\n}"
+   },
+   {
+    "id": "5f10670:src/listen.rs:3",
+    "text": "/// Reads that give each call only what is left of the request's deadline,\n/// so a client cannot hold a connection by trickling bytes.\nstruct Deadline {\nstream: NetStream,\nuntil: std::time::Instant,\n}\nimpl Read for Deadline {"
+   }
+  ],
+  "src/mcp.rs": [
+   {
+    "id": "5f10670:src/mcp.rs:4",
+    "text": "path: String,\nauth: Option<std::sync::Arc<crate::util::McpAuthConfig>>,\n) {\nlet _ = stream.set_read_timeout(Some(Duration::from_secs(30)));\nlet _ = stream.set_write_timeout(Some(Duration::from_secs(30)));\nlet mut reader = BufReader::new(stream);\nloop {\nlet mut request_line = String::new();\nif reader\n.by_ref()"
+   },
+   {
+    "id": "5f10670:src/mcp.rs:5",
+    "text": "break;\n}\nif let Some((k, v)) = h.split_once(':') {\nmatch k.to_ascii_lowercase().as_str() {\n\"content-length\" => {\nif length_seen {\ninvalid = true;"
+   },
+   {
+    "id": "5f10670:src/mcp.rs:6",
+    "text": "}\nif invalid || !host_ok {\nlet _ = respond(\nreader.get_mut(),\n\"400 Bad Request\",\nb\"{}\",\n\"Connection: close\\r\\n\",\n);\nreturn;\n}\nif length > 8 * 1024 * 1024 {\nlet _ = respond(reader.get_mut(), \"413 Payload Too Large\", b\"{}\", \"\");\nreturn;\n}\nlet mut body = vec![0u8; length];\nif reader.read_exact(&mut body).is_err() {\nreturn;\n}\nlet req_path = target.split('?').next().unwrap_or(\"\");\nlet is_metadata = auth.is_some() && req_path == \"/.well-known/oauth-protected-resource\";\nlet is_mcp_path = req_path == path.as_str() || (auth.is_some() && req_path == \"/mcp\");\nlet out_stream = reader.get_mut();\nlet sent = if browser {\nrespond(\nout_stream,\n\"403 Forbidden\",\nb\"{\\\"error\\\":\\\"browser requests are refused\\\"}\",\n\"\",\n)\n} else if is_metadata {\nmatch method.as_str() {\n\"GET\" => {\nlet cfg = auth.as_ref().unwrap();\nlet meta = json!({"
+   },
+   {
+    "id": "5f10670:src/mcp.rs:7",
+    "text": "respond(out_stream, \"200 OK\", meta.to_string().as_bytes(), \"\")\n}\n_ => respond(out_stream, \"405 Method Not Allowed\", b\"\", \"Allow: GET\\r\\n\"),\n}\n} else if !is_mcp_path {\nrespond(\nout_stream,\n\"404 Not Found\",\nb\"{\\\"error\\\":\\\"not found\\\"}\",\n\"\",\n)\n} else {\nlet auth_err = auth.as_ref().and_then(|cfg| {\nlet now_secs = std::time::SystemTime::now()\n.duration_since(std::time::UNIX_EPOCH)\n.map(|d| d.as_secs())\n.unwrap_or(0);\nverify_bearer_jwt(authorization.as_deref(), cfg, now_secs).err()\n});\nif let Some((status, code, desc)) = auth_err {\nlet hdr = format!(\n\"WWW-Authenticate: Bearer resource_metadata=\\\"/.well-known/oauth-protected-resource\\\", error=\\\"{code}\\\", error_description=\\\"{desc}\\\"\\r\\n\"\n);\nlet body = json!({\"error\": code, \"error_description\": desc}).to_string();\nrespond(out_stream, status, body.as_bytes(), &hdr)\n} else {\nmatch method.as_str() {\n\"POST\" => match serde_json::from_slice::<Value>(&body) {\nOk(Value::Array(batch)) => {\nlet replies: Vec<Value> =\nbatch.iter().filter_map(|r| handle(&link, r)).collect();\nif replies.is_empty() {\nrespond(out_stream, \"202 Accepted\", b\"\", \"\")\n} else {\nrespond(\nout_stream,\n\"200 OK\",\nValue::Array(replies).to_string().as_bytes(),\n\"\",\n)\n}\n}\nOk(req) => match handle(&link, &req) {\nSome(r) => respond(out_stream, \"200 OK\", r.to_string().as_bytes(), \"\"),\nNone => respond(out_stream, \"202 Accepted\", b\"\", \"\"),\n},\nErr(e) => {\nlet err = json!({\"jsonrpc\": \"2.0\", \"id\": null, \"error\": {\"code\": -32700, \"message\": e.to_string()}});\nrespond(\nout_stream,\n\"400 Bad Request\",\nerr.to_string().as_bytes(),\n\"\",\n)\n}\n},\n// No server-initiated stream is offered.\n\"GET\" => respond(\nout_stream,\n\"405 Method Not Allowed\",\nb\"\",\n\"Allow: POST, DELETE\\r\\n\",\n),\n\"DELETE\" => respond(out_stream, \"200 OK\", b\"{}\", \"\"),\n_ => respond(\nout_stream,\n\"405 Method Not Allowed\",\nb\"\",\n\"Allow: POST, DELETE\\r\\n\",\n),\n}\n}\n};\nif sent.is_err() {\nreturn;"
+   },
+   {
+    "id": "5f10670:src/mcp.rs:8",
+    "text": "}\nprintln!(\"  Every caller here is the same anonymous agent. To give agents their own identities, use `summonr listen` with familiars (see the Identity page of the book).\");\nprintln!(\"  Callers can discover, preview, run, check and stop. They cannot grant authority or approve held actions.\");\nlet connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));\nfor stream in listener.incoming().flatten() {\nuse std::sync::atomic::Ordering;\nif connections.fetch_add(1, Ordering::SeqCst) >= 32 {\nconnections.fetch_sub(1, Ordering::SeqCst);\ndrop(stream);\ncontinue;\n}\nlet count = connections.clone();\nlet (link, path, auth, tls) = (\ncrate::link::factory(paths, None, None).expect(\"an unsigned link always builds\"),\npath.clone(),"
+   },
+   {
+    "id": "5f10670:src/mcp.rs:9",
+    "text": "tls.clone(),\n);\nstd::thread::spawn(move || {\nlet local = stream.local_addr().ok();\nif let Ok(net) = crate::tls::NetStream::wrap(stream, tls.as_ref()) {\nserve_connection(net, local, link, path, auth);\n}\ncount.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);\n});\n}\n0"
+   }
+  ]
+ },
+ "fix_commit": "5f10670",
+ "dirs": [
+  "src"
+ ],
+ "category": "http-framing",
+ "tags": [
+  "http-server",
+  "deadlines",
+  "pre-body-auth",
+  "rate-limit"
+ ],
+ "summary": "Enforce request deadlines, pre-body auth, and per-IP limits on HTTP servers"
+}

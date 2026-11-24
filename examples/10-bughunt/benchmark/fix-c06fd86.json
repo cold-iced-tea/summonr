@@ -15,5 +15,15 @@
     "text": ".get(\"predicate\")\n.and_then(Value::as_str)\n.ok_or(\"filter needs a literal predicate\")?;\nlet expr = ritual::parse_expr(p)?;\nlet mut paths = Vec::new();\nritual::expr_refs(&expr, &mut paths);"
    }
   ]
- }
+ },
+ "fix_commit": "c06fd86",
+ "dirs": [
+  "src"
+ ],
+ "category": "injection",
+ "tags": [
+  "predicate-injection",
+  "ritual-exec"
+ ],
+ "summary": "Values can no longer rewrite a data.filter predicate"
 }

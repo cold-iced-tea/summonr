@@ -1,0 +1,94 @@
+{
+ "target": "44fc898",
+ "source": "fix commits c2f25ec",
+ "total": 18,
+ "by_file": {
+  "src/ritual/lint.rs": [
+   {
+    "id": "c2f25ec:src/ritual/lint.rs:1",
+    "text": "}\n/// Every step, depth first, including loop bodies, branches and fallbacks.\nfn walk<'a>(steps: &'a [Step], out: &mut Vec<&'a Step>) {\nfor s in steps {\nout.push(s);\nfor inner in [&s.steps, &s.then, &s.otherwise, &s.fallback].into_iter().flatten() {\nwalk(inner, out);\n}\n}\n}\n/// The `${...}` references in a value's strings.\nfn refs_in(v: &Value, out: &mut Vec<Vec<String>>) {\nmatch v {\nValue::String(s) => out.extend(template_refs(s).unwrap_or_default()),"
+   },
+   {
+    "id": "c2f25ec:src/ritual/lint.rs:2",
+    "text": "/// of the loop's work is done. Suggest `keep:` with the item outputs that\n/// are actually read later.\npub fn unbounded_loop_warnings(def: &Ritual) -> Vec<String> {\nlet mut all = Vec::new();\nwalk(&def.steps, &mut all);\nwalk(&def.finally, &mut all);\nlet mut warnings = Vec::new();\nfor lp in all.iter().filter(|s| s.each.is_some() && s.keep.is_none()) {\nlet Some(id) = lp.id.as_deref() else { continue };\nlet mut body = Vec::new();\nwalk(lp.steps.as_deref().unwrap_or_default(), &mut body);\nlet Some((big_id, big_what)) = body.iter().find_map(|s| {\nlarge_output(s).map(|w| (s.id.clone().unwrap_or_else(|| \"(unnamed)\".into()), w))\n}) else {\ncontinue;"
+   },
+   {
+    "id": "c2f25ec:src/ritual/lint.rs:3",
+    "text": "if let Some((var, src)) = s.each.as_deref().and_then(|e| e.split_once(\" in \")) {\nlet src: Vec<String> = src.trim().split('.').map(String::from).collect();\nif is_loop_output(&src, &ids) {\nlet mut inner = Vec::new();\nwalk(s.steps.as_deref().unwrap_or_default(), &mut inner);\nfor t in inner {\nlet r = step_refs(t);\nwanted.extend(r.iter().filter(|p| p.first().map(String::as_str) == Some(var.trim())).filter_map(|p| output_name(p)));\n}"
+   },
+   {
+    "id": "c2f25ec:src/ritual/lint.rs:4",
+    "text": "pub fn lint(def: &Ritual) -> Vec<String> {\nunbounded_loop_warnings(def)\n}"
+   }
+  ],
+  "src/ritual/validate.rs": [
+   {
+    "id": "c2f25ec:src/ritual/validate.rs:5",
+    "text": "type ToolMetaLookup<'a> = &'a dyn Fn(&str, &str) -> Option<crate::reagent::ToolMeta>;\nstruct V<'a> {\ndef: &'a Ritual,\nresolve: Resolver<'a>,"
+   },
+   {
+    "id": "c2f25ec:src/ritual/validate.rs:6",
+    "text": "vars: Vec<(String, Ty)>,\nmax_depth: u32,\ndepth: u32,\nstack: Vec<String>,\n}"
+   },
+   {
+    "id": "c2f25ec:src/ritual/validate.rs:7",
+    "text": "}\nfn steps(&mut self, steps: &[Step], prefix: &str) {\nfor (i, s) in steps.iter().enumerate() {\nlet label = s.id.clone().unwrap_or_else(|| format!(\"#{}\", i + 1));\nlet at = if prefix.is_empty() {"
+   },
+   {
+    "id": "c2f25ec:src/ritual/validate.rs:8",
+    "text": "self.ids.last_mut().unwrap().insert(id.clone(), out_ty);\n}\n}\n}\nfn operation(&mut self, s: &Step, at: &str) -> Ty {"
+   },
+   {
+    "id": "c2f25ec:src/ritual/validate.rs:9",
+    "text": "self.tools,\nself.max_depth,\nself.depth + 1,\nstack,\n) {\nOk((effects, ret_ty)) => {"
+   },
+   {
+    "id": "c2f25ec:src/ritual/validate.rs:10",
+    "text": "// data operations, model steps and ritual steps, including\n// those inside `if` branches (not `if` steps themselves, other\n// operations, or nested loops).\nfn recorded(steps: &[Step], out: &mut std::collections::HashSet<String>) {\nfor st in steps {\nlet produces = st.model.is_some()\n|| st.ritual.is_some()\n|| st.operation.as_deref().is_some_and(|o| o.starts_with(\"data.\"));\nif let (true, Some(id)) = (produces, st.id.as_ref()) {\nout.insert(id.clone());\n}\nif st.each.is_none() {\nrecorded(st.then.as_deref().unwrap_or(&[]), out);\nrecorded(st.otherwise.as_deref().unwrap_or(&[]), out);\n}\n}\n}\nlet mut keepable = std::collections::HashSet::new();\nrecorded(body, &mut keepable);\nfor k in keep {\nif !keepable.contains(k) {\nself.errors.push(format!(\n\"step {at}: `keep` names `{k}`, which is not a result-producing step in this loop's body\"\n));"
+   },
+   {
+    "id": "c2f25ec:src/ritual/validate.rs:11",
+    "text": "tools: ToolMetaLookup<'_>,\nmax_depth: u32,\ndepth: u32,\nstack: Vec<String>,\n) -> Result<(Vec<Effect>, Ty), Vec<String>> {\nlet mut v = V {"
+   },
+   {
+    "id": "c2f25ec:src/ritual/validate.rs:12",
+    "text": "vars: Vec::new(),\nmax_depth,\ndepth,\nstack,\n};\nif def.language_version != 1 {"
+   },
+   {
+    "id": "c2f25ec:src/ritual/validate.rs:13",
+    "text": "&|r, t| tools(r, t).map(crate::reagent::ToolMeta::from),\nmax_depth,\n0,\nvec![def.ritual.clone()],\n)\n.map(|(e, _)| e)"
+   },
+   {
+    "id": "c2f25ec:src/ritual/validate.rs:14",
+    "text": "&|r, t| crate::reagent::tool_meta(Some(cfg), r, t),\nmax_depth,\n0,\nvec![def.ritual.clone()],\n)\n.map(|(e, _)| e)"
+   },
+   {
+    "id": "c2f25ec:src/ritual/validate.rs:15",
+    "text": "max_depth: u32,\n) -> Result<ValidatedWithTypes, Vec<String>> {\nlet (effects, ret_ty) =\nvalidate_inner(def, resolve, tools, max_depth, 0, vec![def.ritual.clone()])?;\nlet mut types = BTreeMap::new();\nif let Ty::Obj { fields, .. } = ret_ty {\nfor (k, t) in fields {"
+   },
+   {
+    "id": "c2f25ec:src/ritual/validate.rs:16",
+    "text": "/// `each` and `if` bodies and pinned child rituals. Drift fingerprints cover\n/// all of them, so a change anywhere in the tree is noticed.\npub fn model_sites(def: &Ritual, resolve: Resolver, invocation: Option<&str>) -> BTreeSet<String> {\nfn walk(\nsteps: &[Step],\ndef: &Ritual,\nresolve: Resolver,"
+   },
+   {
+    "id": "c2f25ec:src/ritual/validate.rs:17",
+    "text": "depth: u32,\nout: &mut BTreeSet<String>,\n) {\nfor s in steps {\nif let Some(m) = &s.model {\nlet name = m.name.clone().or_else(|| invocation.map(String::from)).or_else(|| def.model.clone());\nout.extend(name);"
+   },
+   {
+    "id": "c2f25ec:src/ritual/validate.rs:18",
+    "text": "// Validation bounds depth; this guard only keeps a malformed tree finite.\nif depth < 64 {\nif let Some((_, _, child)) = resolve(name, s.version) {\nwalk(&child.steps, &child, resolve, invocation, depth + 1, out);\nwalk(&child.finally, &child, resolve, invocation, depth + 1, out);\n}\n}\n}\nfor body in [&s.steps, &s.then, &s.otherwise, &s.fallback].into_iter().flatten() {\nwalk(body, def, resolve, invocation, depth, out);\n}\n}\n}\nlet mut out = BTreeSet::new();\nwalk(&def.steps, def, resolve, invocation, 0, &mut out);\nwalk(&def.finally, def, resolve, invocation, 0, &mut out);\nout\n}"
+   }
+  ]
+ },
+ "fix_commit": "c2f25ec",
+ "dirs": [
+  "src/ritual"
+ ],
+ "category": "recursion-dos",
+ "tags": [
+  "stack-overflow",
+  "unbounded-recursion",
+  "parser-validate"
+ ],
+ "summary": "Bound stack use when linting and validating ritual steps"
+}

@@ -13,5 +13,15 @@
     "text": "let key = match reagent {\n\"file\" => \"root\",\n\"http\" => \"origin\",\n_ => return Ok(()),\n};\nif !into.is_empty() || on.len() != 1 || !on.contains_key(key) {"
    }
   ]
- }
+ },
+ "fix_commit": "4979f5c",
+ "dirs": [
+  "src"
+ ],
+ "category": "auth-rbac",
+ "tags": [
+  "grant-scope",
+  "mcp"
+ ],
+ "summary": "MCP grants cannot carry a scope they never enforce"
 }

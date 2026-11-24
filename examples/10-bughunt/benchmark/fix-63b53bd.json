@@ -1,0 +1,60 @@
+{
+ "target": "c06fd86",
+ "source": "fix commits 63b53bd",
+ "total": 9,
+ "by_file": {
+  "src/core.rs": [
+   {
+    "id": "63b53bd:src/core.rs:1",
+    "text": "}\nfn compile(&self, p: Value) -> Result<Value, RpcErr> {\nlet p: requests::Compile = decode(p)?;\nlet mut def: Ritual = match p.definition {\nValue::String(s) => ritual::parse_file(&s).map_err(RpcErr::invalid)?,\nother => serde_json::from_value(other).map_err(|e| RpcErr::invalid(e.to_string()))?,"
+   },
+   {
+    "id": "63b53bd:src/core.rs:2",
+    "text": "\"inline compile_ritual cannot read host binding files; use `summonr compile FILE` locally\",\n));\n}\nritual::prepare(&mut def, Path::new(\".\"), &self.resolver()).map_err(RpcErr::invalid)?;\nlet (effects, return_types) = ritual::validate_with_return_types_cfg(\n&def,\n&self.resolver(),\n&self.cfg,\nself.cfg.max_depth(),\n)"
+   }
+  ],
+  "src/core/drills.rs": [
+   {
+    "id": "63b53bd:src/core/drills.rs:3",
+    "text": "let file =\ndrill::parse(&text).map_err(|e| RpcErr::invalid(format!(\"{}: {e}\", path.display())))?;\nlet dir = path.parent().unwrap_or(Path::new(\".\")).to_path_buf();\nself.run_drill_file(&p.ritual, version, &file, &path.display().to_string(), Some(&dir))\n}\npub(super) fn drill_inline(self: &Arc<Self>, p: Value) -> Result<Value, RpcErr> {\nlet p: requests::DrillInline = decode(p)?;\nlet (version, _, _) = self.load_ritual(&p.ritual, p.version)?.ok_or_else(|| {\nRpcErr::not_found(format!(\n\"no ritual `{}` in the grimoire; drills run against saved rituals\","
+   },
+   {
+    "id": "63b53bd:src/core/drills.rs:4",
+    "text": "c.id\n)));\n}\nself.run_drill_file(&p.ritual, version, &file, \"inline drill\", None)\n}\nfn run_drill_file("
+   },
+   {
+    "id": "63b53bd:src/core/drills.rs:5",
+    "text": "file: &drill::DrillFile,\nlabel: &str,\ndir: Option<&Path>,\n) -> Result<Value, RpcErr> {\nif file.ritual != name {\nreturn Err(RpcErr::invalid(format!("
+   },
+   {
+    "id": "63b53bd:src/core/drills.rs:6",
+    "text": ")));\n}\nlet touchstone = match &file.touchstone {\nSome(t) => {\nif let Some(c) = file.cases.iter().find(|c| c.expect.result.is_some()) {\nreturn Err(RpcErr::invalid(format!("
+   },
+   {
+    "id": "63b53bd:src/core/drills.rs:7",
+    "text": "version: Some(version),\nargs: case.inputs.clone(),\nscripted: true,\n..Default::default()\n};\nlet mut r = self.resolve(&spec).map_err(|mut e| {"
+   }
+  ],
+  "src/core/signed.rs": [
+   {
+    "id": "63b53bd:src/core/signed.rs:8",
+    "text": "}\nself.dispatch(method, params)\n}\n\"compile\" => self.dispatch(method, params),\n\"fence_list\" => {\nlet all = self.dispatch(\"fence_list\", params)?;\nOk(self.filter_owned_by_summon(caller, all))"
+   },
+   {
+    "id": "63b53bd:src/core/signed.rs:9",
+    "text": "if !allowed.contains(&name) {\nreturn Err(unknown_ritual(&name));\n}\nself.dispatch(method, params)\n}\n\"rehearse\" | \"invoke\" => {\nlet target = params[\"target\"].as_str().unwrap_or(\"\").to_string();"
+   }
+  ]
+ },
+ "fix_commit": "63b53bd",
+ "dirs": [
+  "src",
+  "src/core"
+ ],
+ "category": "auth-rbac",
+ "tags": [
+  "resource-limit",
+  "familiar-caps"
+ ],
+ "summary": "Familiars keep their limits in drills and compiles"
+}

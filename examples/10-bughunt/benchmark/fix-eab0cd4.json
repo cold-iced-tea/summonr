@@ -1,0 +1,65 @@
+{
+ "target": "1a063ed",
+ "source": "fix commits eab0cd4",
+ "total": 10,
+ "by_file": {
+  "src/backend.rs": [
+   {
+    "id": "eab0cd4:src/backend.rs:1",
+    "text": "use std::time::{Duration, Instant};\n/// One image carried to a vision-capable model.\n#[derive(Clone, Debug)]\npub struct ImagePart {\npub sha256: String,\npub mime: String,\npub bytes: Vec<u8>,\n}\n/// `Inline` sends the bytes; `Placeholder` is the record form (digest only).\n#[derive(Clone, Copy, PartialEq, Eq)]\npub enum ImageMode {"
+   },
+   {
+    "id": "eab0cd4:src/backend.rs:2",
+    "text": "return err;\n}\nlet mut out = err;\nfor i in images {\nout = out.replace(&b64(&i.bytes), &format!(\"[sight:{}]\", i.sha256));\n}\nmatch out.char_indices().nth(2000) {\nSome((at, _)) => {"
+   },
+   {
+    "id": "eab0cd4:src/backend.rs:3",
+    "text": "}\n}\nfn placeholder(img: &ImagePart) -> Value {\njson!({\"sight\": {\"sha256\": img.sha256, \"mime\": img.mime, \"bytes\": img.bytes.len()}})\n}"
+   },
+   {
+    "id": "eab0cd4:src/backend.rs:4",
+    "text": "/// Whether `model_id`'s backend can take images. Ollama is asked once per\n/// `(url, model)` and must list the `vision` capability.\npub fn supports_images(base_url: &str, model_id: &str) -> Result<(), String> {\nlet (backend, model) = split_model(model_id)?;\nlet (kind, _) = resolve_protocol(backend)?;\nif kind != \"ollama\" {"
+   },
+   {
+    "id": "eab0cd4:src/backend.rs:5",
+    "text": "let vision = match known {\nSome(v) => v,\nNone => {\nlet r = http(\n\"POST\",\n&format!(\"{base_url}/api/show\"),\nSome(&json!({\"model\": model})),\n)?;\nlet v = r[\"capabilities\"]\n.as_array()"
+   }
+  ],
+  "src/exec.rs": [
+   {
+    "id": "eab0cd4:src/exec.rs:6",
+    "text": "let images = self.step_images(sid, m.images.as_ref(), scope, &mut manifest)?;\nlet base_url = self.core.cfg.backend_url_for(&model);\nif !images.is_empty() && !self.io.offline() && !self.io.scripted() {\nbackend::supports_images(&base_url, &model)\n.map_err(|e| Fail::Failed(format!(\"step {sid}: {e}\")))?;\n}"
+   }
+  ],
+  "src/reagents/sight_reagent.rs": [
+   {
+    "id": "eab0cd4:src/reagents/sight_reagent.rs:7",
+    "text": "let mut file = open_at(&parent, leaf, false)?;\nlet st = fstat_fd(&file, leaf)?;\nif (st.st_mode & libc::S_IFMT) == libc::S_IFREG && st.st_size as u64 > max {\nreturn Err(Fail::Exhausted(format!(\n\"image is {} bytes, over the {max}-byte limit\",\nst.st_size\n)));\n}\nread_bounded_bytes(&mut file, max as usize, auth).map_err(|e| match e {\nFail::Exhausted(_) => Fail::Exhausted(format!(\"image exceeds the {max}-byte limit\")),\ne => e,\n})\n}"
+   },
+   {
+    "id": "eab0cd4:src/reagents/sight_reagent.rs:8",
+    "text": "let data = match read_image_bytes(root, path, max_bytes, None) {\n// The handle was issued within the limit; a file now over it is not\n// the file that was read.\nErr(Fail::Exhausted(_)) => {\nreturn Err(Fail::Failed(format!(\n\"stale image `{path}`: now larger than the {max_bytes}-byte limit\"\n)))\n}\nErr(e) => return Err(Fail::Failed(format!(\"stale image `{path}`: cannot reread ({e:?})\"))),\nOk(d) => d,\n};\nif crate::util::sha256_hex(&data) != sha {"
+   },
+   {
+    "id": "eab0cd4:src/reagents/sight_reagent.rs:9",
+    "text": "if auth.deadline.is_some_and(|d| std::time::Instant::now() >= d) {\nreturn Err(Fail::Exhausted(\"image read deadline\".into()));\n}\nlet max = args[\"max_bytes\"].as_u64().unwrap_or(DEFAULT_MAX_BYTES);\nlet data = read_image_bytes(root, path, max, Some(auth))?;\nlet (mime, width, height) = sniff(&data)?;\nlet handle = json!({"
+   },
+   {
+    "id": "eab0cd4:src/reagents/sight_reagent.rs:10",
+    "text": "std::fs::write(dir.join(\"big.png\"), &big).unwrap();\nlet r = reagent::call(None, \"sight\", \"read_image\", &json!({\"root\":root,\"path\":\"big.png\",\"max_bytes\":100}), &auth(&g, &sel));\nmatch r {\nErr(Fail::Exhausted(m)) => assert!(m.contains(\"100\"), \"{m}\"),\nother => panic!(\"{other:?}\"),\n}\nstd::fs::remove_dir_all(dir).unwrap();"
+   }
+  ]
+ },
+ "fix_commit": "eab0cd4",
+ "dirs": [
+  "src",
+  "src/reagents"
+ ],
+ "category": "input-validation",
+ "tags": [
+  "oversize-input",
+  "base64-scrub",
+  "config-limit"
+ ],
+ "summary": "Sight oversize is invalid, config limit at read, scrub partial base64"
+}

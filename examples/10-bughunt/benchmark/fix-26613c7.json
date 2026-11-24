@@ -1,0 +1,36 @@
+{
+ "target": "19a4cf3",
+ "source": "fix commits 26613c7",
+ "total": 4,
+ "by_file": {
+  "src/backend.rs": [
+   {
+    "id": "26613c7:src/backend.rs:1",
+    "text": "base64::engine::general_purpose::STANDARD.encode(bytes)\n}\nfn placeholder(img: &ImagePart) -> Value {\njson!({\"sight\": {\"sha256\": img.sha256, \"mime\": img.mime, \"bytes\": img.bytes.len()}})\n}"
+   },
+   {
+    "id": "26613c7:src/backend.rs:2",
+    "text": "ollama_payload(model, &req, ImageMode::Placeholder)?\n};\nlet started = Instant::now();\nlet r = http_with_timeout(\"POST\", &format!(\"{base}/api/chat\"), Some(&body), timeout)?;\nlet ns = |k: &str| r.get(k).and_then(Value::as_u64).unwrap_or(0) / 1_000_000;\nlet reported = r.get(\"prompt_eval_count\").and_then(Value::as_u64).is_some()\n&& r.get(\"eval_count\").and_then(Value::as_u64).is_some();"
+   },
+   {
+    "id": "26613c7:src/backend.rs:3",
+    "text": "headers.push((\"Authorization\", a.as_str()));\n}\nlet url = v1_endpoint(base, \"chat/completions\");\nlet r = http_with_headers(\"POST\", &url, Some(&body), &headers, timeout)?;\nlet choice = r[\"choices\"]\n.as_array()\n.and_then(|c| c.first())"
+   },
+   {
+    "id": "26613c7:src/backend.rs:4",
+    "text": "headers.push((\"x-api-key\", k));\n}\nlet url = v1_endpoint(base, \"messages\");\nlet r = http_with_headers(\"POST\", &url, Some(&body), &headers, timeout)?;\nlet content = r[\"content\"]\n.as_array()\n.and_then(|blocks| {"
+   }
+  ]
+ },
+ "fix_commit": "26613c7",
+ "dirs": [
+  "src"
+ ],
+ "category": "crypto-secrets",
+ "tags": [
+  "secret-leak",
+  "error-scrubbing",
+  "unbounded-error"
+ ],
+ "summary": "Scrub and bound image request errors"
+}

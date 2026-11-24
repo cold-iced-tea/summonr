@@ -1,0 +1,104 @@
+{
+ "target": "5f10670",
+ "source": "fix commits ac3d9eb",
+ "total": 18,
+ "by_file": {
+  "src/core/familiars.rs": [
+   {
+    "id": "ac3d9eb:src/core/familiars.rs:1",
+    "text": "pinned\n}\n(Some(pinned), None) => pinned,\n(None, Some(supplied)) => PublicKey::parse(&supplied).map_err(RpcErr::invalid)?,\n(None, None) => {\nreturn Err(RpcErr::invalid(\"root_key is required (no root.pub configured)\"));\n}\n};\nlet familiar_pub = grant"
+   }
+  ],
+  "src/keys.rs": [
+   {
+    "id": "ac3d9eb:src/keys.rs:2",
+    "text": "if self.root_key_id != root_pub.id() {\nreturn Err(\"familiar grant root_key_id does not match root key\".into());\n}\nif let Some(exp) = self.expires_at_ms {\nif exp < self.issued_at_ms {\nreturn Err(\"familiar grant expires_at_ms precedes issued_at_ms\".into());"
+   },
+   {
+    "id": "ac3d9eb:src/keys.rs:3",
+    "text": "}\nconst ENC_PREFIX: &str = \"summonr-enc-v1:\";\nfn hmac_sha256(key: &[u8; 32], data: &[u8]) -> [u8; 32] {\nuse sha2::{Digest, Sha256};\nlet mut ipad = [0x36u8; 64];\nlet mut opad = [0x5cu8; 64];\nfor i in 0..32 {\nipad[i] ^= key[i];\nopad[i] ^= key[i];\n}\nlet mut inner = Sha256::new();\ninner.update(ipad);\ninner.update(data);\nlet inner_hash = inner.finalize();\nlet mut outer = Sha256::new();\nouter.update(opad);\nouter.update(inner_hash);\nouter.finalize().into()\n}\nfn derive_enc_mac(passphrase: &[u8], salt: &[u8; 16]) -> ([u8; 32], [u8; 32]) {\nuse sha2::{Digest, Sha256};\nlet mut state: [u8; 32] = {\nlet mut h = Sha256::new();"
+   },
+   {
+    "id": "ac3d9eb:src/keys.rs:4",
+    "text": "h.update(passphrase);\nstate = h.finalize().into();\n}\nlet enc = hmac_sha256(&state, b\"enc\");\nlet mac = hmac_sha256(&state, b\"mac\");\n(enc, mac)\n}\nfn xor_keystream(enc_key: &[u8; 32], salt: &[u8; 16], data: &[u8]) -> Vec<u8> {\nuse sha2::{Digest, Sha256};\nlet mut out = Vec::with_capacity(data.len());\nfor (block_idx, chunk) in data.chunks(32).enumerate() {"
+   },
+   {
+    "id": "ac3d9eb:src/keys.rs:5",
+    "text": "out\n}\npub fn encrypt_pem(pem: &[u8], passphrase: &str) -> String {\nuse rand_core::RngCore;\nlet mut salt = [0u8; 16];\nrand_core::OsRng.fill_bytes(&mut salt);\nlet (enc_key, mac_key) = derive_enc_mac(passphrase.as_bytes(), &salt);\nlet ct = xor_keystream(&enc_key, &salt, pem);\nlet mut mac_input = Vec::with_capacity(16 + ct.len());\nmac_input.extend_from_slice(&salt);\nmac_input.extend_from_slice(&ct);\nlet mac = hmac_sha256(&mac_key, &mac_input);\nlet mut blob = Vec::with_capacity(16 + 32 + ct.len());\nblob.extend_from_slice(&salt);\nblob.extend_from_slice(&mac);\nblob.extend_from_slice(&ct);\nformat!(\n\"{ENC_PREFIX}{}\",\nbase64::engine::general_purpose::STANDARD.encode(blob)\n)\n}\npub fn decrypt_pem(text: &str, passphrase: &str) -> Result<String, String> {\nlet b64 = text\n.trim()\n.strip_prefix(ENC_PREFIX)\n.ok_or_else(|| \"not an encrypted key file\".to_string())?;\nlet blob = base64::engine::general_purpose::STANDARD"
+   },
+   {
+    "id": "ac3d9eb:src/keys.rs:6",
+    "text": "let salt: [u8; 16] = blob[..16].try_into().unwrap();\nlet mac: [u8; 32] = blob[16..48].try_into().unwrap();\nlet ct = &blob[48..];\nlet (enc_key, mac_key) = derive_enc_mac(passphrase.as_bytes(), &salt);\nlet mut mac_input = Vec::with_capacity(16 + ct.len());\nmac_input.extend_from_slice(&salt);\nmac_input.extend_from_slice(ct);\nlet expected = hmac_sha256(&mac_key, &mac_input);\nlet diff = mac\n.iter()\n.zip(expected.iter())\n.fold(0u8, |acc, (a, b)| acc | (a ^ b));\nif diff != 0 {\nreturn Err(\"wrong passphrase or corrupted encrypted key file\".into());\n}\nlet pt = xor_keystream(&enc_key, &salt, ct);\nString::from_utf8(pt).map_err(|_| \"decrypted key is not UTF-8\".into())\n}"
+   },
+   {
+    "id": "ac3d9eb:src/keys.rs:7",
+    "text": "));\n}\nlet raw = std::fs::read_to_string(path).map_err(|e| format!(\"cannot read key file {}: {e}\", path.display()))?;\nlet pem = if raw.trim_start().starts_with(ENC_PREFIX) {\nlet p = passphrase.ok_or_else(|| {\nformat!(\n\"key file {} is encrypted; set SUMMONR_KEY_PASSPHRASE\","
+   }
+  ],
+  "src/mcp.rs": [
+   {
+    "id": "ac3d9eb:src/mcp.rs:8",
+    "text": "}\nfn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {\nuse sha2::{Digest, Sha256};\nlet mut k_block = [0u8; 64];\nif key.len() > 64 {\nlet digest = Sha256::digest(key);\nk_block[..32].copy_from_slice(&digest);\n} else {\nk_block[..key.len()].copy_from_slice(key);\n}\nlet mut ipad = [0x36u8; 64];\nlet mut opad = [0x5cu8; 64];\nfor i in 0..64 {\nipad[i] ^= k_block[i];\nopad[i] ^= k_block[i];\n}\nlet mut inner = Sha256::new();\ninner.update(ipad);\ninner.update(msg);\nlet inner_hash = inner.finalize();\nlet mut outer = Sha256::new();\nouter.update(opad);\nouter.update(inner_hash);\nouter.finalize().into()\n}\nfn ct_eq(a: &[u8], b: &[u8]) -> bool {"
+   }
+  ],
+  "src/reagent.rs": [
+   {
+    "id": "ac3d9eb:src/reagent.rs:9",
+    "text": ".map_err(|e| Fail::Failed(format!(\"cannot open folder `{dest}`: {e}\")))?;\nrefuse_overwrite(&root, dest, &path)?;\nlet target = dir.join(path.file_name().unwrap());\nstd::fs::rename(&path, &target)\n.map_err(|e| Fail::Failed(format!(\"cannot move `{id}`: {e}\")))?;\nOk(json!({\"id\": id, \"from\": src, \"to\": dest, \"moved\": true}))\n}\nother => Err(Fail::Failed(format!("
+   }
+  ],
+  "src/reagents/file_reagent.rs": [
+   {
+    "id": "ac3d9eb:src/reagents/file_reagent.rs:10",
+    "text": "}\n}\nfn verify_expected_digest(args: &Value, path: &str, expected: Option<&str>) -> Result<(), Fail> {\nif let Some(exp) = expected {\nlet current = target_digest(args)?.unwrap_or_default();\nif current != exp {\nreturn Err(Fail::Failed(format!(\n\"file `{path}` changed since held (expected {exp}, found {current})\"\n)));\n}\n}\nOk(())\n}\nfn open_write_leaf(parent: &File, leaf: &str, append: bool) -> Result<File, Fail> {\nif let Some((kind, _)) = stat_leaf(parent, leaf)? {\nif kind != \"file\" {"
+   },
+   {
+    "id": "ac3d9eb:src/reagents/file_reagent.rs:11",
+    "text": "| libc::O_CREAT\n| libc::O_CLOEXEC\n| libc::O_NOFOLLOW\n| if append { libc::O_APPEND } else { libc::O_TRUNC };\nlet fd = unsafe { libc::openat(parent.as_raw_fd(), cname.as_ptr(), flags, 0o600) };\nif fd < 0 {"
+   },
+   {
+    "id": "ac3d9eb:src/reagents/file_reagent.rs:12",
+    "text": "std::io::Error::last_os_error()\n)));\n}\nOk(unsafe { File::from_raw_fd(fd) })\n}\nfn root_and_path(args: &Value) -> Result<(&str, &str), Fail> {\nlet text = |key: &str| {"
+   },
+   {
+    "id": "ac3d9eb:src/reagents/file_reagent.rs:13",
+    "text": "}\n}\n\"write_text\" => {\nverify_expected_digest(args, path, auth.expected_digest)?;\nlet text = args[\"text\"]\n.as_str()\n.ok_or_else(|| Fail::Invalid(\"write_text needs a string `text`\".into()))?;"
+   },
+   {
+    "id": "ac3d9eb:src/reagents/file_reagent.rs:14",
+    "text": "return Err(Fail::Invalid(\"write_text exceeds 1 MiB\".into()));\n}\nlet (parent, leaf) = open_parent_and_leaf(root, path)?;\nlet mut f = open_write_leaf(&parent, leaf, false)?;\nf.write_all(text.as_bytes())\n.and_then(|_| f.sync_all())\n.map_err(|e| Fail::Failed(format!(\"failed writing `{path}`: {e}\")))?;\nlet hash = crate::util::sha256_hex(text.as_bytes());\nOk(json!({\n\"root\": root,"
+   },
+   {
+    "id": "ac3d9eb:src/reagents/file_reagent.rs:15",
+    "text": "}))\n}\n\"append_jsonl\" => {\nverify_expected_digest(args, path, auth.expected_digest)?;\nlet line = format!(\"{}\\n\", crate::util::canonical_json(&args[\"record\"]));\nif line.len() > 1048576 {\nreturn Err(Fail::Invalid(\"append_jsonl record exceeds 1 MiB\".into()));\n}\nlet rec_hash = crate::util::sha256_hex(line.trim_end_matches('\\n').as_bytes());\nlet (parent, leaf) = open_parent_and_leaf(root, path)?;\nlet mut f = open_write_leaf(&parent, leaf, true)?;\nf.write_all(line.as_bytes())\n.and_then(|_| f.sync_all())"
+   },
+   {
+    "id": "ac3d9eb:src/reagents/file_reagent.rs:16",
+    "text": "}))\n}\n\"delete\" => {\nverify_expected_digest(args, path, auth.expected_digest)?;\nlet (parent, leaf) = open_parent_and_leaf(root, path)?;\nmatch stat_leaf(&parent, leaf)? {\nNone => {\nreturn Err(Fail::Failed(format!("
+   }
+  ],
+  "src/reagents/mcp_reagent.rs": [
+   {
+    "id": "ac3d9eb:src/reagents/mcp_reagent.rs:17",
+    "text": "impl Drop for ChildGuard {\nfn drop(&mut self) {\nlet _ = self.0.kill();\nlet _ = self.0.wait();\n}"
+   },
+   {
+    "id": "ac3d9eb:src/reagents/mcp_reagent.rs:18",
+    "text": ".command\n.split_first()\n.ok_or_else(|| \"mcp reagent `command` must not be empty\".to_string())?;\nlet mut cmd = Command::new(prog);\ncrate::git_reagent::strip_sensitive_env(&mut cmd, root_cfg);\ncmd.args(rest)\n.stdin(Stdio::piped())\n.stdout(Stdio::piped())\n.stderr(Stdio::null());\nif let Some(cwd) = &cfg.cwd {\ncmd.current_dir(cwd);\n}"
+   }
+  ]
+ },
+ "fix_commit": "ac3d9eb",
+ "dirs": [
+  "src",
+  "src/core",
+  "src/reagents"
+ ],
+ "category": "crypto-secrets",
+ "tags": [
+  "key-encryption",
+  "root-grants",
+  "atomic-write"
+ ],
+ "summary": "Harden key encryption, root grants, atomic file/mail writes, and MCP process groups"
+}

@@ -1,0 +1,70 @@
+{
+ "target": "1b7b117",
+ "source": "fix commits d48ca09",
+ "total": 11,
+ "by_file": {
+  "src/core.rs": [
+   {
+    "id": "d48ca09:src/core.rs:1",
+    "text": "self.emit(&id, \"drift\", w, json!({}));\n}\nlet root_ritual = r.def.ritual.clone();\nlet actor = if r.caller.starts_with(\"operator:\") {\nSome(self.actor_context_for(&Self::normalize_actor_id(&r.caller)))\n} else if self.cfg.rbac.enforce {\nlet cur = audit::current_actor();\nSome(self.actor_context_for(&Self::normalize_actor_id(&cur)))\n} else {\nNone\n};"
+   },
+   {
+    "id": "d48ca09:src/core.rs:2",
+    "text": "json!({\"revived_from\": old_id}),\n);\nlet core = self.clone();\nstd::thread::spawn(move || {\ncore.complete(run, false);\n});\nOk(json!({\"summon\": id, \"revived_from\": old_id}))"
+   },
+   {
+    "id": "d48ca09:src/core.rs:3",
+    "text": "json!({\"recast_from\": old_id, \"from_step\": req.from_step, \"kept_steps\": keep.len()}),\n);\nlet core = self.clone();\nstd::thread::spawn(move || {\ncore.complete(run, false);\n});\nOk(json!({\"summon\": id, \"recast_from\": old_id, \"from_step\": req.from_step}))"
+   },
+   {
+    "id": "d48ca09:src/core.rs:4",
+    "text": "self.storage_health()?;\n}\nlet core = self.clone();\nstd::thread::spawn(move || {\ncore.complete(run, false);\n});\nlet mut out = out;"
+   }
+  ],
+  "src/core/audit.rs": [
+   {
+    "id": "d48ca09:src/core/audit.rs:5",
+    "text": "));\n}\n// Re-verify every audit_log entry's hash and Ed25519 signature.\nlet audit_entries = body[\"audit_log\"].as_array().cloned().unwrap_or_default();\nfor entry in &audit_entries {\nlet seq = entry[\"seq\"].as_i64().unwrap_or(0);\nlet ts = entry[\"ts\"].as_i64().unwrap_or(0);"
+   },
+   {
+    "id": "d48ca09:src/core/audit.rs:6",
+    "text": "let prev = entry[\"prev_hash\"].as_str().unwrap_or(\"\");\nlet hash = entry[\"hash\"].as_str().unwrap_or(\"\");\nlet sig = entry[\"sig\"].as_str().unwrap_or(\"\");\nlet payload =\ncanonical_audit_entry(seq, prev, ts, actor, action, target, outcome, &entry[\"detail\"]);\nif sha256_hex(payload.as_bytes()) != hash {"
+   },
+   {
+    "id": "d48ca09:src/core/audit.rs:7",
+    "text": "format!(\"audit entry #{seq} signature verification failed\"),\n));\n}\n}\n// Re-verify epitaph links and Merkle root."
+   }
+  ],
+  "src/reagents/wasm_reagent.rs": [
+   {
+    "id": "d48ca09:src/reagents/wasm_reagent.rs:8",
+    "text": "if runtime.ends_with(\"wasmtime\") {\ncmd.arg(\"run\");\nfor dir in &cfg.preopen_dirs {\ncmd.arg(\"--dir\").arg(dir);\n}\nif let Some(fuel) = cfg.fuel {"
+   },
+   {
+    "id": "d48ca09:src/reagents/wasm_reagent.rs:9",
+    "text": "}\nif let Some(mb) = cfg.max_memory_mb {\nlet bytes = mb.saturating_mul(1024 * 1024);\ncmd.arg(\"-W\").arg(format!(\"max-wasm-stack={}\", bytes.min(64 * 1024 * 1024)));\n}\ncmd.arg(&cfg.module);\n} else {\n// Custom WASI runner receives `<module>` as its sole positional argument.\ncmd.arg(&cfg.module);"
+   },
+   {
+    "id": "d48ca09:src/reagents/wasm_reagent.rs:10",
+    "text": "let req_payload = json!({\"tool\": tool, \"arguments\": args}).to_string();\nif let Some(mut stdin) = child.stdin.take() {\nstdin\n.write_all(req_payload.as_bytes())\n.map_err(|e| format!(\"failed writing stdin to wasm reagent: {e}\"))?;\n}\nlet mut stdout = child.stdout.take().expect(\"piped stdout\");"
+   },
+   {
+    "id": "d48ca09:src/reagents/wasm_reagent.rs:11",
+    "text": "libc::kill(-pid, libc::SIGKILL);\n}\nlet _ = child.wait();\nreturn Err(format!(\n\"wasm reagent timed out after {}ms (process group killed)\",\ntimeout.as_millis()"
+   }
+  ]
+ },
+ "fix_commit": "d48ca09",
+ "dirs": [
+  "src",
+  "src/core",
+  "src/reagents"
+ ],
+ "category": "process-sandbox",
+ "tags": [
+  "wasm",
+  "bundle-chain",
+  "actor-propagation"
+ ],
+ "summary": "Harden bundle chain verification, wasm_reagent process safety, and actor propagation"
+}
