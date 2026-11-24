@@ -27,10 +27,11 @@ def export(record, patch):
         evidence = stage["output"][key]
         for index, row in enumerate(evidence["rows"]):
             lines.append(json.dumps({
+                **row,
                 "rite": name, "rite_id": record["id"], "stage": stage_name,
                 "summon": stage["summon"], "ritual_hash": stage["hash"], "ordinal": index + 1,
                 "parent": evidence["parent"], "head": evidence["head"],
-                "verdict": verdict, **row
+                "verdict": verdict
             }, sort_keys=True) + "\n")
     return "".join(lines)
 
