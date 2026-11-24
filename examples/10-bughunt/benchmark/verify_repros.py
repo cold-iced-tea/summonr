@@ -19,18 +19,27 @@ Verdict per confirmed finding:
   - missing_test_file:     confirmed item had empty test_file
 
 Usage:
-  verify_repros.py REPO FIX_COMMIT TEST_JSON [--out VERIFY_JSON] [--timeout 120]
+  verify_repros.py REPO FIX_COMMIT TEST_JSON [--crate-path crates/foo] [--out VERIFY_JSON] [--timeout 120]
   verify_repros.py REPO --suite SUITE_JSON --name CASE_NAME TEST_JSON [--out VERIFY_JSON]
+
+With --suite, a case's `crate_path` is used, and when the case names a
+`repo_name` (external-suite.json) REPO may be the fetch_external.py cache
+directory that holds that clone. The repro goes where setup.sh puts it: the
+repository's src/bughunt_repro.rs, declared from the crate's src/lib.rs (or
+src/main.rs), through #[path] for a workspace crate. Each commit is tested
+with `cargo test --offline` on that crate only; dependencies must already be
+in the Cargo cache.
 """
 import argparse
 import json
+import os
 import pathlib
 import subprocess
 import sys
 import tempfile
 
 
-def run(cmd, cwd=None, timeout=120):
+def run(cmd, cwd=None, timeout=120, env=None):
     try:
         p = subprocess.run(
             cmd,
@@ -38,6 +47,7 @@ def run(cmd, cwd=None, timeout=120):
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=env,
         )
         return p.returncode, p.stdout + "\n" + p.stderr
     except subprocess.TimeoutExpired as e:
@@ -52,28 +62,52 @@ def git_rev(repo, rev):
     return out.strip()
 
 
-def find_crate_root(wt: pathlib.Path) -> pathlib.Path:
+def find_crate_root(wt: pathlib.Path, crate_path: str = "") -> pathlib.Path:
+    crate = wt / crate_path
     for name in ("src/lib.rs", "src/main.rs"):
-        p = wt / name
+        p = crate / name
         if p.exists():
             return p
-    raise RuntimeError(f"no src/lib.rs or src/main.rs found in {wt}")
+    raise RuntimeError(f"no src/lib.rs or src/main.rs found in {crate}")
 
 
-def inject_and_test(wt: pathlib.Path, test_source: str, timeout: int):
-    repro_path = wt / "src" / "bughunt_repro.rs"
-    root_path = find_crate_root(wt)
+def module_decl(crate_path: str) -> str:
+    """How the crate root declares the repository's src/bughunt_repro.rs."""
+    if not crate_path:
+        return "\n#[cfg(test)]\nmod bughunt_repro;\n"
+    # #[path] is relative to the directory of the declaring file (CRATE/src).
+    up = "/".join([".."] * (len(pathlib.PurePosixPath(crate_path).parts) + 1))
+    return f'\n#[cfg(test)]\n#[path = "{up}/src/bughunt_repro.rs"]\nmod bughunt_repro;\n'
+
+
+def inject_and_test(wt: pathlib.Path, test_source: str, timeout: int, crate_path: str = "", target_dir=None):
+    src_dir = wt / "src"
+    made_src = not src_dir.exists()
+    repro_path = src_dir / "bughunt_repro.rs"
+    root_path = find_crate_root(wt, crate_path)
     orig_root = root_path.read_text(encoding="utf-8")
-    mod_decl = "\n#[cfg(test)]\nmod bughunt_repro;\n"
+    cmd = ["cargo", "test", "--offline"]
+    if crate_path:
+        cmd += ["--manifest-path", f"{crate_path}/Cargo.toml"]
+    if root_path.name == "lib.rs":
+        cmd.append("--lib")
+    cmd += ["bughunt_repro", "--", "--nocapture"]
+    # As in setup.sh: a target's own #![deny(warnings)] must not fail the
+    # build on lints a newer compiler added.
+    env = dict(os.environ, RUSTFLAGS="--cap-lints=warn")
+    if target_dir:
+        env["CARGO_TARGET_DIR"] = str(target_dir)
     try:
+        src_dir.mkdir(exist_ok=True)
         repro_path.write_text(test_source, encoding="utf-8")
         if "mod bughunt_repro;" not in orig_root:
-            root_path.write_text(orig_root + mod_decl, encoding="utf-8")
-        rc, output = run(
-            ["cargo", "test", "--offline", "bughunt_repro", "--", "--nocapture"],
-            cwd=wt,
-            timeout=timeout,
-        )
+            decl = module_decl(crate_path)
+            # As in setup.sh: a #![no_std] crate does not name std.
+            lines = orig_root.splitlines()
+            if any(l.startswith("#![no_std]") for l in lines) and "extern crate std;" not in lines:
+                decl += "#[cfg(test)]\nextern crate std;\n"
+            root_path.write_text(orig_root + decl, encoding="utf-8")
+        rc, output = run(cmd, cwd=wt, timeout=timeout, env=env)
         tail = "\n".join(output.strip().splitlines()[-25:])
         compiled = not (
             "could not compile" in output
@@ -92,6 +126,8 @@ def inject_and_test(wt: pathlib.Path, test_source: str, timeout: int):
         root_path.write_text(orig_root, encoding="utf-8")
         if repro_path.exists():
             repro_path.unlink()
+        if made_src and not any(src_dir.iterdir()):
+            src_dir.rmdir()
 
 
 def extract_results(doc):
@@ -115,12 +151,14 @@ def main():
     p.add_argument("--suite", type=pathlib.Path)
     p.add_argument("--name")
     p.add_argument("--out", type=pathlib.Path)
+    p.add_argument("--crate-path", default="", help="the crate's directory inside a Cargo workspace")
     p.add_argument("--timeout", type=int, default=180)
     args = p.parse_args()
 
     fix_commit = args.fix_commit
     case_name = args.name
     category = None
+    crate_path = args.crate_path.strip("/")
     if args.suite and args.name:
         suite = json.load(open(args.suite, encoding="utf-8"))
         match = next((c for c in suite.get("cases", []) if c["name"] == args.name), None)
@@ -128,6 +166,10 @@ def main():
             sys.exit(f"case `{args.name}` not found in {args.suite}")
         fix_commit = fix_commit or match.get("fix_commit")
         category = match.get("category")
+        crate_path = crate_path or (match.get("crate_path") or "").strip("/")
+        name = match.get("repo_name")
+        if name and not (args.repo / ".git").exists() and (args.repo / name / ".git").exists():
+            args.repo = args.repo / name
     if not fix_commit:
         sys.exit("fix_commit is required (pass positionally or via --suite + --name)")
 
@@ -142,6 +184,7 @@ def main():
         "category": category,
         "parent_commit": parent_commit,
         "fix_commit": fix_short,
+        "crate_path": crate_path or None,
         "total_results": len(results),
         "confirmed_input": len(confirmed),
         "counts": {
@@ -164,6 +207,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="bughunt-verify-") as tmp:
         wt_parent = pathlib.Path(tmp) / "parent"
         wt_fix = pathlib.Path(tmp) / "fix"
+        # One target directory for both commits: the dependencies build once.
+        target_dir = pathlib.Path(tmp) / "cargo-target"
         try:
             for wt, rev in ((wt_parent, parent_commit), (wt_fix, fix_short)):
                 rc, out = run(["git", "-C", str(args.repo), "worktree", "add", "--detach", str(wt), rev])
@@ -183,14 +228,14 @@ def main():
                     summary["items"].append(entry)
                     continue
 
-                on_parent = inject_and_test(wt_parent, src, args.timeout)
+                on_parent = inject_and_test(wt_parent, src, args.timeout, crate_path, target_dir)
                 entry["parent"] = on_parent
                 if not on_parent["compiled"]:
                     status = "compile_error_on_parent"
                 elif not on_parent["confirmed_marker"]:
                     status = "passed_on_parent"
                 else:
-                    on_fix = inject_and_test(wt_fix, src, args.timeout)
+                    on_fix = inject_and_test(wt_fix, src, args.timeout, crate_path, target_dir)
                     entry["fix"] = on_fix
                     if not on_fix["compiled"]:
                         status = "compile_error_on_fix"

@@ -38,6 +38,11 @@ examples/10-bughunt/setup.sh ~/bughunt-lab /path/to/project COMMIT "$PWD/target/
 export SUMMONR_HOME=~/bughunt-lab/home
 ```
 
+For a crate inside a Cargo workspace, add its directory as a fifth argument
+(`... "$PWD/target/release/summonr" crates/foo`): the trial then runs that
+crate's tests only. A project that does not commit `Cargo.lock` gets one
+resolved offline from the local Cargo cache, so run `cargo fetch` first.
+
 `setup.sh` clones the project into `~/bughunt-lab/target` at `COMMIT` on a
 `bughunt-base` branch with the repro harness committed, gives it a local
 bare remote (see LIMITS.md, 13), writes the lab's `config/config.yaml`
