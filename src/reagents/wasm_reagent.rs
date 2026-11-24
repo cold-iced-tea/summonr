@@ -12,6 +12,8 @@ use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const WASM_MAGIC_V1: &[u8; 8] = b"\0asm\x01\0\0\0";
@@ -122,8 +124,19 @@ pub(crate) fn call_tool(
     let mut stdout = child.stdout.take().expect("piped stdout");
     let mut stderr = child.stderr.take().expect("piped stderr");
 
-    let out_handle = std::thread::spawn(move || read_bounded(&mut stdout, max_out));
-    let err_handle = std::thread::spawn(move || read_bounded(&mut stderr, 16_384));
+    // stderr gets the same cap as stdout, never more than 16 KiB. A stream
+    // that passes its cap raises `overflow`, and the wait loop below kills
+    // the runner at once instead of leaving it blocked on a full pipe.
+    let max_err = max_out.min(16_384);
+    let overflow = Arc::new(AtomicBool::new(false));
+    let out_handle = {
+        let overflow = overflow.clone();
+        std::thread::spawn(move || read_bounded(&mut stdout, max_out, "stdout", &overflow))
+    };
+    let err_handle = {
+        let overflow = overflow.clone();
+        std::thread::spawn(move || read_bounded(&mut stderr, max_err, "stderr", &overflow))
+    };
 
     let started = Instant::now();
     let status = loop {
@@ -142,6 +155,18 @@ pub(crate) fn call_tool(
                         "wasm reagent timed out after {}ms (process group killed)",
                         timeout.as_millis()
                     ));
+                }
+                if overflow.load(Ordering::SeqCst) {
+                    let pid = child.id() as libc::pid_t;
+                    unsafe {
+                        libc::kill(-pid, libc::SIGKILL);
+                    }
+                    let _ = child.wait();
+                    let out = out_handle.join().map_err(|_| "stdout reader panicked".to_string())?;
+                    let err = err_handle.join().map_err(|_| "stderr reader panicked".to_string())?;
+                    out?;
+                    err?;
+                    return Err("wasm reagent output exceeded its cap (process group killed)".into());
                 }
                 if crate::cancel::requested() {
                     let pid = child.id() as libc::pid_t;
@@ -164,8 +189,7 @@ pub(crate) fn call_tool(
         .map_err(|_| "stdout reader panicked".to_string())??;
     let err_bytes = err_handle
         .join()
-        .map_err(|_| "stderr reader panicked".to_string())?
-        .unwrap_or_default();
+        .map_err(|_| "stderr reader panicked".to_string())??;
 
     if !status.success() {
         let err_s = String::from_utf8_lossy(&err_bytes);
@@ -182,16 +206,19 @@ pub(crate) fn call_tool(
         .map_err(|e| format!("wasm reagent stdout was not valid JSON: {e}"))
 }
 
-fn read_bounded(r: &mut impl Read, limit: usize) -> Result<Vec<u8>, String> {
+/// Read `r` to its end, refusing more than `limit` bytes. Going over sets
+/// `overflow` so the caller can stop the writer.
+fn read_bounded(r: &mut impl Read, limit: usize, stream: &str, overflow: &AtomicBool) -> Result<Vec<u8>, String> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
-        let n = r.read(&mut chunk).map_err(|e| e.to_string())?;
+        let n = r.read(&mut chunk).map_err(|e| format!("reading wasm reagent {stream}: {e}"))?;
         if n == 0 {
             return Ok(buf);
         }
         if buf.len().saturating_add(n) > limit {
-            return Err(format!("wasm reagent output exceeded {limit} bytes"));
+            overflow.store(true, Ordering::SeqCst);
+            return Err(format!("wasm reagent {stream} exceeded {limit} bytes"));
         }
         buf.extend_from_slice(&chunk[..n]);
     }
@@ -297,6 +324,47 @@ mod tests {
         let cfg_early = make_wasm_cfg(&wasm_file, digest, early.display().to_string());
         let err2 = call_tool(&cfg_early, "calc", &json!({"big": "x".repeat(4096)}), None).unwrap_err();
         assert!(err2.contains("boom"), "expected stderr message, got: {err2}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn too_much_stderr_is_an_error_not_a_silent_success() {
+        let dir = std::env::temp_dir().join(format!("summonr-wasm-stderr-{}", new_id("t")));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wasm_file = dir.join("calc.wasm");
+        std::fs::write(&wasm_file, WASM_MAGIC_V1).unwrap();
+        let digest = sha256_hex(WASM_MAGIC_V1);
+
+        // Writes 20,000 bytes to stderr, then a valid answer, and exits 0.
+        let noisy = dir.join("noisy.sh");
+        std::fs::write(&noisy, "#!/bin/sh\ncat >/dev/null\nhead -c 20000 /dev/zero | tr '\\0' x >&2\necho '{\"ok\":true}'\n").unwrap();
+        std::fs::set_permissions(&noisy, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut cfg = make_wasm_cfg(&wasm_file, digest.clone(), noisy.display().to_string());
+        cfg.max_output_bytes = Some(1024);
+        let err = call_tool(&cfg, "calc", &json!({}), None).unwrap_err();
+        assert!(err.contains("stderr") && err.contains("1024"), "unexpected: {err}");
+
+        // A runner that never stops writing to stderr is stopped as soon as it
+        // passes the cap, not left blocked on a full pipe until the timeout.
+        let flood = dir.join("flood.sh");
+        std::fs::write(&flood, "#!/bin/sh\nwhile :; do echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx >&2; done\n").unwrap();
+        std::fs::set_permissions(&flood, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut cfg = make_wasm_cfg(&wasm_file, digest.clone(), flood.display().to_string());
+        cfg.max_output_bytes = Some(1024);
+        let started = Instant::now();
+        let err = call_tool(&cfg, "calc", &json!({}), None).unwrap_err();
+        assert!(err.contains("stderr") && !err.contains("timed out"), "unexpected: {err}");
+        assert!(started.elapsed() < Duration::from_millis(2_000), "took {:?}", started.elapsed());
+
+        // The same holds for stdout.
+        let big = dir.join("big.sh");
+        std::fs::write(&big, "#!/bin/sh\nwhile :; do echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; done\n").unwrap();
+        std::fs::set_permissions(&big, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut cfg = make_wasm_cfg(&wasm_file, digest, big.display().to_string());
+        cfg.max_output_bytes = Some(1024);
+        let err = call_tool(&cfg, "calc", &json!({}), None).unwrap_err();
+        assert!(err.contains("stdout") && !err.contains("timed out"), "unexpected: {err}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
