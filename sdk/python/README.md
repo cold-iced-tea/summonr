@@ -64,9 +64,18 @@ prompts when reproducing an existing definition's exact hash. Explicit reagent
 lists are preserved, and missing used primitives are appended.
 
 Types (`Str`, `Int`, `Number`, `Bool`, `List`, `Object`) construct output schemas.
-Input declarations support only the runtime's existing shallow types: nested
-`List[Int]` inputs are rejected rather than pretending their elements are checked.
-Use `List` for a list input and validate its contents explicitly. Editor stubs
+Input declarations use the runtime's input types. A typed list input such as
+`List[Int]` is declared with its item schema (`{"type": "list", "schema": ...}`),
+which the runtime checks when the run is invoked. Other constraints the runtime
+does not enforce on inputs are refused.
+
+Recent language features have flat builders: every pure `r.data.*` operation
+(`coalesce`, `range`, `index_of`, `unique_by`, `flatten`, ...; `data.assert` is
+`r.data.assert_`), `r.each(..., keep=[...])`, `r.filter(..., params=...)` with
+`r.param(NAME)`, the expression string helpers `lower`, `upper`, `trim`,
+`contains`, `starts_with` and `ends_with`, `with r.cleanup():` for `finally:`,
+and `r.require(reagent, action, on={"root": target})` for a root taken from an
+input. `tests/test_parity.py` compiles each with the real binary when one is built. Editor stubs
 provide API completion; they do not establish full static typing of referenced
 fields or eliminate the mandatory Rust compilation step.
 

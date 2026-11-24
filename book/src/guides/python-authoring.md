@@ -34,6 +34,29 @@ conversion raise errors. Use `r.when` / `r.fail_if` for runtime conditions and
 unroll at authoring time. `map`/`filter`/`fold` callbacks build templates once;
 they are never executed by the runtime.
 
+## The language from Python
+
+Each construct has a flat builder, so an agent never writes nested YAML:
+
+| Language | Python |
+| --- | --- |
+| any pure `data.*` operation | `r.data.NAME(required..., keyword=..., id=...)`, such as `r.data.coalesce([at, 0])`, `r.data.range(0, n)`, `r.data.index_of(names, want)`, `r.data.unique_by(claims, ["file", "line"])`, `r.data.flatten(lists)`; `data.assert` is `r.data.assert_` |
+| `each` with `keep:` | `with r.each(files, id="per", keep=["verdict"]) as f:` |
+| `data.filter` with `params` | `r.filter(rows, lambda item: item["score"] >= r.param("floor"), params={"floor": floor})` |
+| string helpers | `from summonr import lower, upper, trim, contains, starts_with, ends_with`; `r.filter(lines, lambda item: ~starts_with(trim(item), "//"))`, `r.when(contains(lower(name), "test"))` |
+| `decimal` / `number` input | `r.input("floor", Number(min=0))` |
+| typed list input | `r.input("files", List[Str])` declares the item schema, which the runtime checks |
+| `finally:` | `with r.cleanup():`, with `r.status("wt") == "returned"` as a guard |
+| a root taken from an input | `r.require("file", "read_text", on={"root": target})`, granted with `--under DIR` ([roots chosen at run time](../concepts/authority.md#roots-chosen-at-run-time)) |
+
+The string helpers build expressions, never Python strings: `bool(lower(x))`
+raises, and they cannot be passed as step arguments. `require` scopes may use
+inputs only, since they are checked before the run starts.
+
+The SDK tests compile every parity example with the real `summonr` binary when
+one is built (`SUMMONR_BIN`, or `target/debug/summonr`), so they check what
+Summonr accepts, not only the emitted shape.
+
 The prototype includes explicit operation, model, child, loop and conditional
 builders, schema helpers, and editor stubs. It does not provide full static typing,
 a sandbox, source maps, a dedicated else builder, or general Python translation.

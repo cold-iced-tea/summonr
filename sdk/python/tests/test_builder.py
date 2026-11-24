@@ -63,7 +63,9 @@ class BuilderTests(unittest.TestCase):
         definition['ritual']='changed'
         self.assertEqual(r.definition()['ritual'],'test')
         with self.assertRaises(ValueError):r.input('values',List)
-        with self.assertRaises(ValueError):r.input('typed',List[Int])
+        # A typed list is declared with its item schema, which the runtime checks.
+        r.input('typed',List[Int])
+        self.assertEqual(r.definition()['inputs']['typed'],{'type':'list','schema':{'type':'array','items':{'type':'integer'}}})
 
     def test_cross_builder_and_implicit_expression_arguments_fail(self):
         a,b=Ritual('a'),Ritual('b')

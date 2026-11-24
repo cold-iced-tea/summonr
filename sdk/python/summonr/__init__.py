@@ -10,7 +10,8 @@ import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
 
-__all__ = ['Ritual', 'Ref', 'Expr', 'Str', 'Int', 'Number', 'Bool', 'List', 'Object', 'emit']
+__all__ = ['Ritual', 'Ref', 'Expr', 'Str', 'Int', 'Number', 'Bool', 'List', 'Object', 'emit',
+           'lower', 'upper', 'trim', 'contains', 'starts_with', 'ends_with']
 _MISSING = object()
 
 
@@ -53,7 +54,79 @@ class Expr:
         return Expr(f'not ({self.source})', self.owner)
 
 
-class Ref(Expr):
+def _operand(value, owner, what):
+    """Expression source for a reference, string-valued call, or scalar literal."""
+    if isinstance(value, _Comparable):
+        if owner is not None and value.owner is not owner:
+            raise ValueError('cannot mix references from different rituals')
+        return value.source
+    if value is None or isinstance(value, (str, bool, int, float)):
+        source = json.dumps(value, ensure_ascii=False, allow_nan=False)
+        if isinstance(value, str) and '\\' in source:
+            raise ValueError('expression string literals do not support escapes; use data.compare')
+        return source
+    raise TypeError(f'{what} requires a reference or scalar literal')
+
+
+class _Comparable(Expr):
+    """A runtime value an expression can compare: a reference or a string helper's result."""
+    def _compare(self, other, operator):
+        return Expr(f'{self.source} {operator} {_operand(other, self.owner, "comparison")}', self.owner)
+
+    def __eq__(self, other): return self._compare(other, '==')
+    def __ne__(self, other): return self._compare(other, '!=')
+    def __lt__(self, other): return self._compare(other, '<')
+    def __le__(self, other): return self._compare(other, '<=')
+    def __gt__(self, other): return self._compare(other, '>')
+    def __ge__(self, other): return self._compare(other, '>=')
+    __hash__ = None
+
+
+class _StrCall(_Comparable):
+    """The string result of lower/upper/trim: compare it or pass it to another helper."""
+
+
+def _call(name, args, result):
+    owner = next((a.owner for a in args if isinstance(a, _Comparable)), None)
+    parts = []
+    for a in args:
+        if not isinstance(a, (_Comparable, str)):
+            raise TypeError(f'{name} takes strings or references, not {type(a).__name__}')
+        parts.append(_operand(a, owner, name))
+    return result(f'{name}({", ".join(parts)})', owner)
+
+
+def lower(s):
+    """`lower(s)` in an expression: `s` in lower case. Arguments must be strings at run time."""
+    return _call('lower', [s], _StrCall)
+
+
+def upper(s):
+    """`upper(s)` in an expression: `s` in upper case."""
+    return _call('upper', [s], _StrCall)
+
+
+def trim(s):
+    """`trim(s)` in an expression: `s` without surrounding whitespace."""
+    return _call('trim', [s], _StrCall)
+
+
+def contains(haystack, needle):
+    """`contains(haystack, needle)` in an expression: a boolean condition."""
+    return _call('contains', [haystack, needle], Expr)
+
+
+def starts_with(s, prefix):
+    """`starts_with(s, prefix)` in an expression: a boolean condition."""
+    return _call('starts_with', [s, prefix], Expr)
+
+
+def ends_with(s, suffix):
+    """`ends_with(s, suffix)` in an expression: a boolean condition."""
+    return _call('ends_with', [s, suffix], Expr)
+
+
+class Ref(_Comparable):
     def __getitem__(self, key):
         if isinstance(key, int) and not isinstance(key, bool) and key >= 0:
             key = str(key)
@@ -64,25 +137,6 @@ class Ref(Expr):
             raise AttributeError(key)
         return self[key]
 
-    def _compare(self, other, operator):
-        if isinstance(other, Ref):
-            if other.owner is not self.owner:
-                raise ValueError('cannot mix references from different rituals')
-            rhs = other.source
-        elif other is None or isinstance(other, (str, bool, int, float)):
-            rhs = json.dumps(other, ensure_ascii=False, allow_nan=False)
-            if isinstance(other, str) and '\\' in rhs:
-                raise ValueError('expression string literals do not support escapes; use data.compare')
-        else:
-            raise TypeError('comparison requires a reference or scalar literal')
-        return Expr(f'{self.source} {operator} {rhs}', self.owner)
-
-    def __eq__(self, other): return self._compare(other, '==')
-    def __ne__(self, other): return self._compare(other, '!=')
-    def __lt__(self, other): return self._compare(other, '<')
-    def __le__(self, other): return self._compare(other, '<=')
-    def __gt__(self, other): return self._compare(other, '>')
-    def __ge__(self, other): return self._compare(other, '>=')
     __hash__ = None
 
 
@@ -149,16 +203,29 @@ def _encode(value, owner):
 
 
 class _Data:
+    # Every pure data operation, with the order of its positional arguments
+    # (the operation's required arguments); the rest are keywords.
     _positionals = {'parse_json':['text'], 'project':['value','fields'], 'count':['value'],
                     'sum_integers':['values'], 'assert':['condition'], 'get':['value','path'],
                     'keys':['value'], 'concat':['left','right'], 'slice':['values','start','end'],
                     'sort':['values'], 'unique':['values'], 'trim':['text'], 'split':['text','separator'],
                     'join':['values','separator'], 'replace':['text','from','to'],
-                    'arithmetic':['left','right','operator'], 'compare':['left','right','operator']}
+                    'arithmetic':['left','right','operator'], 'compare':['left','right','operator'],
+                    'all':['values'], 'any':['values'], 'logic':['operator','left','right'],
+                    'select':['condition','then','else'], 'min':['values'], 'max':['values'],
+                    'clamp':['value','min','max'], 'abs':['value'], 'merge':['left','right'],
+                    'set':['value','field','item'], 'omit':['value','fields'], 'entries':['value'],
+                    'from_entries':['entries'], 'sha256':['text'], 'canonical_json':['value'],
+                    'contains':['value','needle'], 'starts_with':['text','prefix'],
+                    'ends_with':['text','suffix'], 'case':['text','mode'], 'lines':['text'],
+                    'coalesce':['values'], 'flatten':['values'], 'unique_by':['values','fields'],
+                    'range':['start','end','step'], 'index_of':['values','needle']}
 
     def __init__(self, ritual): self.ritual = ritual
 
     def __getattr__(self, name):
+        # `assert` is a Python keyword: r.data.assert_(...) spells data.assert.
+        if name == 'assert_': name = 'assert'
         if name not in self._positionals:
             raise AttributeError(f'unknown data primitive {name}; use map/filter/fold methods for collections')
         def build(*args, id=None, **kwargs):
@@ -192,11 +259,14 @@ class Ritual:
         _segment(name)
         if name in self._definition['inputs']: raise ValueError('duplicate input '+name)
         definition = _schema(type)
+        # A typed list (List[Str]) is declared with its schema, so steps see the item type.
+        items = definition.pop('items', None) if definition.get('type') == 'array' else None
         unsupported = definition.keys() - {'type','minimum','maximum','enum'}
         if unsupported: raise ValueError(f'input declarations cannot enforce {sorted(unsupported)}; validate with data.parse_json or an explicit schema')
         kind = {'array':'list','number':'decimal'}.get(definition['type'],definition['type'])
         if kind not in ('list','decimal','integer','string','boolean'): raise ValueError('unsupported input type')
         out = {'type':kind, **{ {'minimum':'min','maximum':'max'}.get(k,k):v for k,v in definition.items() if k!='type'}}
+        if items is not None: out['schema'] = {'type':'array','items':items}
         if default is not _MISSING: out['default'] = _encode(default,self)
         if user_only: out['user_only'] = True
         self._definition['inputs'][name] = out
@@ -250,6 +320,24 @@ class Ritual:
 
     def ref(self, id): return Ref('steps.'+_segment(id)+'.output',self)
 
+    def param(self, name):
+        """`params.NAME` inside a filter predicate; bind it with filter(..., params={NAME: value})."""
+        return Ref('params.'+_segment(name),self)
+
+    def require(self, reagent, action, *, on=None, into=None):
+        """Declare authority under `requires`. Scope values may be inputs, such as
+        on={'root': target}: the root is chosen per run and granted with `--under DIR`."""
+        entry = {'reagent':reagent,'action':action}
+        for key,scope in [('on',on),('into',into)]:
+            if not scope: continue
+            for value in scope.values():
+                values = value if isinstance(value,(list,tuple)) else [value]
+                if any(isinstance(v,Ref) and not v.source.startswith('inputs.') for v in values):
+                    raise ValueError('requires is checked before the run, so its scopes can only use inputs')
+            entry[key] = _encode(scope,self)
+        self._definition.setdefault('requires',[]).append(entry)
+        return self
+
     def status(self, id):
         """How step `id` ended (`returned`, `skipped`, ...), for cleanup guards."""
         return Ref('steps.'+_segment(id)+'.status',self)
@@ -283,11 +371,15 @@ class Ritual:
             self.op('data.assert',id=id,condition=False,message=message)
 
     @contextmanager
-    def each(self, values, *, id=None, as_='item', on_failure=None):
+    def each(self, values, *, id=None, as_='item', on_failure=None, keep=None):
+        """keep: the ids of body steps whose output is recorded per item (`keep:`)."""
         if not isinstance(values, Ref) or values.owner is not self: raise TypeError('each source must be a reference in this ritual')
+        if keep is not None and (isinstance(keep, str) or not all(isinstance(k, str) for k in keep)):
+            raise TypeError('keep is a list of step ids, such as keep=["verdict"]')
         id = self._id(id)
         step = {'id':id,'each':_segment(as_)+' in '+values.source,'steps':[]}
         if on_failure is not None: step['on_failure'] = on_failure
+        if keep is not None: step['keep'] = [_segment(k) for k in keep]
         self._stack[-1].append(step)
         self._stack.append(step['steps'])
         try: yield Ref(as_,self)
