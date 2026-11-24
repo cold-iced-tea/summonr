@@ -368,7 +368,10 @@ steps:
               condition: "${steps.use_gemini.output}"
               then: gemini/default
               else: "${steps.after_codex.output}"
+          # One retry: an answer that is not JSON matching the schema (prose
+          # from a cloud agent) would otherwise drop this finding.
           - id: write_repro
+            retry: 1
             model:
               one_of:
                 - ollama/qwen3:4b
