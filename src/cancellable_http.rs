@@ -35,6 +35,9 @@ struct Target<'a> {
 }
 
 fn target(url: &str) -> Result<Target<'_>, String> {
+    if url.bytes().any(|b| b <= 0x20 || b == 0x7f) {
+        return Err(format!("invalid character in URL: {url}"));
+    }
     let rest = url
         .strip_prefix("http://")
         .ok_or_else(|| format!("not a plain http URL: {url}"))?;
@@ -88,6 +91,17 @@ pub(crate) fn request(
         return Outcome::Cancelled;
     }
     let unreachable = |e: String| Outcome::Done(Err(format!("backend unreachable at {url}: {e}")));
+    if method.is_empty() || method.bytes().any(|b| b <= 0x20 || b == 0x7f) {
+        return unreachable(format!("invalid HTTP method: {method}"));
+    }
+    for (k, v) in headers {
+        if k.is_empty()
+            || k.bytes().any(|b| b <= 0x20 || b == 0x7f || b == b':')
+            || v.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0)
+        {
+            return unreachable(format!("invalid HTTP header `{k}`"));
+        }
+    }
     let t = match target(url) {
         Ok(t) => t,
         Err(e) => return unreachable(e),
@@ -563,5 +577,37 @@ mod tests {
                 server.join().unwrap();
             });
         }
+    }
+
+    #[test]
+    fn rejects_crlf_and_control_characters_in_url_method_and_headers() {
+        let cancel = AtomicBool::new(false);
+        let bad_url = "http://127.0.0.1:1/path HTTP/1.1\r\nX-Injected: evil\r\nX-Pad: ";
+        assert!(matches!(
+            request("GET", bad_url, None, &[], Some(Duration::from_secs(1)), &cancel),
+            Outcome::Done(Err(msg)) if msg.contains("invalid character in URL")
+        ));
+        assert!(matches!(
+            request(
+                "GET\r\nX-Bad: 1",
+                "http://127.0.0.1:1/",
+                None,
+                &[],
+                Some(Duration::from_secs(1)),
+                &cancel
+            ),
+            Outcome::Done(Err(msg)) if msg.contains("invalid HTTP method")
+        ));
+        assert!(matches!(
+            request(
+                "GET",
+                "http://127.0.0.1:1/",
+                None,
+                &[("X-Test", "ok\r\nX-Evil: 1")],
+                Some(Duration::from_secs(1)),
+                &cancel
+            ),
+            Outcome::Done(Err(msg)) if msg.contains("invalid HTTP header")
+        ));
     }
 }
