@@ -13,6 +13,13 @@ pub struct Files;
 const TOOLS: &[ToolSpec] = &[
     ToolSpec {
         reagent: "file",
+        name: "walk",
+        effect: "read",
+        determinism: "deterministic over live state",
+        description: "Recursively list bounded, sorted regular-file paths beneath a granted root",
+    },
+    ToolSpec {
+        reagent: "file",
         name: "read_text",
         effect: "read",
         determinism: "deterministic over live state",
@@ -377,6 +384,55 @@ fn root_and_path(args: &Value) -> Result<(&str, &str), Fail> {
     };
     Ok((text("root")?, text("path")?))
 }
+fn operation_path<'a>(name: &str, args: &'a Value) -> Result<(&'a str, &'a str), Fail> {
+    if name == "walk" && (args.get("path").is_none() || args["path"] == ".") {
+        let root = args["root"].as_str().ok_or_else(|| Fail::Invalid("missing root".into()))?;
+        Ok((root, ""))
+    } else {
+        root_and_path(args)
+    }
+}
+
+struct Walk<'a> {
+    suffix: &'a str,
+    limit: usize,
+    visited: usize,
+    truncated: bool,
+    paths: std::collections::BinaryHeap<String>,
+}
+
+impl Walk<'_> {
+    fn visit(&mut self, dir: &File, prefix: &str, depth: u64, auth: &Authority) -> Result<(), Fail> {
+        if depth == 0 {
+            return Ok(());
+        }
+        let io_error = |e: std::io::Error| Fail::Failed(e.to_string());
+        let entries = std::fs::read_dir(format!("/proc/self/fd/{}", dir.as_raw_fd())).map_err(io_error)?;
+        for entry in entries {
+            live(auth)?;
+            self.visited += 1;
+            if self.visited > 100_000 {
+                return Err(Fail::Exhausted("walk exceeds 100000 inspected entries".into()));
+            }
+            let entry = entry.map_err(io_error)?;
+            let kind = entry.file_type().map_err(io_error)?;
+            let name = entry.file_name().into_string()
+                .map_err(|_| Fail::Invalid("directory contains non-UTF-8 names".into()))?;
+            let path = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
+            if kind.is_dir() && depth > 1 {
+                self.visit(&open_at(dir, &name, true)?, &path, depth - 1, auth)?;
+            } else if kind.is_file() && name.ends_with(self.suffix) {
+                self.paths.push(path);
+                if self.paths.len() > self.limit {
+                    self.paths.pop();
+                    self.truncated = true;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 fn live(auth: &Authority) -> Result<(), Fail> {
     if auth.deadline.is_some_and(|d| Instant::now() >= d) {
         Err(Fail::Exhausted("file read deadline".into()))
@@ -403,6 +459,12 @@ impl Reagent for Files {
                 properties["schema"] = json!({"type":"object"});
             }
             "stat" | "delete" => {}
+            "walk" => {
+                required.pop();
+                properties["max_entries"] = json!({"type":"integer","minimum":1,"maximum":10000});
+                properties["max_depth"] = json!({"type":"integer","minimum":0,"maximum":32});
+                properties["ext"] = json!({"type":"string","maxLength":255});
+            }
             "list" => {
                 properties["max_entries"] = json!({"type":"integer","minimum":1,"maximum":10000})
             }
@@ -427,7 +489,7 @@ impl Reagent for Files {
         args: &Value,
         auth: &Authority,
     ) -> Result<(), Fail> {
-        let (root, path) = root_and_path(args)?;
+        let (root, path) = operation_path(name, args)?;
         validate_root(root).map_err(Fail::Denied)?;
         reagent::require(auth, reagent::need("file", name, &[("root", root)], &[]))?;
         // Legacy/broad grants do not bypass explicit directory scoping.
@@ -441,7 +503,7 @@ impl Reagent for Files {
         // Path syntax only; `open` checks it again and refuses symlinks
         // component by component while it walks.
         let parts = segments(path)?;
-        if parts.is_empty() && name != "list" && name != "stat" {
+        if parts.is_empty() && name != "walk" && name != "list" && name != "stat" {
             return Err(Fail::Invalid(format!("file.{name} needs a relative file path")));
         }
         Ok(())
@@ -454,9 +516,22 @@ impl Reagent for Files {
         auth: &Authority,
     ) -> Result<Value, Fail> {
         self.authorize(mail_root, name, args, auth)?;
-        let (root, path) = root_and_path(args)?;
+        let (root, path) = operation_path(name, args)?;
         live(auth)?;
         match name {
+            "walk" => {
+                let mut walk = Walk {
+                    suffix: args["ext"].as_str().unwrap_or(""),
+                    limit: args["max_entries"].as_u64().unwrap_or(1000).min(10_000) as usize,
+                    paths: Default::default(),
+                    truncated: false,
+                    visited: 0,
+                };
+                let depth = args["max_depth"].as_u64().unwrap_or(8).min(32);
+                let prefix = segments(path)?.join("/");
+                walk.visit(&open(root, path, true)?, &prefix, depth, auth)?;
+                Ok(json!({"root":root,"path":path,"paths":walk.paths.into_sorted_vec(),"truncated":walk.truncated}))
+            }
             "read_text" | "read_json" => {
                 let mut file = open(root, path, false)?;
                 let max = args["max_bytes"].as_u64().unwrap_or(1048576) as usize;
@@ -616,6 +691,7 @@ mod tests {
         let selected = Mutex::new(HashSet::new());
         let grants = vec![
             reagent::need("file", "read_text", &[("root", path)], &[]),
+            reagent::need("file", "walk", &[("root", path)], &[]),
             reagent::need("file", "list", &[("root", path)], &[]),
         ];
         let auth = Authority {
@@ -627,6 +703,20 @@ mod tests {
             config: None,
         };
         let run = |name: &str, args: Value| reagent::call(None, "file", name, &args, &auth);
+        std::fs::write(root.join("b.rs"), "").unwrap();
+        let walk = |options: Value| {
+            let mut args = json!({"root":path});
+            args.as_object_mut().unwrap().extend(options.as_object().unwrap().clone());
+            run("walk", args)
+        };
+        assert_eq!(walk(json!({})).unwrap()["paths"], json!(["b.rs","sub/a.txt"]));
+        assert_eq!(walk(json!({"max_depth":1})).unwrap()["paths"], json!(["b.rs"]));
+        assert_eq!(walk(json!({"ext":".txt"})).unwrap()["paths"], json!(["sub/a.txt"]));
+        let partial = walk(json!({"max_entries":1})).unwrap();
+        assert_eq!(partial["paths"], json!(["b.rs"]));
+        assert_eq!(partial["truncated"], true);
+        let link = walk(json!({"path":"dir-link"}));
+        assert!(link.is_err(), "{link:?}");
         let result = run("read_text", json!({"root":path,"path":"sub/a.txt"})).unwrap();
         assert_eq!(result["text"], "é🙂");
         assert_eq!(result["bytes"], 6);

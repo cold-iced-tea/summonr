@@ -13,6 +13,7 @@ summonr allow read-document --from file --select read_text --on root=/absolute/d
 | `file.read_json` | `root`, relative `path`, optional `max_bytes`, optional `schema` | `root`, `path`, parsed `value`, byte count `bytes`, `sha256` |
 | `file.stat` | `root`, relative `path` | `root`, `path`, `exists`, `kind` (`file`, `directory`, `other`, or `null`), `bytes`, `sha256` |
 | `file.list` | `root`, relative `path` (empty for root), optional `max_entries` (default 1,000; maximum 10,000) | `root`, `path`, `entries`, sorted by name; each has `name` and `kind` (`file`, `directory`, `symlink`, `other`) |
+| `file.walk` | `root`, optional starting directory `path` (default `.`), `max_depth` (default 8, range 0–32), `max_entries` (default 1,000, maximum 10,000), literal filename suffix `ext` | `root`, normalized starting `path` (empty for root), sorted root-relative regular-file `paths`, and `truncated` when more files matched than fit. Depth 1 includes direct children. The walk skips symlinks and fails if it inspects over 100,000 entries. |
 | `file.write_text` | `root`, relative `path`, UTF-8 `text` (at most 1 MiB) | `root`, `path`, `bytes`, `sha256`; supports `hold` with TOCTOU target digest verification |
 | `file.append_jsonl` | `root`, relative `path`, JSON `record` | `root`, `path`, `bytes_appended`, `record_sha256`, file `sha256`; supports `hold` with TOCTOU target digest verification |
 | `file.delete` | `root`, relative `path` | `root`, `path`, `deleted: true`; supports `hold` with TOCTOU target digest verification |

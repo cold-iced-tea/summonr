@@ -464,6 +464,12 @@ pub(super) fn operation_output_type(
             ("bytes", nullable(Ty::Int)),
             ("sha256", nullable(Ty::Str)),
         ]),
+        "file.walk" => closed_obj([
+            ("root", Ty::Str),
+            ("path", Ty::Str),
+            ("paths", Ty::List(Box::new(Ty::Str))),
+            ("truncated", Ty::Bool),
+        ]),
         "file.list" => closed_obj([
             ("root", Ty::Str),
             ("path", Ty::Str),
