@@ -432,30 +432,7 @@ impl V<'_> {
                 Kind::Model => self.model(s, &at),
                 Kind::Ritual => self.ritual(s, &at),
                 Kind::Each => self.each(s, &at),
-                Kind::If => {
-                    self.check_cond(
-                        s.cond.as_deref().unwrap_or(""),
-                        &format!("step {at}"),
-                        None,
-                    );
-                    if s.then.is_none() {
-                        self.errors.push(format!("step {at}: `if` needs `then`"));
-                    }
-                    let existing: BTreeSet<String> =
-                        self.ids.last().unwrap().keys().cloned().collect();
-                    for branch in [&s.then, &s.otherwise].into_iter().flatten() {
-                        // A branch's ids are visible afterwards; a branch not
-                        // taken leaves them skipped with a null output.
-                        self.steps(branch, &at);
-                    }
-                    let frame = self.ids.last_mut().unwrap();
-                    for (k, v) in frame.iter_mut() {
-                        if !existing.contains(k) {
-                            *v = nullable(v.clone());
-                        }
-                    }
-                    Ty::Null
-                }
+                Kind::If => self.branch(s, &at),
             };
             if let Some(fb) = &s.fallback {
                 if fb.is_empty() {
@@ -482,6 +459,30 @@ impl V<'_> {
             }
         }
         self.nesting -= 1;
+    }
+
+    fn branch(&mut self, s: &Step, at: &str) -> Ty {
+        self.check_cond(
+            s.cond.as_deref().unwrap_or(""),
+            &format!("step {at}"),
+            None,
+        );
+        if s.then.is_none() {
+            self.errors.push(format!("step {at}: `if` needs `then`"));
+        }
+        let existing: BTreeSet<_> = self.ids.last().unwrap().keys().cloned().collect();
+        for branch in [&s.then, &s.otherwise].into_iter().flatten() {
+            // A branch's ids are visible afterwards; a branch not
+            // taken leaves them skipped with a null output.
+            self.steps(branch, at);
+        }
+        let frame = self.ids.last_mut().unwrap();
+        for (k, v) in frame.iter_mut() {
+            if !existing.contains(k) {
+                *v = nullable(v.clone());
+            }
+        }
+        Ty::Null
     }
 
     fn operation(&mut self, s: &Step, at: &str) -> Ty {
