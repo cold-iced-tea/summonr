@@ -61,12 +61,35 @@ pub fn shelf(socket: &Path) -> Result<Shelf, String> {
     query().map_err(|e| e.to_string())
 }
 pub fn cases(db: &Path, series: &str) -> Result<Vec<Value>, String> {
-    let raw: String = read(db)?
+    const MAX_ASSAY_BYTES: usize = 16 * 1024 * 1024;
+    let raw: Option<String> = read(db)?
         .query_row(
-            "SELECT trials FROM assay_trials WHERE series=?1",
-            [series],
+            "SELECT CASE WHEN length(CAST(trials AS BLOB)) <= ?2 THEN trials END FROM assay_trials WHERE series=?1",
+            rusqlite::params![series, MAX_ASSAY_BYTES],
             |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
+    let raw = raw.ok_or("Assay exceeds 16 MiB")?;
     serde_json::from_str(&raw).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oversized_assay_is_rejected_before_json_decoding() {
+        let db =
+            std::env::temp_dir().join(format!("summonr-assay-bounds-{}.db", std::process::id()));
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE assay_trials(series TEXT, trials TEXT);
+            INSERT INTO assay_trials VALUES ('large', '[' || printf('%16777216s', '') || ']');",
+        )
+        .unwrap();
+        let result = cases(&db, "large");
+        drop(conn);
+        std::fs::remove_file(db).unwrap();
+        assert_eq!(result.unwrap_err(), "Assay exceeds 16 MiB");
+    }
 }
