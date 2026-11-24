@@ -74,37 +74,32 @@ impl Meter {
     }
 
     fn check(&self) -> Result<(), Fail> {
-        if self
+        if let Some(limit) = self
             .max_requests
-            .is_some_and(|m| self.requests.load(Ordering::SeqCst) >= m)
+            .filter(|&m| self.requests.load(Ordering::SeqCst) >= m)
         {
             return Err(Fail::Exhausted(format!(
-                "request limit of {} reached",
-                self.max_requests.unwrap()
+                "request limit of {limit} reached"
             )));
         }
-        if self
+        if let Some(limit) = self
             .max_tokens
-            .is_some_and(|m| self.tokens.load(Ordering::SeqCst) >= m)
+            .filter(|&m| self.tokens.load(Ordering::SeqCst) >= m)
         {
             return Err(Fail::Exhausted(format!(
-                "token limit of {} reached",
-                self.max_tokens.unwrap()
+                "token limit of {limit} reached"
             )));
         }
-        if self
+        if let Some(limit) = self
             .max_cost_microusd
-            .is_some_and(|m| self.cost_microusd.load(Ordering::SeqCst) >= m)
+            .filter(|&m| self.cost_microusd.load(Ordering::SeqCst) >= m)
         {
             return Err(Fail::Exhausted(format!(
                 "cost limit of {} reached",
-                crate::util::fmt_cost_microusd(self.max_cost_microusd.unwrap())
+                crate::util::fmt_cost_microusd(limit)
             )));
         }
-        if self.deadline.is_some_and(|d| Instant::now() >= d) {
-            return Err(Fail::Exhausted("time limit reached".into()));
-        }
-        Ok(())
+        self.check_time()
     }
 
     fn check_time(&self) -> Result<(), Fail> {
@@ -117,22 +112,21 @@ impl Meter {
     /// Unlike request admission, equality is valid for a completed response.
     /// Reject an overrun even on the final request, before its output is used.
     fn check_usage(&self) -> Result<(), Fail> {
-        if self
+        if let Some(limit) = self
             .max_tokens
-            .is_some_and(|m| self.tokens.load(Ordering::SeqCst) > m)
+            .filter(|&m| self.tokens.load(Ordering::SeqCst) > m)
         {
             return Err(Fail::Exhausted(format!(
-                "reported token usage exceeded limit of {}",
-                self.max_tokens.unwrap()
+                "reported token usage exceeded limit of {limit}"
             )));
         }
-        if self
+        if let Some(limit) = self
             .max_cost_microusd
-            .is_some_and(|m| self.cost_microusd.load(Ordering::SeqCst) > m)
+            .filter(|&m| self.cost_microusd.load(Ordering::SeqCst) > m)
         {
             return Err(Fail::Exhausted(format!(
                 "reported cost exceeded limit of {}",
-                crate::util::fmt_cost_microusd(self.max_cost_microusd.unwrap())
+                crate::util::fmt_cost_microusd(limit)
             )));
         }
         self.check_time()
