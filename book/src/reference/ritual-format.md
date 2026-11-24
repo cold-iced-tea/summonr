@@ -127,6 +127,26 @@ A step is exactly one of five kinds, chosen by which key it has. Modifiers for a
 
 **Which model runs:** the step's `name` if set; otherwise the invocation's `through` / `--model`; otherwise the ritual's `model`. A pinned step model wins over an invocation override.
 
+**Routing among a fixed set.** Instead of `name`, a step can list the models it may run on and choose one per run, without repeating its prompt in several `if` branches:
+
+```yaml
+- id: pick                             # a long file goes to the larger model
+  operation: data.select
+  arguments: {condition: "${steps.long.output}", then: ollama/qwen3:32b, else: ollama/qwen3:4b}
+- id: review
+  model:
+    one_of: [ollama/qwen3:4b, ollama/qwen3:32b, claude/sonnet]
+    choose: "${steps.pick.output}"     # a model id, one of the above
+    prompt: "${inputs.code}"
+    schema: {type: object, ...}
+```
+
+- `one_of` lists 1 to 16 distinct `backend/model` ids; `choose` is a single reference (an input or an earlier step's output) whose value is a string. Validation refuses `choose` without `one_of`, both `one_of` and `name`, and a `choose` that is not one reference or not a string.
+- Every member is known before the run: each is a model site for drift fingerprints, rehearsal, assays and pricing, whichever a run picks.
+- At run time the value must be exactly one of the members. Anything else, including `null`, makes the step `invalid` before a request is admitted, so nothing is sent and no request is spent.
+- `through` / `--model` does not change a routed step; the set is fixed, as a pinned `name` is.
+- Records, cassettes and drills see the model that ran, as for any step.
+
 **Schema** supports the strict [documented subset](../guides/validation.md), including closed objects and numeric/length bounds. Unsupported keywords fail validation instead of being ignored. With a schema, output must be JSON that matches it, or the step is `invalid`. Without one, output is the raw string.
 
 **`abstain_if`** is a [condition](expressions.md) that may refer to the step's own output as `output.<field>`. When true, the step is marked abstained and writes in that execution scope are refused. Reads and pure computations may still run; abstention is not an implicit retry or fallback.

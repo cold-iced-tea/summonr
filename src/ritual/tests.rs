@@ -176,6 +176,49 @@ return:
     }
 
     #[test]
+    fn a_model_step_routes_within_a_static_set() {
+        let none = |_: &str, _: Option<u32>| None;
+        let base = |model: Value| {
+            parse_file(&serde_json::to_string(&json!({
+                "ritual": "route",
+                "inputs": {"size": {"type": "string"}, "n": {"type": "integer"}},
+                "essence": {"requests": 1},
+                "steps": [{"id": "c", "model": model}],
+                "return": {"out": "${steps.c.output}"}
+            })).unwrap())
+            .unwrap()
+        };
+        let good = base(json!({"one_of": ["mock/fast", "ollama/big", "mycli/default"], "choose": "${inputs.size}", "prompt": "hi"}));
+        let effects = validate(&good, &none, &crate::reagent::tool, 3).unwrap();
+        assert_eq!(effects[0].what, "one of mock/fast, ollama/big, mycli/default");
+        // Every member is a model site, so fingerprints, rehearsal and assays see them all.
+        let sites = model_sites(&good, &none, Some("mock/override"));
+        assert_eq!(sites, ["mock/fast", "ollama/big", "mycli/default"].iter().map(|s| s.to_string()).collect());
+        // The new fields are omitted when unused, so existing hashes are unchanged.
+        let plain = base(json!({"name": "mock/fast", "prompt": "hi"}));
+        let text = canonical_json(&plain).to_string();
+        assert!(!text.contains("one_of") && !text.contains("choose"), "{text}");
+        for (model, why) in [
+            (json!({"one_of": ["mock/a"], "prompt": "hi"}), "needs `choose`"),
+            (json!({"choose": "${inputs.size}", "prompt": "hi"}), "`choose` needs `one_of`"),
+            (json!({"name": "mock/a", "one_of": ["mock/a"], "choose": "${inputs.size}", "prompt": "hi"}), "either `name` or `one_of`"),
+            (json!({"one_of": [], "choose": "${inputs.size}", "prompt": "hi"}), "at least one model"),
+            (json!({"one_of": ["mock/a", "mock/a"], "choose": "${inputs.size}", "prompt": "hi"}), "twice"),
+            (json!({"one_of": ["nobackend"], "choose": "${inputs.size}", "prompt": "hi"}), "backend/model"),
+            (json!({"one_of": ["mock/a"], "choose": "mock/${inputs.size}", "prompt": "hi"}), "a single reference"),
+            (json!({"one_of": ["mock/a"], "choose": "mock/a", "prompt": "hi"}), "a single reference"),
+            (json!({"one_of": ["mock/a"], "choose": "${inputs.n}", "prompt": "hi"}), "has type integer, expected string"),
+            (json!({"one_of": ["mock/a"], "choose": "${inputs.nope}", "prompt": "hi"}), "undeclared input"),
+        ] {
+            let errs = validate(&base(model.clone()), &none, &crate::reagent::tool, 3).unwrap_err();
+            assert!(errs.iter().any(|e| e.contains(why)), "{model}: {errs:?}");
+        }
+        let many: Vec<String> = (0..17).map(|i| format!("mock/m{i}")).collect();
+        let errs = validate(&base(json!({"one_of": many, "choose": "${inputs.size}", "prompt": "hi"})), &none, &crate::reagent::tool, 3).unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("at most 16")), "{errs:?}");
+    }
+
+    #[test]
     fn object_input_accepts_object() {
         let v = coerce("delivery", &obj_decl(None), &json!({"accept": true})).unwrap();
         assert_eq!(v, json!({"accept": true}));

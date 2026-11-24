@@ -811,6 +811,49 @@ impl V<'_> {
         }
     }
 
+    /// `one_of` + `choose`: a closed, well-formed set and a single string
+    /// reference that picks a member at run time.
+    fn check_routing(&mut self, m: &ModelStep, set: &[String], at: &str) {
+        const MAX_MODELS: usize = 16;
+        if m.name.is_some() {
+            self.errors.push(format!("step {at}: give either `name` or `one_of`, not both"));
+        }
+        if set.is_empty() {
+            self.errors.push(format!("step {at}: `one_of` needs at least one model"));
+        }
+        if set.len() > MAX_MODELS {
+            self.errors.push(format!("step {at}: `one_of` lists {} models; at most {MAX_MODELS}", set.len()));
+        }
+        let mut seen = BTreeSet::new();
+        for model in set {
+            if let Err(e) = crate::backend::split_model(model) {
+                self.errors.push(format!("step {at}: `one_of`: {e}"));
+            }
+            if !seen.insert(model) {
+                self.errors.push(format!("step {at}: `one_of` lists `{model}` twice"));
+            }
+        }
+        let Some(choose) = &m.choose else {
+            self.errors.push(format!("step {at}: `one_of` needs `choose`, a reference naming the model to run"));
+            return;
+        };
+        let what = format!("step {at} choose");
+        match scan_template(choose) {
+            Ok(parts) => match single_template_ref(&parts) {
+                Some(r) => {
+                    let ty = self.resolve_ref(r, &what, None);
+                    if !ty.compatible_with(&Ty::Str) {
+                        self.errors.push(format!("{what}: `{}` has type {}, expected string (a model id)", r.join("."), ty.label()));
+                    }
+                }
+                None => self.errors.push(format!(
+                    "{what}: must be a single reference such as `${{steps.pick.output}}`; a fixed model belongs in `name`"
+                )),
+            },
+            Err(e) => self.errors.push(format!("{what}: {e}")),
+        }
+    }
+
     fn model(&mut self, s: &Step, at: &str) -> Ty {
         let m = s.model.as_ref().unwrap();
         let out_ty = match &m.schema {
@@ -829,7 +872,18 @@ impl V<'_> {
         if let Err(e) = crate::backend::validate_settings(&settings) {
             self.errors.push(format!("step {at} settings: {e}"));
         }
-        let name = m.name.clone().or_else(|| self.def.model.clone());
+        let name = match &m.one_of {
+            Some(set) => {
+                self.check_routing(m, set, at);
+                Some(format!("one of {}", set.join(", ")))
+            }
+            None => {
+                if m.choose.is_some() {
+                    self.errors.push(format!("step {at}: `choose` needs `one_of`, the models it chooses among"));
+                }
+                m.name.clone().or_else(|| self.def.model.clone())
+            }
+        };
         if name.is_none() {
             self.errors.push(format!(
                 "step {at}: no model; set `model` on the ritual or `name` on the step"
@@ -1386,8 +1440,14 @@ pub fn model_sites(def: &Ritual, resolve: Resolver, invocation: Option<&str>) ->
     ) {
         for s in super::lint::walk(steps) {
             if let Some(m) = &s.model {
-                let name = m.name.clone().or_else(|| invocation.map(String::from)).or_else(|| def.model.clone());
-                out.extend(name);
+                match &m.one_of {
+                    // Every member, whichever a run chooses.
+                    Some(set) => out.extend(set.iter().cloned()),
+                    None => {
+                        let name = m.name.clone().or_else(|| invocation.map(String::from)).or_else(|| def.model.clone());
+                        out.extend(name);
+                    }
+                }
             }
             if let Some(name) = &s.ritual {
                 // Validation bounds depth; this guard only keeps a malformed tree finite.

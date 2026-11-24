@@ -547,6 +547,14 @@ pub struct ModelStep {
     /// A model pinned for this step. It is not affected by a `through` override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// A closed set of models the step may run on, chosen per run by
+    /// `choose`. Every member is known before the run (model sites,
+    /// fingerprints, rehearsal); a choice outside the set is invalid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub one_of: Option<Vec<String>>,
+    /// With `one_of`: a single reference whose value names the member to run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choose: Option<String>,
     #[serde(default)]
     pub settings: BTreeMap<String, Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

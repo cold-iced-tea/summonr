@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import unittest
 
-from summonr import (Ritual, Str, Int, Number, List, contains, ends_with, lower,
+from summonr import (Ritual, Str, Int, Number, List, Bool, contains, ends_with, lower,
                      starts_with, trim, upper)
 
 REPO = pathlib.Path(__file__).resolve().parents[3]
@@ -128,6 +128,21 @@ class ParityTests(unittest.TestCase):
         # Only inputs are known before the run, when requires are checked.
         with self.assertRaises(ValueError):
             r.require('file', 'read_text', on={'root': readme['root']})
+        self.assertCompiles(r)
+
+    def test_a_model_step_routes_within_a_fixed_set(self):
+        r = Ritual('route', essence={'requests': 1, 'tool_calls': 1})
+        long = r.input('long', Bool)
+        pick = r.data.select(long, 'ollama/big', 'ollama/small', id='pick')
+        answer = r.model(prompt='Review', one_of=['ollama/small', 'ollama/big'], choose=pick, id='review')
+        r.returns({'answer': answer})
+        step = r.definition()['steps'][1]
+        self.assertEqual(step['model']['one_of'], ['ollama/small', 'ollama/big'])
+        self.assertEqual(step['model']['choose'], '${steps.pick.output}')
+        for bad in [dict(one_of=['ollama/a']), dict(choose=pick), dict(one_of='ollama/a', choose=pick),
+                    dict(one_of=['ollama/a'], choose='ollama/a'), dict(one_of=['ollama/a'], choose=pick, name='ollama/a')]:
+            with self.assertRaises(TypeError):
+                r.model(prompt='x', **bad)
         self.assertCompiles(r)
 
 

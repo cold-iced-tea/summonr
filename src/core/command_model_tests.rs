@@ -68,3 +68,25 @@ fn a_command_provider_answers_model_steps_and_replays_offline() {
     assert!(site["digest"].as_str().unwrap().starts_with("command:"), "{print}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_drill_checks_a_routed_step_and_its_refused_choices() {
+    let h = Home::new("");
+    h.inscribe_def(json!({
+        "ritual": "router",
+        "inputs": {"model": {"type": "string"}},
+        "essence": {"requests": 1},
+        "steps": [{"id": "c", "model": {"one_of": ["ollama/small", "ollama/big"], "choose": "${inputs.model}",
+                   "prompt": "Classify", "schema": {"type": "object", "required": ["label"], "properties": {"label": {"type": "string"}}}}}],
+        "return": {"label": "${steps.c.output.label}"}
+    }), false);
+    let file = h.path("router.drill.json");
+    std::fs::write(&file, json!({"drill": "routes", "ritual": "router", "cases": [
+        {"id": "small", "inputs": {"model": "ollama/small"}, "model": {"c": [{"label": "spam"}]},
+         "expect": {"outcome": "returned", "result": {"label": "spam"}, "model_calls": 1}},
+        {"id": "outside", "inputs": {"model": "ollama/huge"},
+         "expect": {"outcome": "invalid", "model_calls": 0}}
+    ]}).to_string()).unwrap();
+    let report = h.call("drill", json!({"ritual": "router", "against": file})).unwrap();
+    assert_eq!((report["passed"].clone(), report["failed"].clone()), (json!(2), json!(0)), "{report}");
+}
