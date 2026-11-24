@@ -2219,12 +2219,14 @@ impl Core {
         let slim = p.slim;
         let db = self.db.lock().unwrap();
         let mut st = db
-            .prepare("SELECT seq, ts, kind, text, data FROM events WHERE summon=?1 AND seq>?2 ORDER BY seq LIMIT ?3")
+            .prepare("SELECT seq, ts, kind, text, CASE WHEN ?4 THEN json_extract(data, '$.step') ELSE data END FROM events WHERE summon=?1 AND seq>?2 ORDER BY seq LIMIT ?3")
             .map_err(|e| RpcErr::new("error", 1, e.to_string()))?;
         let rows = st
-            .query_map(params![id, after, limit], |r| {
+            .query_map(params![id, after, limit, slim], |r| {
                 let mut v = json!({"seq": r.get::<_, i64>(0)?, "ts": r.get::<_, i64>(1)?, "kind": r.get::<_, String>(2)?, "text": r.get::<_, String>(3)?});
-                if !slim {
+                if slim {
+                    if let Some(step) = r.get::<_, Option<String>>(4)? { v["step"] = json!(step); }
+                } else {
                     v["data"] = parse_json(Some(r.get::<_, String>(4)?))?;
                 }
                 Ok(v)

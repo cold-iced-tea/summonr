@@ -1,7 +1,6 @@
 # The command workbench
 
-Run `summonr` or `summonr console` (`shell` is its alias). The main pane is a
-persistent Summonr command prompt; the left pane shows the core and its runs.
+Run `summonr` or `summonr console` (`shell` is its alias). The command prompt stays below the session transcript. The board above it shows the local core and its runs.
 There is no need to type the executable name before every command:
 
 ```text
@@ -17,7 +16,25 @@ and execution paths as the standalone CLI. The workbench uses normal readable CL
 you want the full structured envelope. Arrays and keys such as `items`, `outputs`, and
 `partial` in user results are displayed as data, not interpreted as UI instructions.
 
-## The left instrument
+## The run board
+
+At 80×24 the board has two run windows. A taller terminal can show up to four.
+Each window shows the ritual, a short run ID, its observed status and elapsed time.
+The most recent operation appears beside a small seal. Its points follow the last
+four recorded operation or model steps. The right edge closes when the run ends
+and its last pending petition clears. The core animates while work is active and
+shows a question mark when an action needs review. Counts come from the daemon.
+A returned run may still have a held write.
+
+Run windows keep their positions while visible. Pending petitions take priority
+over recent history. F3 pins another run, including ones outside the visible set.
+F6 opens the next pending petition in the run area. Esc closes that view.
+Use `petition list` for the full request and the normal petition commands to
+decide it. Incoming updates preserve the text and cursor at the prompt.
+
+## Run details
+
+F5 switches between the board and the detailed instrument.
 
 The status view polls the existing daemon roughly twice per second. It shows:
 
@@ -52,7 +69,9 @@ and live status. Opening or inspecting the interface performs no inference.
 | `F1` | Show the workbench key guide |
 | `F2` | Switch status / ritual plan |
 | `F3` | Select the next run |
-| `F4` | Show or hide the sidebar |
+| `F4` | Show or hide the panels |
+| `F5` | Switch board / run details |
+| `F6` / `Esc` | Review the next petition / close review |
 | `PageUp` / `PageDown` | Scroll the transcript |
 | `Alt-PageUp` / `Alt-PageDown` | Scroll the sidebar |
 | `Ctrl-L` or `clear` | Clear the transcript |
@@ -83,8 +102,7 @@ Closing the workbench leaves accepted work running. To cancel a run, use
 `stop ID` explicitly. Polling never restarts a core you stopped: disconnected data
 is labeled as stale. Submitting a command that needs the core starts it normally.
 
-Below 100 columns, the sidebar stacks above the prompt when the terminal is at
-least 22 rows high; otherwise it is hidden. Below 36 columns or 14 rows the resize
+The board fits from 60 columns and 22 rows. At smaller sizes the detailed instrument stacks above the prompt when space permits. Wide detail views sit alongside the transcript. Below 36 columns or 14 rows the resize
 message replaces the workspace.
 `F4` makes more room for commands. Colour, ASCII, and reduced-motion preferences
 follow the rest of Summonr.
