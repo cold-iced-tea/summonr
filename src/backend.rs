@@ -5,7 +5,8 @@
 //! - `anthropic/<model>` talks to an Anthropic Messages server (`/v1/messages`).
 //! - Named providers in `config.yaml` (`providers.<name>`) map `<name>/<model>` to
 //!   any of the three protocol families (`kind: openai | anthropic | ollama`) with
-//!   a custom `url` and optional `api_key_env`.
+//!   a custom `url` and optional `api_key_env`, or to `kind: command`, a local
+//!   program that answers on stdout (see `command_backend`).
 //! - `mock/keyword` is a deterministic stand-in used by tests and dry demos; it
 //!   is labeled as a mock everywhere it appears.
 
@@ -140,19 +141,42 @@ pub struct ChatResp {
     pub provider_cost_microusd: Option<u64>,
 }
 
-fn provider_registry() -> &'static RwLock<BTreeMap<String, ProviderConfig>> {
-    static REGISTRY: OnceLock<RwLock<BTreeMap<String, ProviderConfig>>> = OnceLock::new();
+/// A registered provider, with the configuration it came from (a command
+/// provider needs it to know which environment variables are secrets).
+type Registered = (ProviderConfig, Option<std::sync::Arc<crate::util::Config>>);
+
+fn provider_registry() -> &'static RwLock<BTreeMap<String, Registered>> {
+    static REGISTRY: OnceLock<RwLock<BTreeMap<String, Registered>>> = OnceLock::new();
     REGISTRY.get_or_init(|| RwLock::new(BTreeMap::new()))
 }
 
-/// Register custom providers loaded from `config.yaml`.
+/// Register custom providers. Providers are added or replaced by name, so
+/// two configurations loaded in one process (as tests do) do not erase each
+/// other's providers.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn register_providers(providers: &BTreeMap<String, ProviderConfig>) {
     if let Ok(mut guard) = provider_registry().write() {
-        *guard = providers.clone();
+        for (name, p) in providers {
+            guard.insert(name.clone(), (p.clone(), None));
+        }
+    }
+}
+
+/// Register the providers of a loaded `config.yaml`.
+pub fn register_config(cfg: &crate::util::Config) {
+    let shared = std::sync::Arc::new(cfg.clone());
+    if let Ok(mut guard) = provider_registry().write() {
+        for (name, p) in &cfg.providers {
+            guard.insert(name.clone(), (p.clone(), Some(shared.clone())));
+        }
     }
 }
 
 fn lookup_provider(name: &str) -> Option<ProviderConfig> {
+    lookup_registered(name).map(|(p, _)| p)
+}
+
+fn lookup_registered(name: &str) -> Option<Registered> {
     provider_registry()
         .read()
         .ok()
@@ -167,9 +191,10 @@ fn resolve_protocol(backend: &str) -> Result<(&'static str, Option<String>), Str
             "ollama" => "ollama",
             "openai" => "openai",
             "anthropic" => "anthropic",
+            "command" => "command",
             other => {
                 return Err(format!(
-                    "provider `{backend}` has unsupported kind `{other}`; use openai, anthropic, or ollama"
+                    "provider `{backend}` has unsupported kind `{other}`; use openai, anthropic, ollama, or command"
                 ))
             }
         };
@@ -325,6 +350,10 @@ pub fn chat(base_url: &str, model_id: &str, req: ChatReq) -> Result<ChatResp, St
         "openai" => openai_chat(base_url, model, api_key.as_deref(), req),
         "anthropic" => anthropic_chat(base_url, model, api_key.as_deref(), req),
         "mock" => Ok(mock_chat(req)),
+        "command" => {
+            let (p, cfg) = lookup_registered(backend).ok_or_else(|| format!("provider `{backend}` is not configured"))?;
+            crate::command_backend::chat(backend, model, &p, cfg.as_deref(), req)
+        }
         _ => unreachable!(),
     }
 }
@@ -349,6 +378,10 @@ pub fn payload(model_id: &str, req: &ChatReq) -> Result<Value, String> {
             }
             Ok(p)
         }
+        "command" => {
+            let p = lookup_provider(backend).ok_or_else(|| format!("provider `{backend}` is not configured"))?;
+            crate::command_backend::payload(backend, model, &p, req)
+        }
         _ => unreachable!(),
     }
 }
@@ -358,6 +391,9 @@ pub fn payload(model_id: &str, req: &ChatReq) -> Result<Value, String> {
 pub fn supports_images(base_url: &str, model_id: &str, timeout: Option<Duration>) -> Result<(), String> {
     let (backend, model) = split_model(model_id)?;
     let (kind, _) = resolve_protocol(backend)?;
+    if kind == "command" {
+        return Err(format!("model `{model_id}` is a command provider, which takes text only, not images"));
+    }
     if kind != "ollama" {
         return Ok(());
     }
@@ -772,6 +808,7 @@ pub fn unload(base_url: &str, model_id: &str) -> String {
             }
         }
         Ok(("openai" | "anthropic", _)) => "not applicable (stateless HTTP backend)".into(),
+        Ok(("command", _)) => "not applicable (command backend; each call is its own process)".into(),
         Ok(("mock", _)) => "not applicable (mock backend)".into(),
         _ => "not applicable".into(),
     }
@@ -800,6 +837,10 @@ pub fn fingerprint(base_url: &str, model_id: &str) -> Value {
             openai_print(backend, model, models.as_ref())
         }
         Ok(("mock", _)) => json!({"backend": "mock", "model": model, "digest": "mock"}),
+        Ok(("command", _)) => match lookup_provider(backend) {
+            Some(p) => crate::command_backend::fingerprint(backend, model, &p),
+            None => json!({"backend": backend, "model": model, "digest": "unknown"}),
+        },
         _ => json!({"backend": "unknown", "model": model_id, "digest": "unknown"}),
     }
 }
@@ -1146,6 +1187,7 @@ mod tests {
                 kind: "openai".to_string(),
                 url: "http://127.0.0.1:8000/v1".to_string(),
                 api_key_env: None,
+                ..Default::default()
             },
         )]));
         let settings = BTreeMap::new();

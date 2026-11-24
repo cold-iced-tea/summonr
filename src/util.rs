@@ -575,16 +575,41 @@ fn default_mcp_effect() -> String {
 }
 
 /// A named model backend provider configured by the owner.
-#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[derive(Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderConfig {
-    /// Protocol family: `openai` (default), `anthropic`, or `ollama`.
+    /// Protocol family: `openai` (default), `anthropic`, `ollama`, or
+    /// `command` (a local program that answers a prompt).
     #[serde(default = "default_provider_kind")]
     pub kind: String,
+    /// The server's URL. Required for every kind but `command`.
+    #[serde(default)]
     pub url: String,
     /// Name of the environment variable holding the API key, if required.
     /// Summonr never stores raw API keys in config.yaml.
     pub api_key_env: Option<String>,
+    /// `kind: command`: the program to run (never through a shell).
+    #[serde(default)]
+    pub program: Option<String>,
+    /// `kind: command`: arguments; `${model}` is the label after the
+    /// provider name, `${prompt}` the prompt when `stdin: none`.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// `kind: command`: absolute working directory (default: the system
+    /// temporary directory).
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// `kind: command`: environment variables passed through by name, as for
+    /// `commands:`; Summonr's credentials are refused.
+    #[serde(default)]
+    pub env: Option<Vec<String>>,
+    /// `kind: command`: `prompt` (default) writes the prompt to stdin;
+    /// `none` passes it as `${prompt}` in `args` instead.
+    #[serde(default)]
+    pub stdin: Option<String>,
+    /// `kind: command`: the most one call may take (default 600000).
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
 }
 
 fn default_provider_kind() -> String {
@@ -713,7 +738,15 @@ impl Config {
                 ));
             }
         }
-        crate::backend::register_providers(&cfg.providers);
+        for (name, provider) in &cfg.providers {
+            if provider.kind == "command" {
+                crate::command_backend::validate(name, provider, &cfg)
+                    .map_err(|e| format!("{}: providers.{name}: {e}", p.display()))?;
+            } else if provider.url.trim().is_empty() {
+                return Err(format!("{}: providers.{name}: `url` is required for kind `{}`", p.display(), provider.kind));
+            }
+        }
+        crate::backend::register_config(&cfg);
         Ok(cfg)
     }
 

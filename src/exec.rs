@@ -1308,12 +1308,30 @@ impl Run {
         self.mark_impure();
         let m = &s.model;
         let sid = s.id.as_deref().unwrap_or("model");
-        let model = m
-            .name
-            .clone()
-            .or_else(|| self.model_override.clone())
-            .or_else(|| self.def.model.clone())
-            .ok_or_else(|| Fail::Failed(format!("step {sid}: no model")))?;
+        let model = match (&m.one_of, &m.choose) {
+            // A routed step: the choice must be a member of the fixed set,
+            // which an invocation override does not change.
+            (Some(set), Some(choose)) => {
+                let chosen = ritual::render_value(&Value::String(choose.clone()), scope)
+                    .map_err(|e| Fail::Failed(format!("step {sid} choose: {e}")))?;
+                match chosen {
+                    Value::String(c) if set.contains(&c) => c,
+                    other => {
+                        return Err(Fail::Invalid(format!(
+                            "step {sid}: `choose` gave `{}`, which is not one of {}",
+                            other.as_str().map(String::from).unwrap_or_else(|| other.to_string()),
+                            set.join(", ")
+                        )))
+                    }
+                }
+            }
+            _ => m
+                .name
+                .clone()
+                .or_else(|| self.model_override.clone())
+                .or_else(|| self.def.model.clone())
+                .ok_or_else(|| Fail::Failed(format!("step {sid}: no model")))?,
+        };
 
         // Stable content first, so a backend can reuse its evaluation of the
         // shared prefix across fresh contexts.
@@ -2816,6 +2834,34 @@ return: {kept: "${steps.kept.output}"}
             )
             .unwrap();
         assert_eq!(wrong_children, 0);
+    }
+
+    #[test]
+    fn a_routed_step_runs_the_chosen_member_and_refuses_any_other() {
+        let routed = |pick: &str| {
+            definition(json!({
+                "ritual": "route-imp",
+                "essence": {"requests": 1, "tool_calls": 1},
+                "steps": [
+                    {"id": "pick", "operation": "data.trim", "arguments": {"text": pick}},
+                    {"id": "answer", "model": {"one_of": ["mock/fast", "mock/big"], "choose": "${steps.pick.output}", "prompt": "hello"}},
+                ],
+                "return": {"answer": "${steps.answer.output}"},
+            }))
+        };
+        let f = Fixture::new();
+        // An invocation override does not change a routed step: the set is fixed.
+        let mut run = f.run(routed(" mock/big "), Some("mock/override"));
+        assert_eq!(run.execute().outcome, Outcome::Returned);
+        assert_eq!(f.model_events()[0]["model"], "mock/big");
+        let f = Fixture::new();
+        let mut run = f.run(routed("mock/other"), None);
+        let fin = run.execute();
+        assert_eq!(fin.outcome, Outcome::Invalid, "{:?}", fin.error);
+        let error = fin.error.unwrap_or_default();
+        assert!(error.contains("`mock/other`") && error.contains("mock/fast, mock/big"), "{error}");
+        assert!(f.model_events().is_empty(), "nothing is sent for a refused choice");
+        assert_eq!(run.meters[0].requests.load(Ordering::SeqCst), 0, "and no request is spent");
     }
 
     #[test]

@@ -41,7 +41,7 @@ style: keyword
 | `ollama_url` | see below | Ollama server. `http://` is added if no scheme is given. |
 | `openai_url` | `https://api.openai.com` | OpenAI-compatible endpoint for `openai/<model>` (or `SUMMONR_OPENAI_URL`) |
 | `anthropic_url` | `https://api.anthropic.com` | Anthropic Messages endpoint for `anthropic/<model>` (or `SUMMONR_ANTHROPIC_URL`) |
-| `providers` | none | Named model providers (`NAME: {kind, url, api_key_env}`) for `<provider>/<model>` |
+| `providers` | none | Named model providers (`NAME: {kind, url, api_key_env}`) for `<provider>/<model>`; `kind: command` runs a local program instead ([below](#command-providers)) |
 | `pricing` | none | Per-model USD/Mtok rate card (`<provider>/<model>` or `<provider>/*`: `{input_per_mtok_usd, output_per_mtok_usd}`) used by `essence.cost` |
 | `mail_root` | none | Mailbox root for the `mail` reagent. Required to use it. |
 | `max_active_runs` | `16` | Maximum admitted active top-level invocations; excess requests receive `busy` |
@@ -61,6 +61,61 @@ style: keyword
 | `mcp_auth` | none | Optional OAuth 2.1 Bearer JWT verification settings for `summonr mcp http` |
 | `mcp_allowed_hosts` | `[]` | Additional allowed `Host` header values (host or `host:port`) for `summonr mcp http` |
 | `rbac` | `{enforce: false, require_independent_reviewer: false}` | Operator RBAC settings: require Ed25519-signed operator requests and block self-approval of held petitions |
+
+### Command providers
+
+A provider with `kind: command` runs a program as the model backend of
+`NAME/LABEL` steps, such as a coding agent's CLI or a llama.cpp script:
+
+```yaml
+providers:
+  claude:
+    kind: command
+    program: /usr/local/bin/claude
+    args: ["-p", "--model", "${model}"]   # claude/sonnet runs with --model sonnet
+    env: [HOME, PATH]                     # exactly these variables; default: the core's, minus secrets
+    timeout_ms: 300000                    # default 600000
+  agy:
+    kind: command
+    program: agy
+    args: ["-p", "${prompt}"]
+    stdin: none                           # the prompt goes in ${prompt}, not stdin
+```
+
+| Key | Meaning |
+| --- | --- |
+| `program` | The executable, run without a shell. Required |
+| `args` | Arguments. `${model}` is the label after the provider name; `${prompt}` is the prompt, with `stdin: none` |
+| `stdin` | `prompt` (default): the prompt is written to standard input. `none`: it goes in the one argument holding `${prompt}` |
+| `cwd` | Absolute working directory; default: the system temporary directory |
+| `env` | Variables passed through by name, as for [`commands:`](../guides/repositories.md). Summonr's own credentials (API keys, the key passphrase, configured token variables) are refused |
+| `timeout_ms` | The most one call may take; the run's remaining time is used if shorter |
+
+How a call works:
+
+- **The prompt** is the step's instructions and bindings, then its prompt, then,
+  for a step with a schema, a line asking for one JSON value matching it,
+  followed by the schema. It is written to stdin and the stream closed. In
+  argument mode a prompt that spans lines is refused (and a schema or
+  instructions always add lines), as is any value that would make an argument
+  start with `-`, so a prompt cannot become an option of the program.
+- **The answer** is stdout, at most 4 MiB, with trailing newlines removed. A
+  non-zero exit fails the call with the end of stderr. Nothing constrains the
+  program's output, so a step with a schema parses and checks it afterward
+  (`structure: checked afterward only` in the record). Prose, a code fence, or a
+  mismatch make the step `invalid`, which `retry` and `fallback` handle as for
+  any model.
+- **Limits.** Each call is one request against `essence.requests`. Token counts
+  are estimated (about four bytes per token), since a program reports none.
+  `num_predict`-style caps cannot be applied. On timeout or `stop`, the
+  program's whole process group is killed.
+- **Records, cassettes and drift.** The recorded payload holds the program, the
+  arguments with `${prompt}` unexpanded, and the prompt. Cassettes record and
+  replay these calls like any model call, so a replay never runs the program.
+  The drift fingerprint is a digest of the configured `program`, `args`, `cwd`,
+  `env` names and `stdin`; the program is not asked for its version, so
+  upgrading the program in place does not show as drift.
+- Command providers take text only: a step with `images:` is refused.
 
 ### `egress`
 

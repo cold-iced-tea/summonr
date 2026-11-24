@@ -49,7 +49,9 @@ def build():
         'required': {**arr(string), 'uniqueItems': True}, 'additionalProperties': boolean,
         'minimum': number, 'maximum': number, **{k:u64 for k in ['minLength','maxLength','minItems','maxItems']},
         'title': string, 'description': string, 'default': {}})
-    definitions['model'] = obj({'name': nullable(string), 'settings': mapping({}), 'instructions': nullable(string),
+    definitions['model'] = obj({'name': nullable(string),
+        'one_of': nullable({**arr(string), 'minItems': 1, 'maxItems': 16, 'uniqueItems': True}), 'choose': nullable(string),
+        'settings': mapping({}), 'instructions': nullable(string),
         'bind': arr(string), 'prompt': string, 'schema': nullable(ref('valueSchema')), 'abstain_if': nullable(string),
         'images': {'anyOf': [string, {**arr(string), 'maxItems': 8}, {'type': 'null'}]}}, ['prompt'])
     definitions['verify'] = obj({'observe': string, 'arguments': mapping({}), 'expect': mapping({})}, ['observe', 'expect'])

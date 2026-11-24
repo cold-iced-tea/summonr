@@ -298,9 +298,21 @@ class Ritual:
         return self.ref(id)
 
     def model(self, *, prompt, instructions=None, returns=None, id=None, name=None,
-              settings=None, bind=None, abstain_if=None):
+              settings=None, bind=None, abstain_if=None, one_of=None, choose=None):
+        """one_of + choose: run on the member of a fixed set of models that `choose`
+        (a reference) names at run time; any other value makes the step invalid."""
         id = self._id(id)
         body = {'prompt':_encode(prompt,self)}
+        if (one_of is None) != (choose is None):
+            raise TypeError('one_of and choose go together: the models, and a reference naming one')
+        if one_of is not None:
+            if name is not None: raise TypeError('give either name or one_of, not both')
+            if isinstance(one_of, str) or not one_of or not all(isinstance(m, str) and '/' in m for m in one_of):
+                raise TypeError('one_of is a list of backend/model ids')
+            if not isinstance(choose, Ref) or choose.owner is not self:
+                raise TypeError('choose is a reference in this ritual, such as an input or a step output')
+            body['one_of'] = list(one_of)
+            body['choose'] = _encode(choose,self)
         for key,value in [('instructions',instructions),('name',name),('settings',settings),('bind',bind)]:
             if value is not None: body[key] = _encode(value,self)
         if returns is not None: body['schema'] = _schema(returns)
