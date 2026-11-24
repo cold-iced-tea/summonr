@@ -92,6 +92,9 @@ bindings:
       Your file becomes src/bughunt_repro.rs, a #[cfg(test)] module declared
       at the crate root, so reach code with crate:: paths (for
       src/reagents/file_reagent.rs that is crate::reagents::file_reagent).
+      In a workspace crate, crate:: starts at that crate's own src/ (for
+      url/src/parser.rs it is crate::parser). In a #![no_std] crate the std
+      prelude is not in scope: import what you use (use std::string::String;).
       Private items are reachable only if their module and the item are
       visible to the crate; prefer pub(crate) functions you can see. If the
       suspect function is private (`fn`, not `pub`), do NOT copy it into

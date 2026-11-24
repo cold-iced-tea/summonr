@@ -100,6 +100,12 @@ how much they cost the build.
     `src/bughunt_repro.rs` declared as `#[cfg(test)] mod bughunt_repro;`.
     This harness is Rust-specific; nothing in the language describes "how
     to run one test in this project".
+    For a crate in a Cargo workspace (`setup.sh ... CRATE_PATH`), the file
+    stays at the repository's `src/bughunt_repro.rs` (the path the rituals
+    write) and the crate declares it through `#[path]`; a `#![no_std]`
+    crate also gets `#[cfg(test)] extern crate std;`, and the trial passes
+    `RUSTFLAGS=--cap-lints=warn` so an old commit's `deny(warnings)` does not
+    fail on lints a newer compiler added.
 
 ## Models
 
@@ -131,6 +137,10 @@ how much they cost the build.
 - Child rituals must be inscribed before parents; re-inscribing changed
   content needs `--replace`.
 - `allow --select` takes one comma-separated list, not repeated words.
+- A drill's sandbox refuses a repository that contains symlinks
+  (`sandbox: symlink at …`), so `bughunt-test` cannot be drilled against
+  rust-url, whose crates link their licence files. Live runs use real git
+  worktrees and are not affected.
 
 ## Results
 

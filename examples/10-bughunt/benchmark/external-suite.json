@@ -1,0 +1,261 @@
+{
+ "version": 1,
+ "description": "External, out-of-distribution bughunt suite: real fix commits in third-party Rust crates. No third-party source is stored here; benchmark/fetch_external.py clones the pinned commits and builds the gold sets locally.",
+ "categories": [
+  "arithmetic-overflow",
+  "http-framing",
+  "injection",
+  "input-validation",
+  "logic-state",
+  "panic",
+  "recursion-dos"
+ ],
+ "cases": [
+  {
+   "name": "ext-http-a8309a9",
+   "repo_name": "http",
+   "repo_url": "https://github.com/hyperium/http",
+   "fix_commit": "a8309a93ce24c19c89cf36bfac504ebed7b96dc7",
+   "gold": "ext-http-a8309a9.json",
+   "dirs": [
+    "src/uri"
+   ],
+   "category": "input-validation",
+   "tags": [
+    "uri",
+    "authority",
+    "trailing-bytes"
+   ],
+   "tier": "smoke",
+   "summary": "Authority::from_static accepted a valid authority prefix followed by unparsed bytes (a scheme, path or query)"
+  },
+  {
+   "name": "ext-http-3dd9f5e",
+   "repo_name": "http",
+   "repo_url": "https://github.com/hyperium/http",
+   "fix_commit": "3dd9f5e1c3c228c26e6836ee60b36129351bfd3b",
+   "gold": "ext-http-3dd9f5e.json",
+   "dirs": [
+    "src/header"
+   ],
+   "category": "panic",
+   "tags": [
+    "header-map",
+    "linked-values"
+   ],
+   "tier": "core",
+   "summary": "OccupiedEntry::insert_mult panicked when the entry already held three or more values"
+  },
+  {
+   "name": "ext-http-c6af28b",
+   "repo_name": "http",
+   "repo_url": "https://github.com/hyperium/http",
+   "fix_commit": "c6af28bfd8ef171a7f8c61e551d3ee68db4ca577",
+   "gold": "ext-http-c6af28b.json",
+   "dirs": [
+    "src/header"
+   ],
+   "category": "http-framing",
+   "tags": [
+    "header-name",
+    "h2",
+    "tchar"
+   ],
+   "tier": "core",
+   "summary": "HeaderName::from_lowercase accepted a double quote, which the tchar grammar forbids in field names"
+  },
+  {
+   "name": "ext-http-e559023",
+   "repo_name": "http",
+   "repo_url": "https://github.com/hyperium/http",
+   "fix_commit": "e559023f67e3fad6ecc3ee91307be178e0f13626",
+   "gold": "ext-http-e559023.json",
+   "dirs": [
+    "src/uri"
+   ],
+   "category": "input-validation",
+   "tags": [
+    "uri",
+    "length-limit"
+   ],
+   "tier": "full",
+   "summary": "PathAndQuery parsing skipped the URI length limit that the rest of the URI parser enforces"
+  },
+  {
+   "name": "ext-http-6e2dd42",
+   "repo_name": "http",
+   "repo_url": "https://github.com/hyperium/http",
+   "fix_commit": "6e2dd42a15d4c1711baa2191bd1d15022e1e2e9c",
+   "gold": "ext-http-6e2dd42.json",
+   "dirs": [
+    "src/header"
+   ],
+   "category": "arithmetic-overflow",
+   "tags": [
+    "header-map",
+    "size-hint",
+    "reserve"
+   ],
+   "tier": "full",
+   "summary": "HeaderMap::extend trusted an iterator's size_hint, so an over-estimate overflowed reserve and panicked"
+  },
+  {
+   "name": "ext-http-a9cdbf8",
+   "repo_name": "http",
+   "repo_url": "https://github.com/hyperium/http",
+   "fix_commit": "a9cdbf8aaf87198020389ba14f92d9784740c91c",
+   "gold": "ext-http-a9cdbf8.json",
+   "dirs": [
+    "src/uri"
+   ],
+   "category": "http-framing",
+   "tags": [
+    "uri",
+    "control-char"
+   ],
+   "tier": "full",
+   "summary": "PathAndQuery accepted the DEL control character (0x7F) in the path and the query"
+  },
+  {
+   "name": "ext-rust-url-e219288",
+   "repo_name": "rust-url",
+   "repo_url": "https://github.com/servo/rust-url",
+   "fix_commit": "e219288fc2702301803e72f7efb66d3c5c25c980",
+   "crate_path": "url",
+   "gold": "ext-rust-url-e219288.json",
+   "dirs": [
+    "url/src"
+   ],
+   "category": "recursion-dos",
+   "tags": [
+    "quadratic",
+    "path-normalization"
+   ],
+   "tier": "smoke",
+   "summary": "Each `..` segment at the root searched back through the scheme and authority, making parsing quadratic"
+  },
+  {
+   "name": "ext-rust-url-13b385b",
+   "repo_name": "rust-url",
+   "repo_url": "https://github.com/servo/rust-url",
+   "fix_commit": "13b385b299238306d2601ddc1c0043afcd2f2046",
+   "crate_path": "form_urlencoded",
+   "gold": "ext-rust-url-13b385b.json",
+   "dirs": [
+    "form_urlencoded/src"
+   ],
+   "category": "panic",
+   "tags": [
+    "serializer",
+    "start-position"
+   ],
+   "tier": "core",
+   "summary": "form_urlencoded::Serializer::for_suffix panicked when the start position was past the end of the target"
+  },
+  {
+   "name": "ext-rust-url-25137be",
+   "repo_name": "rust-url",
+   "repo_url": "https://github.com/servo/rust-url",
+   "fix_commit": "25137be1fc1d35cc8ea7d43fc0a02166b023a483",
+   "crate_path": "url",
+   "gold": "ext-rust-url-25137be.json",
+   "dirs": [
+    "url/src"
+   ],
+   "category": "injection",
+   "tags": [
+    "percent-encoding",
+    "path"
+   ],
+   "tier": "core",
+   "summary": "The path percent-encode set left `^` unencoded, so it reached the serialized URL raw"
+  },
+  {
+   "name": "ext-rust-url-e654efb",
+   "repo_name": "rust-url",
+   "repo_url": "https://github.com/servo/rust-url",
+   "fix_commit": "e654efb9c19732f680f14db43a673a726b834f42",
+   "crate_path": "data-url",
+   "gold": "ext-rust-url-e654efb.json",
+   "dirs": [
+    "data-url/src"
+   ],
+   "category": "logic-state",
+   "tags": [
+    "percent-decoding",
+    "data-url"
+   ],
+   "tier": "full",
+   "summary": "Decoding a non-base64 data: URL repeated bytes after a `%` that was not followed by two hex digits"
+  },
+  {
+   "name": "ext-httparse-7ab0192",
+   "repo_name": "httparse",
+   "repo_url": "https://github.com/seanmonstar/httparse",
+   "fix_commit": "7ab01920b151a121ac81dc7a30a7c82c4d99480c",
+   "gold": "ext-httparse-7ab0192.json",
+   "dirs": [
+    "src"
+   ],
+   "category": "http-framing",
+   "tags": [
+    "header-name",
+    "whitespace",
+    "smuggling"
+   ],
+   "tier": "smoke",
+   "summary": "With spaces allowed after header names, one invalid character between the name and the colon was accepted"
+  },
+  {
+   "name": "ext-httparse-c0631f2",
+   "repo_name": "httparse",
+   "repo_url": "https://github.com/seanmonstar/httparse",
+   "fix_commit": "c0631f26e86157a8110a202c112b0ea7a051025b",
+   "gold": "ext-httparse-c0631f2.json",
+   "dirs": [
+    "src"
+   ],
+   "category": "http-framing",
+   "tags": [
+    "status-line",
+    "lf-only"
+   ],
+   "tier": "core",
+   "summary": "A response with no reason phrase and LF-only line endings folded the status line into the first header name (`200\\nfoo`)"
+  },
+  {
+   "name": "ext-httparse-5654959",
+   "repo_name": "httparse",
+   "repo_url": "https://github.com/seanmonstar/httparse",
+   "fix_commit": "5654959604e2b5c9f5cf7f82c986d4edc225ab13",
+   "gold": "ext-httparse-5654959.json",
+   "dirs": [
+    "src"
+   ],
+   "category": "input-validation",
+   "tags": [
+    "request-line",
+    "empty-token"
+   ],
+   "tier": "core",
+   "summary": "The token and URI parsers accepted empty results, so a request line with an empty method or path parsed"
+  },
+  {
+   "name": "ext-semver-5742fc2",
+   "repo_name": "semver",
+   "repo_url": "https://github.com/dtolnay/semver",
+   "fix_commit": "5742fc2f584dc14b46199d797de65305fe9b5144",
+   "gold": "ext-semver-5742fc2.json",
+   "dirs": [
+    "src"
+   ],
+   "category": "logic-state",
+   "tags": [
+    "version-req",
+    "prerelease"
+   ],
+   "tier": "smoke",
+   "summary": "The requirement <I.J matched I.J.0 prereleases, which it must exclude"
+  }
+ ]
+}
