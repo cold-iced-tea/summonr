@@ -423,6 +423,31 @@ fn run(op: Op, paths: &Paths, style: Style) -> i32 {
             |_| {},
         );
     }
+    // `CMD --help` and `help CMD`: one command's contract.
+    let help_for = if op.help {
+        Some(op.verb.clone())
+    } else if op.verb == "help" {
+        op.positionals.first().cloned()
+    } else {
+        None
+    };
+    if let Some(name) = help_for {
+        let verb = grammar::canonical_verb(&name).unwrap_or("");
+        return match cli::help::descriptor(verb) {
+            Some(d) if json_out => finish(Ok(json!({"command": d})), true, |_| {}),
+            Some(_) => {
+                for line in cli::help::text(verb, style).unwrap_or_default() {
+                    println!("{line}");
+                }
+                0
+            }
+            None => finish(
+                Err(RpcErr::not_found(format!("no command `{name}`; `summonr help` lists them"))),
+                json_out,
+                |_| {},
+            ),
+        };
+    }
     match op.verb.as_str() {
         "help" => {
             if json_out {

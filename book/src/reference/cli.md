@@ -142,6 +142,38 @@ summonr invoke inbox-triage given apply=true simulating then return
 summonr drill route-form against route-form.drill.yaml
 ```
 
+## Help for one command
+
+Every command and alias takes `--help` (or `-h`), anywhere after it:
+`summonr run --help`, `summonr allow --help`, `summonr cases --help`. So does
+`summonr help COMMAND`. It prints the usage, the flags with both spellings,
+examples, and the exit codes that command can return. Nothing runs, and the
+rest of the line is ignored, so `--help` can be added to any command an agent
+is unsure of.
+
+With `--json` it returns a descriptor:
+
+```bash
+summonr run --help --json
+summonr help allow --json
+```
+
+```json
+{"schema_version": 1, "ok": true, "error": null, "warnings": [], "data": {"command": {
+  "command": "run", "aliases": ["invoke"], "summary": "...", "usage": "summonr run RITUAL|FILE ...",
+  "flags": [{"flag": "--model M", "keyword": "through M", "meaning": "Model override"}, ...],
+  "clauses": ["given k=v ...", "through M", ...],
+  "examples": ["summonr run inbox-triage --arg count=10 --wait --json"],
+  "exit_codes": {"0": "...", "7": "--timeout passed; the summon is still running", ...},
+  "data_shape": {"id": "...", "outcome": "...", "result": "..."},
+  "envelope": {"ok": "...", "data": "...", "error": "..."}}}}
+```
+
+`data_shape` lists the fields of `data` in that command's envelope; it is
+`null` for commands whose reply is not described yet. An unknown command is
+exit 3. `summonr help --json` (no command) still lists every command and
+clause.
+
 ## JSON output
 
 With `--json`, every command prints one envelope:

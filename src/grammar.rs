@@ -16,6 +16,8 @@ pub struct ReagentScope {
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Op {
     pub verb: String,
+    /// `--help` / `-h` after the command: show its help instead of running it.
+    pub help: bool,
     pub positionals: Vec<String>,
     pub model: Option<String>,
     pub settings: BTreeMap<String, String>,
@@ -712,6 +714,14 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
             .ok_or_else(|| cur.err(0, "unknown command", "summonr help"))?,
     };
     op.verb = verb.to_string();
+    // `CMD --help` anywhere after the command shows that command's help,
+    // whatever else the line holds, so an agent can always ask.
+    if args[1..].iter().any(|a| a == "--help" || a == "-h") {
+        op.help = true;
+        op.json = args.iter().any(|a| a == "--json") || args.windows(2).any(|w| w[0] == "returning" && w[1] == "json");
+        op.positionals = args[1..].iter().take_while(|t| !is_clause_start(t) && *t != "-h").cloned().collect();
+        return Ok(op);
+    }
     if verb == "rehearse" {
         op.verb = "invoke".into();
         op.dry_run = true;
