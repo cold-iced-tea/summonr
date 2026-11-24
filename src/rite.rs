@@ -157,7 +157,7 @@ pub fn affected_stages(def: &RiteDef, assumption_id: &str) -> BTreeSet<String> {
 }
 
 /// Compute transitive upstream ancestors of `stage_id`.
-fn ancestors_of(stages: &[StageDecl], stage_id: &str) -> BTreeSet<String> {
+pub(crate) fn ancestors_of(stages: &[StageDecl], stage_id: &str) -> BTreeSet<String> {
     let by_id: BTreeMap<&str, &StageDecl> = stages.iter().map(|s| (s.id.as_str(), s)).collect();
     let mut out = BTreeSet::new();
     let mut q = VecDeque::new();

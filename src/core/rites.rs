@@ -240,10 +240,10 @@ impl Core {
 
                 // Render stage inputs from rite inputs + upstream accepted outputs.
                 let mut stages_env = Map::new();
-                for dep in &st_decl.after {
-                    if let Some(d) = stage_map.get(dep) {
+                for dep in rite::ancestors_of(&def.stages, sid) {
+                    if let Some(d) = stage_map.get(&dep).filter(|d| d.status == "completed" && d.accepted) {
                         stages_env.insert(
-                            dep.clone(),
+                            dep,
                             json!({"output": d.output.clone().unwrap_or(Value::Null)}),
                         );
                     }
@@ -758,6 +758,34 @@ mod tests {
         std::fs::create_dir_all(&paths.state).unwrap();
         std::fs::create_dir_all(&paths.runtime).unwrap();
         Core::open(paths).unwrap()
+    }
+
+    #[test]
+    fn rite_resolves_transitive_stage_output() {
+        let home = crate::core::test_home::Home::new("{}");
+        home.inscribe_def(json!({
+            "ritual":"echo-stage", "inputs":{"text":"string"},
+            "steps":[{"id":"clean","operation":"data.trim","arguments":{"text":"${inputs.text}"}}],
+            "return":{"text":"${steps.clean.output}"}
+        }), false);
+        let file = home.path("transitive.yaml");
+        std::fs::write(&file, r#"
+rite: transitive
+stages:
+  - id: a
+    ritual: echo-stage
+    inputs: {text: hello}
+  - id: b
+    ritual: echo-stage
+    after: [a]
+    inputs: {text: intermediate}
+  - id: c
+    ritual: echo-stage
+    after: [b]
+    inputs: {text: "${stages.a.output.text}"}
+"#).unwrap();
+        let result = home.call("rite_start", json!({"file":file})).unwrap();
+        assert_eq!(result["stages"][2]["output"]["text"], "hello");
     }
 
     #[test]
