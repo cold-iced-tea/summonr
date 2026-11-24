@@ -17,16 +17,21 @@ fn large_output(step: &Step) -> Option<String> {
 }
 
 /// Every step, depth first, including loop bodies, branches and fallbacks.
-fn walk<'a>(steps: &'a [Step], out: &mut Vec<&'a Step>) {
-    for s in steps {
-        out.push(s);
-        for inner in [&s.steps, &s.then, &s.otherwise, &s.fallback].into_iter().flatten() {
-            walk(inner, out);
+pub(super) fn walk(steps: &[Step]) -> impl Iterator<Item = &Step> {
+    let mut pending: Vec<_> = steps.iter().rev().collect();
+    std::iter::from_fn(move || {
+        let step = pending.pop()?;
+        for children in [&step.fallback, &step.otherwise, &step.then, &step.steps]
+            .into_iter()
+            .flatten()
+        {
+            pending.extend(children.iter().rev());
         }
-    }
+        Some(step)
+    })
 }
 
-/// The `${...}` references in a value's strings.
+/// The template references in a value's strings.
 fn refs_in(v: &Value, out: &mut Vec<Vec<String>>) {
     match v {
         Value::String(s) => out.extend(template_refs(s).unwrap_or_default()),
@@ -88,15 +93,12 @@ fn output_name(path: &[String]) -> Option<String> {
 /// of the loop's work is done. Suggest `keep:` with the item outputs that
 /// are actually read later.
 pub fn unbounded_loop_warnings(def: &Ritual) -> Vec<String> {
-    let mut all = Vec::new();
-    walk(&def.steps, &mut all);
-    walk(&def.finally, &mut all);
+    let all: Vec<_> = walk(&def.steps).chain(walk(&def.finally)).collect();
     let mut warnings = Vec::new();
     for lp in all.iter().filter(|s| s.each.is_some() && s.keep.is_none()) {
         let Some(id) = lp.id.as_deref() else { continue };
-        let mut body = Vec::new();
-        walk(lp.steps.as_deref().unwrap_or_default(), &mut body);
-        let Some((big_id, big_what)) = body.iter().find_map(|s| {
+        let mut body = walk(lp.steps.as_deref().unwrap_or_default());
+        let Some((big_id, big_what)) = body.find_map(|s| {
             large_output(s).map(|w| (s.id.clone().unwrap_or_else(|| "(unnamed)".into()), w))
         }) else {
             continue;
@@ -112,9 +114,7 @@ pub fn unbounded_loop_warnings(def: &Ritual) -> Vec<String> {
                 if let Some((var, src)) = s.each.as_deref().and_then(|e| e.split_once(" in ")) {
                     let src: Vec<String> = src.trim().split('.').map(String::from).collect();
                     if is_loop_output(&src, &ids) {
-                        let mut inner = Vec::new();
-                        walk(s.steps.as_deref().unwrap_or_default(), &mut inner);
-                        for t in inner {
+                        for t in walk(s.steps.as_deref().unwrap_or_default()) {
                             let r = step_refs(t);
                             wanted.extend(r.iter().filter(|p| p.first().map(String::as_str) == Some(var.trim())).filter_map(|p| output_name(p)));
                         }
@@ -158,4 +158,49 @@ pub fn unbounded_loop_warnings(def: &Ritual) -> Vec<String> {
 /// Every lint for a definition.
 pub fn lint(def: &Ritual) -> Vec<String> {
     unbounded_loop_warnings(def)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ritual::{model_sites, parse_file, validate};
+
+    #[test]
+    fn deep_step_tree_is_safe_on_a_two_mib_stack() {
+        std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(|| {
+                let mut def = parse_file(
+                    "ritual: deep\nmodel: mock/keyword\nsteps:\n  - id: leaf\n    model: {prompt: hi}\n",
+                )
+                .unwrap();
+                for i in 0..1024 {
+                    let children = Some(std::mem::take(&mut def.steps));
+                    let step = match i % 3 {
+                        0 => Step { cond: Some("true".into()), then: children, ..Step::default() },
+                        1 => Step { id: Some(format!("loop_{i}")), each: Some("item in []".into()), steps: children, ..Step::default() },
+                        _ => Step {
+                            id: Some(format!("recover_{i}")),
+                            model: Some(serde_yaml::from_str("{prompt: hi}").unwrap()),
+                            fallback: children,
+                            ..Step::default()
+                        },
+                    };
+                    def.steps.push(step);
+                }
+                assert!(lint(&def).is_empty());
+                assert_eq!(model_sites(&def, &|_, _| None, None), BTreeSet::from(["mock/keyword".into()]));
+                let result = validate(&def, &|_, _| None, &|_, _| None, 3);
+                // Dispose of the deliberately deep, unvalidated AST iteratively.
+                let mut pending = std::mem::take(&mut def.steps);
+                while let Some(mut step) = pending.pop() {
+                    pending.extend([step.steps.take(), step.then.take(), step.fallback.take()]
+                        .into_iter().flatten().flatten());
+                }
+                assert!(result.unwrap_err().iter().any(|e| e.contains("step nesting exceeds")));
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 }

@@ -5,6 +5,9 @@ use super::types::{closed_obj, coalesce_type, image_handle_type, list_of, nullab
 
 type ToolMetaLookup<'a> = &'a dyn Fn(&str, &str) -> Option<crate::reagent::ToolMeta>;
 
+// Bound the stack used by scoped validation across blocks and child rituals.
+const MAX_STEP_NESTING: u32 = 64;
+
 struct V<'a> {
     def: &'a Ritual,
     resolve: Resolver<'a>,
@@ -15,6 +18,7 @@ struct V<'a> {
     vars: Vec<(String, Ty)>,
     max_depth: u32,
     depth: u32,
+    nesting: u32,
     stack: Vec<String>,
 }
 
@@ -382,6 +386,16 @@ impl V<'_> {
     }
 
     fn steps(&mut self, steps: &[Step], prefix: &str) {
+        if steps.is_empty() {
+            return;
+        }
+        if self.nesting >= MAX_STEP_NESTING {
+            self.errors.push(format!(
+                "step {prefix}: step nesting exceeds {MAX_STEP_NESTING} levels"
+            ));
+            return;
+        }
+        self.nesting += 1;
         for (i, s) in steps.iter().enumerate() {
             let label = s.id.clone().unwrap_or_else(|| format!("#{}", i + 1));
             let at = if prefix.is_empty() {
@@ -467,6 +481,7 @@ impl V<'_> {
                 self.ids.last_mut().unwrap().insert(id.clone(), out_ty);
             }
         }
+        self.nesting -= 1;
     }
 
     fn operation(&mut self, s: &Step, at: &str) -> Ty {
@@ -927,6 +942,7 @@ impl V<'_> {
             self.tools,
             self.max_depth,
             self.depth + 1,
+            self.nesting,
             stack,
         ) {
             Ok((effects, ret_ty)) => {
@@ -1050,24 +1066,23 @@ impl V<'_> {
             // data operations, model steps and ritual steps, including
             // those inside `if` branches (not `if` steps themselves, other
             // operations, or nested loops).
-            fn recorded(steps: &[Step], out: &mut std::collections::HashSet<String>) {
-                for st in steps {
-                    let produces = st.model.is_some()
-                        || st.ritual.is_some()
-                        || st.operation.as_deref().is_some_and(|o| o.starts_with("data."));
-                    if let (true, Some(id)) = (produces, st.id.as_ref()) {
-                        out.insert(id.clone());
-                    }
-                    if st.each.is_none() {
-                        recorded(st.then.as_deref().unwrap_or(&[]), out);
-                        recorded(st.otherwise.as_deref().unwrap_or(&[]), out);
+            let mut keepable = std::collections::HashSet::new();
+            let mut pending: Vec<_> = body.iter().collect();
+            while let Some(st) = pending.pop() {
+                let produces = st.model.is_some()
+                    || st.ritual.is_some()
+                    || st.operation.as_deref().is_some_and(|o| o.starts_with("data."));
+                if let (true, Some(id)) = (produces, st.id.as_deref()) {
+                    keepable.insert(id);
+                }
+                if st.each.is_none() {
+                    for branch in [&st.then, &st.otherwise].into_iter().flatten() {
+                        pending.extend(branch);
                     }
                 }
             }
-            let mut keepable = std::collections::HashSet::new();
-            recorded(body, &mut keepable);
             for k in keep {
-                if !keepable.contains(k) {
+                if !keepable.contains(k.as_str()) {
                     self.errors.push(format!(
                         "step {at}: `keep` names `{k}`, which is not a result-producing step in this loop's body"
                     ));
@@ -1109,6 +1124,7 @@ fn validate_inner(
     tools: ToolMetaLookup<'_>,
     max_depth: u32,
     depth: u32,
+    nesting: u32,
     stack: Vec<String>,
 ) -> Result<(Vec<Effect>, Ty), Vec<String>> {
     let mut v = V {
@@ -1121,6 +1137,7 @@ fn validate_inner(
         vars: Vec::new(),
         max_depth,
         depth,
+        nesting,
         stack,
     };
     if def.language_version != 1 {
@@ -1295,6 +1312,7 @@ pub fn validate(
         &|r, t| tools(r, t).map(crate::reagent::ToolMeta::from),
         max_depth,
         0,
+        0,
         vec![def.ritual.clone()],
     )
     .map(|(e, _)| e)
@@ -1311,6 +1329,7 @@ pub fn validate_with_cfg(
         resolve,
         &|r, t| crate::reagent::tool_meta(Some(cfg), r, t),
         max_depth,
+        0,
         0,
         vec![def.ritual.clone()],
     )
@@ -1342,7 +1361,7 @@ fn validate_with_return_types_meta(
     max_depth: u32,
 ) -> Result<ValidatedWithTypes, Vec<String>> {
     let (effects, ret_ty) =
-        validate_inner(def, resolve, tools, max_depth, 0, vec![def.ritual.clone()])?;
+        validate_inner(def, resolve, tools, max_depth, 0, 0, vec![def.ritual.clone()])?;
     let mut types = BTreeMap::new();
     if let Ty::Obj { fields, .. } = ret_ty {
         for (k, t) in fields {
@@ -1357,7 +1376,7 @@ fn validate_with_return_types_meta(
 /// `each` and `if` bodies and pinned child rituals. Drift fingerprints cover
 /// all of them, so a change anywhere in the tree is noticed.
 pub fn model_sites(def: &Ritual, resolve: Resolver, invocation: Option<&str>) -> BTreeSet<String> {
-    fn walk(
+    fn collect(
         steps: &[Step],
         def: &Ritual,
         resolve: Resolver,
@@ -1365,7 +1384,7 @@ pub fn model_sites(def: &Ritual, resolve: Resolver, invocation: Option<&str>) ->
         depth: u32,
         out: &mut BTreeSet<String>,
     ) {
-        for s in steps {
+        for s in super::lint::walk(steps) {
             if let Some(m) = &s.model {
                 let name = m.name.clone().or_else(|| invocation.map(String::from)).or_else(|| def.model.clone());
                 out.extend(name);
@@ -1374,18 +1393,15 @@ pub fn model_sites(def: &Ritual, resolve: Resolver, invocation: Option<&str>) ->
                 // Validation bounds depth; this guard only keeps a malformed tree finite.
                 if depth < 64 {
                     if let Some((_, _, child)) = resolve(name, s.version) {
-                        walk(&child.steps, &child, resolve, invocation, depth + 1, out);
-                        walk(&child.finally, &child, resolve, invocation, depth + 1, out);
+                        collect(&child.steps, &child, resolve, invocation, depth + 1, out);
+                        collect(&child.finally, &child, resolve, invocation, depth + 1, out);
                     }
                 }
-            }
-            for body in [&s.steps, &s.then, &s.otherwise, &s.fallback].into_iter().flatten() {
-                walk(body, def, resolve, invocation, depth, out);
             }
         }
     }
     let mut out = BTreeSet::new();
-    walk(&def.steps, def, resolve, invocation, 0, &mut out);
-    walk(&def.finally, def, resolve, invocation, 0, &mut out);
+    collect(&def.steps, def, resolve, invocation, 0, &mut out);
+    collect(&def.finally, def, resolve, invocation, 0, &mut out);
     out
 }
