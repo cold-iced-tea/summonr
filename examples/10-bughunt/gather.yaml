@@ -28,7 +28,11 @@ steps:
       values: "${steps.all.output}"
       predicate: >-
         item.quoted
-        and item.confidence >= params.floor
+        and (
+          params.floor == 0
+          or item.confidence == 1
+          or (params.floor != 1 and item.confidence != 0 and item.confidence >= params.floor)
+        )
         and (
           params.min_sev == "low"
           or (params.min_sev == "medium" and item.severity != "low")
