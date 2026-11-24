@@ -122,3 +122,10 @@ cases:
       passed: false
       tail: "BUGHUNT-CONFIRMED: bypass\ntest result: FAILED. 0 passed; 1 failed"
     expect: {outcome: returned, result: {verdict: confirmed, honest: true}}
+  - id: inverted-catch-unwind-assertion-is-untestable
+    inputs:
+      file: src/io.rs
+      test_file: "use crate::io::Replay;\n#[test] fn t() {\n    let result = std::panic::catch_unwind(|| Replay::new(c));\n    assert!(result.is_err(), \"BUGHUNT-CONFIRMED: panicked\");\n}"
+      passed: false
+      tail: "BUGHUNT-CONFIRMED: panicked\ntest result: FAILED. 0 passed; 1 failed"
+    expect: {outcome: returned, result: {verdict: untestable, honest: false}}

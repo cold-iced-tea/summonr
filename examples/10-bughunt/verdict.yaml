@@ -153,6 +153,26 @@ steps:
   - id: no_setup_marker_fail
     operation: data.logic
     arguments: {operator: not, left: "${steps.setup_marker_fail.output}"}
+  # Reject catch_unwind polarity inversions (assert!(result.is_err(), "BUGHUNT-CONFIRMED...")
+  # which fire when the code did NOT panic).
+  - id: uses_catch_unwind
+    operation: data.contains
+    arguments: {value: "${steps.code_only.output}", needle: "catch_unwind"}
+  - id: inv_result_err
+    operation: data.contains
+    arguments: {value: "${steps.code_only.output}", needle: "assert!(result.is_err()"}
+  - id: inv_res_err
+    operation: data.contains
+    arguments: {value: "${steps.code_only.output}", needle: "assert!(res.is_err()"}
+  - id: has_inv_assert
+    operation: data.logic
+    arguments: {operator: or, left: "${steps.inv_result_err.output}", right: "${steps.inv_res_err.output}"}
+  - id: inverted_catch_unwind
+    operation: data.logic
+    arguments: {operator: and, left: "${steps.uses_catch_unwind.output}", right: "${steps.has_inv_assert.output}"}
+  - id: no_inverted_catch_unwind
+    operation: data.logic
+    arguments: {operator: not, left: "${steps.inverted_catch_unwind.output}"}
   - id: honest
     operation: data.all
     arguments:
@@ -161,6 +181,7 @@ steps:
         - "${steps.no_should_panic.output}"
         - "${steps.single_marker_site.output}"
         - "${steps.no_setup_marker_fail.output}"
+        - "${steps.no_inverted_catch_unwind.output}"
   # Did it build? cargo always ends a build failure with "could not compile";
   # a test that ran prints "test result:".
   - id: could_not_compile

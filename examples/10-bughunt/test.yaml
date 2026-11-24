@@ -1,25 +1,29 @@
 language_version: 1
 ritual: bughunt-test
 description: >-
-  Try to prove each finding: optional triage re-reads the suspect function
-  independently so wrong hunter claims do not poison test generation; then a
-  model writes a Rust test module that panics with BUGHUNT-CONFIRMED only if
-  the bug is real, trial runs it in a throwaway worktree, and the result
-  becomes confirmed, refuted, dismissed, or untestable. One retry with the
-  compiler output when the first test does not build.
+  Try to prove each finding: optional cross-file triage reads the file's top
+  imports/types and up to one referenced sibling file so multi-file bugs and
+  wrong hunter claims are re-diagnosed accurately; then a model writes a Rust
+  test module that panics with BUGHUNT-CONFIRMED only if the bug is real,
+  trial runs it in a throwaway worktree, and the result becomes confirmed,
+  refuted, dismissed, or untestable. One retry with the compiler output when
+  the first test does not build. Worktree cleanup always runs in finally:.
 inputs:
   findings: list
   chunk: {type: integer, default: 240, min: 1, max: 2000}
   escalate: {type: string, enum: [none, codex, gemini], default: none}
-  # When true (default), local findings are re-diagnosed by the 35B model on a
-  # wider code window before writing a test; false positives are dismissed
-  # without spending compilation/test budget.
+  # When true (default), findings are re-diagnosed by the 35B model on a wider
+  # code window (with file header + optional sibling file) before writing a
+  # test; false positives are dismissed without spending build budget.
   triage: {type: boolean, default: true}
-  # Each finding costs one to three model calls and up to two builds; the
+  # When true and escalate != none, run free local triage first and only send
+  # surviving real_bug leads to the cloud test writer.
+  escalate_after_triage: {type: boolean, default: false}
+  # Each finding costs one to four model calls and up to two builds; the
   # rest are reported as untested rather than left to exhaust the run.
   max_batch: {type: integer, default: 25, min: 1, max: 200}
 model: ollama/qwen3:4b
-# Explicit num_predict prevents thinking models (Qwen3.6-35B-A3B) from
+# Explicit num_predict prevents reasoning models (Qwen3.6-35B-A3B) from
 # truncating before emitting JSON.
 settings: {temperature: 0, num_ctx: 16384, num_predict: 6144}
 requires:
@@ -32,6 +36,13 @@ requires:
   - {reagent: cmd, action: read}
 essence: {requests: 200, time: 4h, cleanup_time: 1m}
 defs:
+  context_req:
+    type: object
+    required: [needs_file, symbol]
+    additionalProperties: false
+    properties:
+      needs_file: {type: string, maxLength: 200}
+      symbol: {type: string, maxLength: 120}
   triage_verdict:
     type: object
     required: [real_bug, diagnosis, target_fn, test_strategy]
@@ -48,14 +59,26 @@ defs:
     properties:
       rust_source: {type: string, minLength: 20, maxLength: 20000}
 bindings:
+  context_guide:
+    content: |
+      You are preparing context to audit a suspected bug in one Rust file.
+      Decide whether understanding the bug (or checking a cross-file security
+      or logic interaction, caller, callee, or type definition) requires
+      reading ONE other source file in this repository.
+      - If the code shown is self-contained, return {"needs_file": "", "symbol": ""}.
+      - If another repo file is needed, return its repo-relative path in
+        needs_file (for example "src/exec.rs") and a short function or type
+        name to center on in symbol (or "" for the top of the file).
+      Answer with JSON matching the schema.
   triage_guide:
     content: |
       You are a senior Rust security and correctness reviewer triaging a lead
-      from a small automated scanner. The scanner often lands on the right
+      from an automated scanner. The scanner often lands on the right
       function while getting the root cause wrong — or flags completely safe
       code. Do NOT stop just because the scanner's claim is wrong: first
-      independently audit the Rust code shown for ANY real security bypass,
-      injection, panic, overflow, or logic bug before deciding it is safe.
+      independently audit the Rust code shown (including any sibling file
+      context provided) for ANY real security bypass, injection, panic,
+      overflow, or logic bug before deciding it is safe.
       - Only if the code shown is genuinely sound, set real_bug: false and
         explain briefly why it is safe.
       - If there IS a real bug or bypass in the code shown (even if the real
@@ -74,7 +97,7 @@ bindings:
       visible to the crate; prefer pub(crate) functions you can see. If the
       suspect function is private (`fn`, not `pub`), do NOT copy it into
       `bughunt_repro.rs`; call the `pub` or `pub(crate)` entry point in the
-      same module (e.g. `crate::reagent::authorize(...)`) that reaches it.
+      same module that reaches it.
       Write the complete file: use lines, then exactly one #[test] function.
       The test must panic with a message starting BUGHUNT-CONFIRMED ONLY at
       the single final assertion when the bug really happens, for example:
@@ -122,7 +145,8 @@ steps:
       - id: line_count
         operation: data.count
         arguments: {value: "${steps.lines.output}"}
-      # Start 40 lines before found.start so function signatures & imports are visible.
+      # Start 40 lines before found.start so function signatures are visible,
+      # and also include the top 60 lines (imports & types) when win_start > 0.
       - id: win_start_raw
         operation: data.arithmetic
         arguments: {left: "${found.start}", right: 40, operator: subtract}
@@ -141,6 +165,24 @@ steps:
       - id: code
         operation: data.join
         arguments: {values: "${steps.window.output}", separator: "\n"}
+      - id: hdr_end
+        operation: data.clamp
+        arguments: {value: 60, min: 0, max: "${steps.line_count.output}"}
+      - id: hdr_slice
+        operation: data.slice
+        arguments: {values: "${steps.lines.output}", start: 0, end: "${steps.hdr_end.output}"}
+      - id: hdr_joined
+        operation: data.join
+        arguments: {values: "${steps.hdr_slice.output}", separator: "\n"}
+      - id: need_hdr
+        operation: data.compare
+        arguments: {left: "${steps.win_start.output}", right: 0, operator: gt}
+      - id: header_block
+        operation: data.select
+        arguments:
+          condition: "${steps.need_hdr.output}"
+          then: "File header (${found.file}, lines 0..${steps.hdr_end.output}):\n${steps.hdr_joined.output}\n\n"
+          else: ""
       - id: is_big
         operation: data.contains
         arguments: {value: [high, critical], needle: "${found.severity}"}
@@ -165,16 +207,110 @@ steps:
       - id: not_cloud
         operation: data.logic
         arguments: {operator: not, left: "${steps.use_cloud.output}"}
+      - id: triage_for_cloud
+        operation: data.logic
+        arguments: {operator: and, left: "${steps.use_cloud.output}", right: "${inputs.escalate_after_triage}"}
+      - id: triage_eligible
+        operation: data.logic
+        arguments: {operator: or, left: "${steps.not_cloud.output}", right: "${steps.triage_for_cloud.output}"}
       - id: run_triage
         operation: data.logic
-        arguments: {operator: and, left: "${inputs.triage}", right: "${steps.not_cloud.output}"}
+        arguments: {operator: and, left: "${inputs.triage}", right: "${steps.triage_eligible.output}"}
       - id: brief
         operation: data.canonical_json
         arguments: {value: "${found}"}
-      # Optional local triage/re-diagnosis step: catches wrong 4B claims before
-      # spending build/test budget.
+      # Step 1 of triage: optionally fetch ONE referenced sibling file for
+      # cross-file bug context (safe fallback if the model names a bad path).
       - if: steps.run_triage.output
         then:
+          - id: triage_context
+            model:
+              name: ollama/hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M
+              bind: [context_guide]
+              prompt: |
+                Scanner lead: ${steps.brief.output}
+
+                ${steps.header_block.output}Code from ${found.file}, lines from ${steps.win_start.output}:
+                ${steps.code.output}
+              schema: {$ref: "#/$defs/context_req"}
+          - id: req_file
+            operation: data.trim
+            arguments: {text: "${steps.triage_context.output.needs_file}"}
+          - id: req_sym
+            operation: data.trim
+            arguments: {text: "${steps.triage_context.output.symbol}"}
+          - id: has_req_file
+            operation: data.compare
+            arguments: {left: "${steps.req_file.output}", right: "", operator: ne}
+          - id: is_other_file
+            operation: data.compare
+            arguments: {left: "${steps.req_file.output}", right: "${found.file}", operator: ne}
+          - id: fetch_sibling
+            operation: data.logic
+            arguments: {operator: and, left: "${steps.has_req_file.output}", right: "${steps.is_other_file.output}"}
+          - if: steps.fetch_sibling.output
+            then:
+              - id: sib_raw
+                operation: file.read_text
+                arguments: {root: /absolute/path/to/target, path: "${steps.req_file.output}"}
+                fallback:
+                  - id: sib_missing
+                    operation: data.select
+                    arguments: {condition: true, then: {text: ""}, else: {text: ""}}
+              - id: sib_text
+                operation: data.get
+                arguments: {value: "${steps.sib_raw.output}", path: /text, default: ""}
+              - id: sib_lines
+                operation: data.lines
+                arguments: {text: "${steps.sib_text.output}"}
+              - id: sib_count
+                operation: data.count
+                arguments: {value: "${steps.sib_lines.output}"}
+              - id: has_sym
+                operation: data.compare
+                arguments: {left: "${steps.req_sym.output}", right: "", operator: ne}
+              - if: steps.has_sym.output
+                then:
+                  - id: sym_idx
+                    operation: data.index_of
+                    arguments: {values: "${steps.sib_lines.output}", needle: "${steps.req_sym.output}", match: contains}
+              - id: found_sym
+                operation: data.compare
+                arguments: {left: "${steps.sym_idx.output}", right: null, operator: ne}
+              - id: sib_center
+                operation: data.select
+                arguments: {condition: "${steps.found_sym.output}", then: "${steps.sym_idx.output}", else: 0}
+              - id: sib_start_raw
+                operation: data.arithmetic
+                arguments: {left: "${steps.sib_center.output}", right: 20, operator: subtract}
+              - id: sib_start
+                operation: data.clamp
+                arguments: {value: "${steps.sib_start_raw.output}", min: 0, max: "${steps.sib_count.output}"}
+              - id: sib_end_raw
+                operation: data.arithmetic
+                arguments: {left: "${steps.sib_start.output}", right: 160, operator: add}
+              - id: sib_end
+                operation: data.clamp
+                arguments: {value: "${steps.sib_end_raw.output}", min: 0, max: "${steps.sib_count.output}"}
+              - id: sib_win
+                operation: data.slice
+                arguments: {values: "${steps.sib_lines.output}", start: "${steps.sib_start.output}", end: "${steps.sib_end.output}"}
+              - id: sib_joined
+                operation: data.join
+                arguments: {values: "${steps.sib_win.output}", separator: "\n"}
+              - id: sib_nonempty
+                operation: data.compare
+                arguments: {left: "${steps.sib_joined.output}", right: "", operator: ne}
+              - id: sib_block_inner
+                operation: data.select
+                arguments:
+                  condition: "${steps.sib_nonempty.output}"
+                  then: "\n\nSibling file context (${steps.req_file.output}, lines ${steps.sib_start.output}..${steps.sib_end.output}):\n${steps.sib_joined.output}"
+                  else: ""
+          - id: sib_block
+            operation: data.select
+            arguments: {condition: "${steps.fetch_sibling.output}", then: "${steps.sib_block_inner.output}", else: ""}
+          # Step 2 of triage: independently judge with primary + sibling context.
           - id: triaged
             model:
               name: ollama/hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M
@@ -182,9 +318,12 @@ steps:
               prompt: |
                 Scanner lead: ${steps.brief.output}
 
-                Code from ${found.file}, lines from ${steps.win_start.output}:
-                ${steps.code.output}
+                ${steps.header_block.output}Code from ${found.file}, lines from ${steps.win_start.output}:
+                ${steps.code.output}${steps.sib_block.output}
               schema: {$ref: "#/$defs/triage_verdict"}
+      - id: sibling_context
+        operation: data.select
+        arguments: {condition: "${steps.run_triage.output}", then: "${steps.sib_block.output}", else: ""}
       - id: should_test
         operation: data.select
         arguments:
@@ -233,6 +372,9 @@ steps:
                       It is a #[cfg(test)] module at the crate root: use crate:: paths and call the real function under suspicion.
                       Write one #[test] that asserts the correct, safe behaviour; when the code misbehaves the assertion must fail with a short message starting BUGHUNT-CONFIRMED (at most one BUGHUNT-CONFIRMED site; never on setup assertions; never #[should_panic]; files only under std::env::temp_dir()).
 
+                      Diagnosis: ${steps.diagnosis_text.output}
+                      Target function: ${steps.target_fn_text.output}
+                      Test strategy: ${steps.strategy_text.output}
                       Suspected defect:
                       ${steps.brief.output}
           - if: steps.use_gemini.output
@@ -253,6 +395,7 @@ steps:
                       misbehaves the assertion must fail with a short message starting
                       BUGHUNT-CONFIRMED (at most one BUGHUNT-CONFIRMED site; never on setup
                       assertions; never #[should_panic]; files only under std::env::temp_dir()).
+                      Diagnosis: ${steps.diagnosis_text.output} Target: ${steps.target_fn_text.output}
                       Suspected defect: ${steps.brief.output}
           - if: steps.use_big.output
             then:
@@ -266,8 +409,8 @@ steps:
                     Test strategy: ${steps.strategy_text.output}
                     Original lead: ${steps.brief.output}
 
-                    Code from ${found.file}, lines from ${steps.win_start.output}:
-                    ${steps.code.output}
+                    ${steps.header_block.output}Code from ${found.file}, lines from ${steps.win_start.output}:
+                    ${steps.code.output}${steps.sibling_context.output}
                   schema: {$ref: "#/$defs/repro"}
           - if: steps.use_small.output
             then:
@@ -280,8 +423,8 @@ steps:
                     Test strategy: ${steps.strategy_text.output}
                     Original lead: ${steps.brief.output}
 
-                    Code from ${found.file}, lines from ${steps.win_start.output}:
-                    ${steps.code.output}
+                    ${steps.header_block.output}Code from ${found.file}, lines from ${steps.win_start.output}:
+                    ${steps.code.output}${steps.sibling_context.output}
                   schema: {$ref: "#/$defs/repro"}
           - id: test_file_opt
             operation: data.coalesce
@@ -367,8 +510,8 @@ steps:
                   prompt: |
                     Diagnosis: ${steps.diagnosis_text.output}
                     Target function: ${steps.target_fn_text.output}
-                    Code from ${found.file}, lines from ${steps.win_start.output}:
-                    ${steps.code.output}
+                    ${steps.header_block.output}Code from ${found.file}, lines from ${steps.win_start.output}:
+                    ${steps.code.output}${steps.sibling_context.output}
 
                     Your previous file did not compile:
                     ${steps.test_file.output}
@@ -384,8 +527,8 @@ steps:
                   prompt: |
                     Diagnosis: ${steps.diagnosis_text.output}
                     Target function: ${steps.target_fn_text.output}
-                    Code from ${found.file}, lines from ${steps.win_start.output}:
-                    ${steps.code.output}
+                    ${steps.header_block.output}Code from ${found.file}, lines from ${steps.win_start.output}:
+                    ${steps.code.output}${steps.sibling_context.output}
 
                     Your previous file did not compile:
                     ${steps.test_file.output}

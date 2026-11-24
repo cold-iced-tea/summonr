@@ -1,5 +1,6 @@
 # Sandboxed drill for bughunt-test: runs the real git worktree + file write +
-# trial + verdict + cleanup path against disposable copies (no model calls).
+# cross-file context fetch + trial + verdict + finally cleanup path against
+# disposable copies (no model calls).
 # Run through ./drill.sh, which sets up a tiny fixture git repo for bughunt-target.
 drill: bughunt-test-cases
 ritual: bughunt-test
@@ -11,18 +12,22 @@ cases:
       findings:
         - {kind: bug, severity: high, confidence: 0.9, claim: "false alarm", trigger: "none", snippet: "role.starts_with(\"admin\")", file: src/auth.rs, start: 0, quoted: true}
     model:
+      triage_context:
+        - {needs_file: "", symbol: ""}
       triaged:
         - {real_bug: false, diagnosis: "Code is safe.", target_fn: "allowed", test_strategy: "none"}
     expect:
       outcome: returned
       result: {confirmed: 0, dismissed: 1, untested: 0}
-      model_calls: 1
-  - id: triage-confirms-and-repro-proves-bug
+      model_calls: 2
+  - id: cross-file-context-triage-and-repro-proves-bug
     inputs:
       triage: true
       findings:
-        - {kind: bypass, severity: high, confidence: 0.9, claim: "wrong 4b claim", trigger: "x", snippet: "role.starts_with(\"admin\")", file: src/auth.rs, start: 0, quoted: true}
+        - {kind: bypass, severity: high, confidence: 0.9, claim: "wrong hunter claim", trigger: "x", snippet: "role.starts_with(\"admin\")", file: src/auth.rs, start: 0, quoted: true}
     model:
+      triage_context:
+        - {needs_file: "lib/withtests.rs", symbol: "fn"}
       triaged:
         - {real_bug: true, diagnosis: "prefix match allows adminx", target_fn: "crate::auth::allowed", test_strategy: "call allowed(\"adminx\")"}
       write_big:
@@ -30,6 +35,20 @@ cases:
     expect:
       outcome: returned
       result: {confirmed: 1, dismissed: 0, untested: 0}
+      model_calls: 3
+  - id: missing-sibling-file-falls-back-gracefully
+    inputs:
+      triage: true
+      findings:
+        - {kind: bug, severity: high, confidence: 0.9, claim: "hallucinated ref", trigger: "x", snippet: "role.starts_with(\"admin\")", file: src/auth.rs, start: 0, quoted: true}
+    model:
+      triage_context:
+        - {needs_file: "src/does_not_exist.rs", symbol: "foo"}
+      triaged:
+        - {real_bug: false, diagnosis: "No bug found.", target_fn: "allowed", test_strategy: "none"}
+    expect:
+      outcome: returned
+      result: {confirmed: 0, dismissed: 1, untested: 0}
       model_calls: 2
   - id: passing-repro-refutes-without-triage
     inputs:
