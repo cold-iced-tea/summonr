@@ -10,6 +10,79 @@ pub enum Expr {
     Eq(Box<Expr>, Box<Expr>),
     Ne(Box<Expr>, Box<Expr>),
     Order(Box<Expr>, Box<Expr>, Compare),
+    Call(Func, Vec<Expr>),
+}
+
+/// The functions an expression may call: pure, bounded string helpers. None
+/// converts its arguments; a non-string argument is an error.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Func {
+    Lower,
+    Upper,
+    Trim,
+    Contains,
+    StartsWith,
+    EndsWith,
+}
+
+impl Func {
+    fn named(name: &str) -> Option<Func> {
+        Some(match name {
+            "lower" => Func::Lower,
+            "upper" => Func::Upper,
+            "trim" => Func::Trim,
+            "contains" => Func::Contains,
+            "starts_with" => Func::StartsWith,
+            "ends_with" => Func::EndsWith,
+            _ => return None,
+        })
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Func::Lower => "lower",
+            Func::Upper => "upper",
+            Func::Trim => "trim",
+            Func::Contains => "contains",
+            Func::StartsWith => "starts_with",
+            Func::EndsWith => "ends_with",
+        }
+    }
+    pub fn arity(self) -> usize {
+        match self {
+            Func::Lower | Func::Upper | Func::Trim => 1,
+            Func::Contains | Func::StartsWith | Func::EndsWith => 2,
+        }
+    }
+    /// True when the function returns a boolean, false when a string.
+    pub fn returns_bool(self) -> bool {
+        self.arity() == 2
+    }
+    fn apply(self, args: &[Value]) -> Result<Value, String> {
+        let mut s = Vec::with_capacity(args.len());
+        for (i, a) in args.iter().enumerate() {
+            match a {
+                Value::String(x) => s.push(x.as_str()),
+                other => {
+                    let kind = match other {
+                        Value::Null => "null",
+                        Value::Bool(_) => "a boolean",
+                        Value::Number(_) => "a number",
+                        Value::Array(_) => "a list",
+                        _ => "an object",
+                    };
+                    return Err(format!("argument {} of `{}` must be a string, found {kind}", i + 1, self.name()));
+                }
+            }
+        }
+        Ok(match self {
+            Func::Lower => Value::String(s[0].to_lowercase()),
+            Func::Upper => Value::String(s[0].to_uppercase()),
+            Func::Trim => Value::String(s[0].trim().to_string()),
+            Func::Contains => Value::Bool(s[0].contains(s[1])),
+            Func::StartsWith => Value::Bool(s[0].starts_with(s[1])),
+            Func::EndsWith => Value::Bool(s[0].ends_with(s[1])),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -30,6 +103,7 @@ enum Tok {
     Ne,
     Open,
     Close,
+    Comma,
 }
 
 fn lex(src: &str) -> Result<Vec<Tok>, String> {
@@ -45,6 +119,9 @@ fn lex(src: &str) -> Result<Vec<Tok>, String> {
             i += 1;
         } else if c == ')' {
             out.push(Tok::Close);
+            i += 1;
+        } else if c == ',' {
+            out.push(Tok::Comma);
             i += 1;
         } else if c == '=' && chars.get(i + 1) == Some(&'=') {
             out.push(Tok::Eq);
@@ -167,6 +244,29 @@ impl P {
                 "false" => Expr::Lit(Value::Bool(false)),
                 "null" => Expr::Lit(Value::Null),
                 "and" | "or" | "not" => return Err(format!("misplaced `{w}`")),
+                _ if self.t.get(self.i) == Some(&Tok::Open) => {
+                    let f = Func::named(&w).ok_or_else(|| {
+                        format!("unknown function `{w}`; expressions offer lower, upper, trim, contains, starts_with and ends_with")
+                    })?;
+                    self.i += 1;
+                    let mut args = Vec::new();
+                    if self.t.get(self.i) != Some(&Tok::Close) {
+                        loop {
+                            args.push(self.or()?);
+                            match self.t.get(self.i) {
+                                Some(Tok::Comma) => self.i += 1,
+                                Some(Tok::Close) => break,
+                                _ => return Err(format!("missing `)` after the arguments of `{w}`")),
+                            }
+                        }
+                    }
+                    self.i += 1;
+                    if args.len() != f.arity() {
+                        let n = f.arity();
+                        return Err(format!("`{w}` takes {n} argument{}, given {}", if n == 1 { "" } else { "s" }, args.len()));
+                    }
+                    Expr::Call(f, args)
+                }
                 _ => Expr::Ref(w.split('.').map(String::from).collect()),
             },
             Tok::Open => {
@@ -203,6 +303,7 @@ pub fn expr_refs(e: &Expr, out: &mut Vec<Vec<String>>) {
         Expr::Lit(_) => {}
         Expr::Ref(p) => out.push(p.clone()),
         Expr::Not(a) => expr_refs(a, out),
+        Expr::Call(_, args) => args.iter().for_each(|a| expr_refs(a, out)),
         Expr::And(a, b)
         | Expr::Or(a, b)
         | Expr::Eq(a, b)
@@ -230,6 +331,10 @@ pub fn eval(e: &Expr, env: &dyn Env) -> Result<Value, String> {
         Expr::Lit(v) => v.clone(),
         Expr::Ref(p) => env.lookup(p)?,
         Expr::Not(a) => Value::Bool(!as_bool(eval(a, env)?, "operand of `not`")?),
+        Expr::Call(f, args) => {
+            let vals = args.iter().map(|a| eval(a, env)).collect::<Result<Vec<_>, _>>()?;
+            f.apply(&vals)?
+        }
         Expr::And(a, b) => Value::Bool(
             as_bool(eval(a, env)?, "operand of `and`")?
                 && as_bool(eval(b, env)?, "operand of `and`")?,

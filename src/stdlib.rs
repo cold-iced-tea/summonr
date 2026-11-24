@@ -819,6 +819,15 @@ mod tests {
         assert!(validate_collection("data.filter", &json!({"predicate": "item.a == params.x", "params": {"x y": 1}})).is_err());
         assert!(validate_collection("data.filter", &json!({"predicate": "item.a == params.x"})).is_err());
         assert!(validate_collection("data.filter", &json!({"predicate": "item.a == '${params.x}'", "params": {"x": 1}})).is_err());
+        // String helpers replace each + case + starts_with + select + flatten.
+        let lines = json!({"values": ["fn a()", "  // comment", "", "x // trailing"],
+                           "predicate": "trim(item) != '' and not starts_with(trim(item), params.mark)",
+                           "params": {"mark": "//"}});
+        validate_collection("data.filter", &lines).unwrap();
+        assert_eq!(collection("filter", &lines, None).unwrap(), json!(["fn a()", "x // trailing"]));
+        let claims = json!({"values": [{"c": "Possible NIT"}, {"c": "real bug"}], "predicate": "not contains(lower(item.c), 'nit')"});
+        assert_eq!(collection("filter", &claims, None).unwrap(), json!([{"c": "real bug"}]));
+        assert!(validate_collection("data.filter", &json!({"predicate": "contains(inputs.secret, 'x')"})).is_err());
     }
     #[test]
     fn extended_stdlib_logic_math_objects_and_hashing() {

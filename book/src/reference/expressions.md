@@ -47,6 +47,32 @@ abstain_if: output.folder == "abstain"
 | `inputs.x`, `steps.id.output.f`, `item.f` | References |
 | `output.f` | The step's own output (only in `abstain_if`) |
 
+| `lower(s)`, `trim(s)`, ... | String helpers; see below |
+
 Precedence, loosest first: `or`, `and`, `not`, then comparison.
+
+### String helpers
+
+Conditions and `data.filter` predicates can call six pure string functions:
+
+| Function | Result |
+| --- | --- |
+| `lower(s)` | `s` in lower case (Unicode-aware) |
+| `upper(s)` | `s` in upper case (Unicode-aware) |
+| `trim(s)` | `s` without leading and trailing whitespace |
+| `contains(haystack, needle)` | `true` if `needle` occurs in `haystack` |
+| `starts_with(s, prefix)` | `true` if `s` begins with `prefix` |
+| `ends_with(s, suffix)` | `true` if `s` ends with `suffix` |
+
+Every argument must be a string. A number, boolean, list, object or `null` is an error, never converted: `lower(steps.count.output)` fails if the output is `3`. Validation checks argument types where it knows them, so `contains(inputs.name, inputs.count)` with an integer `count` is rejected before the run. Calls nest, `starts_with(trim(item), "//")`, and they count toward the same 256-token limit as the rest of the expression. An unknown name or the wrong number of arguments is an error when the ritual is checked. These are the only functions; there are no user-defined ones.
+
+```yaml
+# Keep the lines that are neither blank nor a `//` comment.
+- id: code
+  operation: data.filter
+  arguments:
+    values: "${steps.lines.output}"
+    predicate: "trim(item) != '' and not starts_with(trim(item), '//')"
+```
 
 Arithmetic is an explicit `data.arithmetic` operation, not an expression operator. Conditions are limited to 4,096 bytes and 256 tokens. A condition must evaluate to a boolean; anything else is an error. `and` and `or` short-circuit: if the left side decides the result, the right side is not evaluated.

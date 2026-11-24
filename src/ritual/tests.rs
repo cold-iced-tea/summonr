@@ -22,6 +22,69 @@ mod core_tests {
     }
 
     #[test]
+    fn string_helpers_are_pure_strict_and_typed() {
+        let env = E(json!({"item": {"claim": "  TODO: Maybe a bug  ", "line": "// note", "n": 3, "none": null}}));
+        let t = |src: &str| eval(&parse_expr(src).unwrap(), &env).unwrap();
+        assert_eq!(t("lower(item.claim)"), json!("  todo: maybe a bug  "));
+        assert_eq!(t("upper('ab')"), json!("AB"));
+        assert_eq!(t("trim(item.claim)"), json!("TODO: Maybe a bug"));
+        assert_eq!(t("contains(lower(item.claim), 'maybe')"), json!(true));
+        assert_eq!(t("starts_with(trim(item.line), '//')"), json!(true));
+        assert_eq!(t("ends_with(item.line, 'note') and not contains(item.line, 'x')"), json!(true));
+        assert_eq!(t("contains('', '')"), json!(true));
+        // No implicit coercion: a number, a null or a list is an error.
+        for bad in ["lower(item.n)", "trim(item.none)", "contains(item.line, 3)", "starts_with(item.n, '3')"] {
+            let err = eval(&parse_expr(bad).unwrap(), &env).unwrap_err();
+            assert!(err.contains("must be a string"), "{bad}: {err}");
+        }
+        // Unknown functions, wrong arity and stray commas fail to parse.
+        assert!(parse_expr("shout(item.line)").unwrap_err().contains("unknown function `shout`"));
+        assert!(parse_expr("lower(item.line, 'x')").unwrap_err().contains("takes 1 argument"));
+        assert!(parse_expr("contains(item.line)").unwrap_err().contains("takes 2 arguments"));
+        assert!(parse_expr("lower(item.line").is_err());
+        assert!(parse_expr("item.a, item.b").is_err());
+        // Calls count toward the token limit like everything else.
+        assert!(parse_expr(&format!("{}x{}", "lower(".repeat(100), ")".repeat(100))).unwrap_err().contains("256 tokens"));
+        let mut refs = Vec::new();
+        expr_refs(&parse_expr("contains(lower(item.claim), params.word)").unwrap(), &mut refs);
+        assert_eq!(refs, vec![vec!["item".to_string(), "claim".into()], vec!["params".to_string(), "word".into()]]);
+    }
+
+    #[test]
+    fn string_helpers_are_checked_statically() {
+        let none = |_: &str, _: Option<u32>| None;
+        let def = parse_file(
+            r#"
+ritual: r
+inputs:
+  count: {type: integer}
+  name: {type: string}
+reagents:
+  data: {select: [assert]}
+steps:
+  - if: lower(inputs.count) == "x"
+    then:
+      - {id: a, operation: data.assert, arguments: {condition: true}}
+  - if: contains(inputs.name, inputs.count)
+    then:
+      - {id: b, operation: data.assert, arguments: {condition: true}}
+  - if: lower(inputs.name)
+    then:
+      - {id: c, operation: data.assert, arguments: {condition: true}}
+  - if: starts_with(trim(inputs.name), "x") and upper(inputs.name) != "Y"
+    then:
+      - {id: d, operation: data.assert, arguments: {condition: true}}
+"#,
+        )
+        .unwrap();
+        let errs = validate(&def, &none, &crate::reagent::tool, 3).unwrap_err();
+        assert_eq!(errs.iter().filter(|e| e.contains("argument 1 of `lower` has type integer, expected string")).count(), 1, "{errs:?}");
+        assert!(errs.iter().any(|e| e.contains("argument 2 of `contains` has type integer, expected string")), "{errs:?}");
+        assert!(errs.iter().any(|e| e.contains("condition has type string, expected boolean")), "{errs:?}");
+        assert_eq!(errs.len(), 3, "{errs:?}");
+    }
+
+    #[test]
     fn object_input_accepts_object() {
         let v = coerce("delivery", &obj_decl(None), &json!({"accept": true})).unwrap();
         assert_eq!(v, json!({"accept": true}));

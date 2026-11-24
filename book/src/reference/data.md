@@ -104,8 +104,9 @@ steps:
 
 Body templates have their own scope: `item`, zero-based `index`, and, for fold,
 `acc`. They do not capture outer `inputs` or `steps`; supply literal constants or
-include necessary data in each item. Filter predicates can use `item` and `index`
-with the [condition language](expressions.md), and cannot contain `${...}` at
+include necessary data in each item. Filter predicates use the [condition language](expressions.md),
+including its [string helpers](expressions.md#string-helpers), over `item` and
+`index`, and cannot contain `${...}` at
 all, even inside a quoted string: a value pasted into a predicate's text could
 change what it means. To compare items with outside values, pass them in
 `params`; each entry is rendered like any argument and bound as a value, read in

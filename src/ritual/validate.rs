@@ -315,6 +315,24 @@ impl V<'_> {
                 }
                 Ty::Bool
             }
+            Expr::Call(f, args) => {
+                for (i, a) in args.iter().enumerate() {
+                    let t = self.expr_type(a, at, allow_output);
+                    if !t.compatible_with(&Ty::Str) {
+                        self.errors.push(format!(
+                            "{at}: argument {} of `{}` has type {}, expected string",
+                            i + 1,
+                            f.name(),
+                            t.label()
+                        ));
+                    }
+                }
+                if f.returns_bool() {
+                    Ty::Bool
+                } else {
+                    Ty::Str
+                }
+            }
             Expr::Eq(a, b) | Expr::Ne(a, b) => {
                 let lt = self.expr_type(a, at, allow_output);
                 let rt = self.expr_type(b, at, allow_output);
