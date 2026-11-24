@@ -2761,9 +2761,18 @@ impl Core {
                         |r| r.get(0),
                     )
                     .map_err(storage_error)?;
-                Ok(
-                    json!({"version": env!("CARGO_PKG_VERSION"), "pid": std::process::id(), "active": self.active.lock().unwrap().len(), "ended": ended, "petitions": petitions, "socket": self.paths.socket()}),
-                )
+                // Which home, config file and backend this core loaded, so a
+                // caller can check it is talking to the core it meant to.
+                let config_path = self.paths.config.join("config.yaml");
+                Ok(json!({
+                    "version": env!("CARGO_PKG_VERSION"), "pid": std::process::id(),
+                    "active": self.active.lock().unwrap().len(), "ended": ended, "petitions": petitions,
+                    "socket": self.paths.socket(),
+                    "home": self.paths.home(),
+                    "config_path": config_path,
+                    "config_loaded": config_path.is_file(),
+                    "ollama_url": self.cfg.ollama_url(),
+                }))
             }
             "identity" => {
                 let _: requests::Empty = decode(p)?;

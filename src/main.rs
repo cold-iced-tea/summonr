@@ -60,7 +60,13 @@ fn main() {
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    match take_home(&mut args, &cwd()) {
+        // Set before anything reads it, so a core this CLI starts inherits it.
+        Ok(Some(home)) => std::env::set_var("SUMMONR_HOME", home),
+        Ok(None) => {}
+        Err(e) => std::process::exit(finish(Err(RpcErr::invalid(e)), args.iter().any(|a| a == "--json"), |_| {})),
+    }
     let paths = Paths::resolve();
     if let Some(w) = misplaced_config(&paths) {
         eprintln!("summonr: warning: {w}");
@@ -102,6 +108,39 @@ fn main() {
         }
     };
     std::process::exit(run(op, &paths, style));
+}
+
+/// Remove `--home PATH` (or `--home=PATH`) from the command line, wherever it
+/// is, and return the home as an absolute path. Same as `SUMMONR_HOME=PATH`,
+/// which it overrides.
+fn take_home(args: &mut Vec<String>, cwd: &str) -> Result<Option<String>, String> {
+    let mut found = None;
+    let mut i = 0;
+    while i < args.len() {
+        let value = if args[i] == "--home" {
+            let v = args.get(i + 1).filter(|v| !v.starts_with("--")).cloned()
+                .ok_or("`--home` needs a directory: --home ./lab")?;
+            args.drain(i..i + 2);
+            v
+        } else if let Some(v) = args[i].strip_prefix("--home=") {
+            let v = v.to_string();
+            args.remove(i);
+            v
+        } else {
+            i += 1;
+            continue;
+        };
+        if value.is_empty() {
+            return Err("`--home` needs a directory: --home ./lab".into());
+        }
+        if found.replace(value).is_some() {
+            return Err("give `--home` once".into());
+        }
+    }
+    Ok(found.map(|h| {
+        let p = std::path::Path::new(&h);
+        if p.is_absolute() { h } else { std::path::Path::new(cwd).join(p).to_string_lossy().into_owned() }
+    }))
 }
 
 /// `reading k=PATH` / `--arg-file k=PATH`: the file's text becomes input
@@ -1276,5 +1315,30 @@ mod envelope_tests {
         let e = ok_envelope("graveyard", json!([{"outcome": "failed"}]), json!([]));
         assert!(e.as_object().unwrap().contains_key("outcome") && e["outcome"].is_null());
         assert!(ok_envelope("petition", json!({"outcome": "x"}), json!([]))["outcome"].is_null());
+    }
+}
+
+#[cfg(test)]
+mod home_flag_tests {
+    use super::take_home;
+
+    fn v(s: &str) -> Vec<String> {
+        s.split(' ').map(String::from).collect()
+    }
+
+    #[test]
+    fn home_is_taken_from_anywhere_and_made_absolute() {
+        let mut a = v("--home lab run r --json");
+        assert_eq!(take_home(&mut a, "/w").unwrap().as_deref(), Some("/w/lab"));
+        assert_eq!(a, v("run r --json"));
+        let mut a = v("mcp --home=/abs/lab --name codex");
+        assert_eq!(take_home(&mut a, "/w").unwrap().as_deref(), Some("/abs/lab"));
+        assert_eq!(a, v("mcp --name codex"));
+        let mut a = v("core status");
+        assert_eq!(take_home(&mut a, "/w").unwrap(), None);
+        assert_eq!(a, v("core status"));
+        for bad in ["run r --home", "--home --json run r", "--home= run r", "--home a --home b run r"] {
+            assert!(take_home(&mut v(bad), "/w").is_err(), "{bad}");
+        }
     }
 }

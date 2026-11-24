@@ -2,7 +2,7 @@
 
 ## Where things live
 
-With `SUMMONR_HOME` set, everything is under that directory:
+With `SUMMONR_HOME` set, or `--home PATH` on the command line, everything is under that directory:
 
 | Path | Holds |
 | --- | --- |

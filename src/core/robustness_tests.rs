@@ -2042,3 +2042,18 @@ return: {direct: "${steps.direct.output.text}", child: "${steps.child.output.tex
     drop(c);
     std::fs::remove_dir_all(p.state.parent().unwrap()).unwrap();
 }
+
+#[test]
+fn ping_names_the_home_config_and_backend_the_core_loaded() {
+    let p = paths();
+    let c = Core::open(p.clone()).unwrap();
+    let ping = c.dispatch("ping", json!({})).unwrap();
+    let home = p.state.parent().unwrap();
+    assert_eq!(ping["home"], json!(home.to_str().unwrap()), "{ping}");
+    assert_eq!(ping["config_path"], json!(p.config.join("config.yaml").to_str().unwrap()), "{ping}");
+    assert_eq!(ping["config_loaded"], json!(false), "no config.yaml written: {ping}");
+    assert_eq!(ping["ollama_url"], json!(c.cfg.ollama_url()), "{ping}");
+    assert!(ping["ollama_url"].as_str().unwrap().starts_with("http"), "{ping}");
+    drop(c);
+    std::fs::remove_dir_all(home).unwrap();
+}

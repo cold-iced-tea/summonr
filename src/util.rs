@@ -265,6 +265,16 @@ pub struct Paths {
 }
 
 impl Paths {
+    /// The single home directory when one is in use (`SUMMONR_HOME` or
+    /// `--home`), or `None` for the XDG layout.
+    pub fn home(&self) -> Option<PathBuf> {
+        let parent = self.state.parent()?;
+        (self.config.parent() == Some(parent)
+            && self.state.file_name() == Some("state".as_ref())
+            && self.config.file_name() == Some("config".as_ref()))
+        .then(|| parent.to_path_buf())
+    }
+
     /// `SUMMONR_HOME` keeps everything under one directory (used by tests and
     /// the demo). Otherwise the XDG locations apply. There is no shared /tmp
     /// fallback for the socket.

@@ -142,6 +142,26 @@ summonr invoke inbox-triage given apply=true simulating then return
 summonr drill route-form against route-form.drill.yaml
 ```
 
+## Choosing a home
+
+`--home PATH` uses PATH as the Summonr home, exactly as `SUMMONR_HOME=PATH`
+would, and wins over it. It may appear anywhere on the line
+(`summonr --home ./lab run r`, `summonr mcp --home ./lab`), at most once. A
+relative path is taken from the current directory. A core the command starts
+inherits it, so an MCP host can point `summonr mcp --home LAB` at an isolated
+lab without a shell wrapper.
+
+`summonr core status --json` says what the core loaded:
+
+```json
+{"running": true, "pid": 4242, "home": "/abs/lab", "config_path": "/abs/lab/config/config.yaml",
+ "config_loaded": true, "ollama_url": "http://127.0.0.1:11434", "socket": "/abs/lab/run/core.sock", ...}
+```
+
+`home` is `null` in the XDG layout. `config_loaded: false` means there is no
+`config.yaml` and defaults apply. With no core running, `running` is `false`
+and the other fields describe what a core started now would load.
+
 ## Help for one command
 
 Every command and alias takes `--help` (or `-h`), anywhere after it:

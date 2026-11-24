@@ -115,18 +115,38 @@ pub(crate) fn core_command(op: &Op, paths: &Paths) -> i32 {
         }),
         Some("status") => {
             if std::os::unix::net::UnixStream::connect(paths.socket()).is_err() {
-                return finish(Ok(json!({"running":false})), op.json, |_| {
-                    println!("No core is running. Any command starts one.")
-                });
+                // What a core started now would load.
+                let config_path = paths.config.join("config.yaml");
+                let ollama = crate::util::Config::load(paths).map(|c| c.ollama_url()).ok();
+                return finish(
+                    Ok(json!({"running": false, "home": paths.home(), "config_path": config_path,
+                              "config_loaded": config_path.is_file(), "ollama_url": ollama, "socket": paths.socket()})),
+                    op.json,
+                    |_| println!("No core is running. Any command starts one."),
+                );
             }
-            let res = Client::connect(paths).and_then(|mut c| c.call("ping", json!({})));
+            let res = Client::connect(paths)
+                .and_then(|mut c| c.call("ping", json!({})))
+                .map(|mut d| {
+                    d["running"] = json!(true);
+                    d
+                });
             finish(res, op.json, |d| {
                 println!(
                     "The core keeps vigil: pid {}, {} active, socket {}.",
                     d["pid"],
                     d["active"],
                     s(d, "socket")
-                )
+                );
+                if let Some(h) = d["home"].as_str() {
+                    println!("  home    {h}");
+                }
+                println!(
+                    "  config  {}{}",
+                    s(d, "config_path"),
+                    if d["config_loaded"] == false { " (none; defaults)" } else { "" }
+                );
+                println!("  ollama  {}", s(d, "ollama_url"));
             })
         }
         Some(other) => finish(

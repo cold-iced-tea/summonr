@@ -195,15 +195,22 @@ const SPECS: &[Spec] = &[
         verb: "core",
         usage: "core [status | stop | restart] [--json]",
         flags: &["--json"],
-        examples: &["summonr core status --json"],
-        data: &[("running", "whether a core answers")],
+        examples: &["summonr core status --json", "summonr --home ./lab core status --json"],
+        data: &[
+            ("running", "whether a core answers"),
+            ("home", "the home directory in use, or null for the XDG layout"),
+            ("config_path", "the config.yaml the core reads"),
+            ("config_loaded", "whether that file exists (false: defaults)"),
+            ("ollama_url", "the effective Ollama URL"),
+            ("pid", "the core's process id, when running"),
+        ],
         exits: &[(8, "the core is unavailable")],
     },
     Spec {
         verb: "mcp",
         usage: "mcp [stdio | http ADDR:PORT] [--name FAMILIAR] [--via PEER]",
         flags: &["--name", "--via"],
-        examples: &["summonr mcp --name codex"],
+        examples: &["summonr mcp --name codex", "summonr mcp --home ./lab"],
         data: &[],
         exits: &[(4, "the familiar cannot sign")],
     },
@@ -231,6 +238,7 @@ const COMMON_EXITS: &[(i32, &str)] = &[
 /// Flags any command accepts.
 const GLOBAL_FLAGS: &[(&str, &str)] = &[
     ("--help", "Show this command's help (with --json, as a descriptor)"),
+    ("--home PATH", "Use PATH as the Summonr home, as SUMMONR_HOME=PATH would (and over it); anywhere on the line"),
 ];
 
 fn spec(verb: &str) -> Option<&'static Spec> {
