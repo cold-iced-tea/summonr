@@ -1,6 +1,6 @@
 {
  "version": 1,
- "description": "External, out-of-distribution bughunt suite: real fix commits in third-party Rust crates. No third-party source is stored here; benchmark/fetch_external.py clones the pinned commits and builds the gold sets locally.",
+ "description": "External, out-of-distribution bughunt suite: real fix commits in six third-party Rust crates. No third-party source is stored here; benchmark/fetch_external.py clones the pinned commits and builds the gold sets locally.",
  "categories": [
   "arithmetic-overflow",
   "http-framing",
@@ -8,6 +8,8 @@
   "input-validation",
   "logic-state",
   "panic",
+  "parser-framing",
+  "path-traversal",
   "recursion-dos"
  ],
  "cases": [
@@ -256,6 +258,152 @@
    ],
    "tier": "smoke",
    "summary": "The requirement <I.J matched I.J.0 prereleases, which it must exclude"
+  },
+  {
+   "name": "ext-tar-rs-bab14dd",
+   "repo_name": "tar-rs",
+   "repo_url": "https://github.com/alexcrichton/tar-rs",
+   "fix_commit": "bab14dd84b411ac16ecb56d4f2d2f7bfb88a9838",
+   "gold": "ext-tar-rs-bab14dd.json",
+   "dirs": [
+    "src"
+   ],
+   "category": "parser-framing",
+   "tags": [
+    "pax",
+    "extension-header",
+    "smuggling",
+    "ghsa"
+   ],
+   "tier": "smoke",
+   "summary": "A PAX header was applied to the next extension header instead of the next file entry, so an archive extracted differently than under other tar parsers (GHSA-3cv2-h65g-fgmm)"
+  },
+  {
+   "name": "ext-tar-rs-17b1fd8",
+   "repo_name": "tar-rs",
+   "repo_url": "https://github.com/alexcrichton/tar-rs",
+   "fix_commit": "17b1fd84e632071cb8eef9d3709bf347bd266446",
+   "gold": "ext-tar-rs-17b1fd8.json",
+   "dirs": [
+    "src"
+   ],
+   "category": "path-traversal",
+   "tags": [
+    "unpack",
+    "symlink",
+    "chmod"
+   ],
+   "tier": "core",
+   "summary": "Unpacking a directory entry over an earlier symlink of the same name followed the symlink, changing permissions on a directory outside the destination"
+  },
+  {
+   "name": "ext-tar-rs-9c5df0b",
+   "repo_name": "tar-rs",
+   "repo_url": "https://github.com/alexcrichton/tar-rs",
+   "fix_commit": "9c5df0bfd70d1b063516b90fca2cf2e0dbe8b758",
+   "gold": "ext-tar-rs-9c5df0b.json",
+   "dirs": [
+    "src"
+   ],
+   "category": "parser-framing",
+   "tags": [
+    "builder",
+    "gnu-longname",
+    "stream-corruption"
+   ],
+   "tier": "core",
+   "summary": "Builder wrote a GNU long-name extension before validating the truncated path, so a refused `..` path left an orphaned header that corrupted later entries"
+  },
+  {
+   "name": "ext-tar-rs-97d5033",
+   "repo_name": "tar-rs",
+   "repo_url": "https://github.com/alexcrichton/tar-rs",
+   "fix_commit": "97d5033eb80bf90c746a8b76dd31ca8a39326991",
+   "gold": "ext-tar-rs-97d5033.json",
+   "dirs": [
+    "src"
+   ],
+   "category": "logic-state",
+   "tags": [
+    "header",
+    "octal",
+    "numeric-field"
+   ],
+   "tier": "full",
+   "summary": "octal_into did not zero-terminate numeric header fields, so overwriting a field kept stale bytes from the previous value"
+  },
+  {
+   "name": "ext-toml-a77c61e",
+   "repo_name": "toml",
+   "repo_url": "https://github.com/toml-rs/toml",
+   "fix_commit": "a77c61e01ef2c3a120bd68bc5efa835e96f7dffc",
+   "crate_path": "crates/toml_parser",
+   "gold": "ext-toml-a77c61e.json",
+   "dirs": [
+    "crates/toml_parser/src"
+   ],
+   "category": "recursion-dos",
+   "tags": [
+    "parser",
+    "stack-overflow"
+   ],
+   "tier": "smoke",
+   "summary": "The document parser recursed once per redundant `=`, so a long run of them overflowed the stack"
+  },
+  {
+   "name": "ext-toml-9361907",
+   "repo_name": "toml",
+   "repo_url": "https://github.com/toml-rs/toml",
+   "fix_commit": "9361907ad1bdbb32cba56dc117fe10309c337bd3",
+   "crate_path": "crates/toml_parser",
+   "gold": "ext-toml-9361907.json",
+   "dirs": [
+    "crates/toml_parser/src"
+   ],
+   "category": "recursion-dos",
+   "tags": [
+    "decoder",
+    "stack-overflow",
+    "sign"
+   ],
+   "tier": "core",
+   "summary": "The scalar decoder recursed once per leading `+` or `-`, so a long run of signs overflowed the stack"
+  },
+  {
+   "name": "ext-toml-fb0c1b3",
+   "repo_name": "toml",
+   "repo_url": "https://github.com/toml-rs/toml",
+   "fix_commit": "fb0c1b376d291ee4ffdf5297a67579f2ad7ce70d",
+   "crate_path": "crates/toml_writer",
+   "gold": "ext-toml-fb0c1b3.json",
+   "dirs": [
+    "crates/toml_writer/src"
+   ],
+   "category": "arithmetic-overflow",
+   "tags": [
+    "writer",
+    "quote-count"
+   ],
+   "tier": "core",
+   "summary": "Counting consecutive quotes while choosing a string style overflowed on a long enough run of quotes"
+  },
+  {
+   "name": "ext-toml-ee71246",
+   "repo_name": "toml",
+   "repo_url": "https://github.com/toml-rs/toml",
+   "fix_commit": "ee71246d387a01726723164f99a92d6344aba792",
+   "crate_path": "crates/toml",
+   "gold": "ext-toml-ee71246.json",
+   "dirs": [
+    "crates/toml/src"
+   ],
+   "category": "input-validation",
+   "tags": [
+    "serde",
+    "duplicate-key"
+   ],
+   "tier": "full",
+   "summary": "Deserializing into a Table kept the last of duplicate keys instead of rejecting them"
   }
  ]
 }
