@@ -94,6 +94,25 @@ test results on them as spot checks of the list.
 `benchmark/run.sh REPO OUT_DIR SUMMONR_BIN` runs every shipped gold set, one
 lab each, with the rite's three angles.
 
+### External suite
+
+`benchmark/external-suite.json` is an out-of-distribution set: 14 real fix
+commits in four third-party crates (`http`, `rust-url`, `httparse`,
+`semver`), pinned by full SHA. Summonr ships no third-party source; build
+the repos, Cargo cache and gold sets locally, then benchmark them:
+
+```bash
+examples/10-bughunt/benchmark/fetch_external.py ~/bughunt-ext   # [--repo http] [--tier smoke]
+examples/10-bughunt/benchmark/run.sh ~/bughunt-ext ~/bughunt-ext/out "$PWD/target/release/summonr" \
+  --suite examples/10-bughunt/benchmark/external-suite.json --gold-dir ~/bughunt-ext/gold --tier smoke
+examples/10-bughunt/benchmark/verify_repros.py ~/bughunt-ext \
+  --suite examples/10-bughunt/benchmark/external-suite.json --name ext-httparse-c0631f2 TEST_RESULT.json
+```
+
+Each case names its `repo_name`, `repo_url`, `crate_path` (workspace
+crates), and the `dirs` a hunt scans; `verify_repros.py` replays confirmed
+repros at the parent and the fix of that crate.
+
 ## Drills
 
 ```bash
