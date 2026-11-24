@@ -196,6 +196,7 @@ pub fn verify_pack(pack: &SignedPack, trusted_key: &PublicKey) -> Result<(), Str
     for pr in all_rituals {
         let mut refs = Vec::new();
         collect_pinned_children(&pr.definition.steps, &mut refs);
+        collect_pinned_children(&pr.definition.finally, &mut refs);
         for (cname, cver, chash) in refs {
             let found = match cver {
                 Some(v) => by_key.get(&(cname.clone(), v)).copied(),

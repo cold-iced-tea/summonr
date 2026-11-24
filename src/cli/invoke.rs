@@ -14,51 +14,123 @@ pub(crate) fn wait_for(client: &mut Client, id: &str, op: &Op) -> Result<Value, 
     if op.cancel_on_drop {
         client.tether(id)?;
     }
-    if op.json || !theme::tty() {
+    use std::io::{IsTerminal, Write};
+    // Progress goes to stderr, and only to a terminal, so stdout (and
+    // `--json`) carries nothing but the result.
+    if !std::io::stderr().is_terminal() {
         return client.call("wait", json!({"summon": id, "timeout_ms": timeout, "brief": op.brief}));
     }
-    // In a terminal, show the summon at work while waiting.
+    let clear = || {
+        eprint!("\r\x1b[2K");
+        std::io::stderr().flush().ok();
+    };
     let started = std::time::Instant::now();
     let mut tick = 0u64;
+    let mut tree: Option<Vec<Value>> = None;
+    let mut tree_read: Option<std::time::Instant> = None;
     loop {
         let d = client.call("get", json!({"summon": id}))?;
         if d["status"] == "ended" {
-            print!("\r\x1b[2K");
+            clear();
+            if op.json {
+                return client.call("wait", json!({"summon": id, "timeout_ms": timeout, "brief": op.brief}));
+            }
             if op.brief {
                 return client.call("get", json!({"summon": id, "brief": true}));
             }
             return Ok(d);
         }
         if timeout.is_some_and(|t| started.elapsed().as_millis() as u64 >= t) {
-            print!("\r\x1b[2K");
+            clear();
             return Err(RpcErr::new(
                 "timeout",
                 7,
                 format!("stopped waiting for `{id}`; the summon is still running"),
             ));
         }
-        let progress = match d["total"].as_i64().unwrap_or(0) {
-            0 => String::new(),
-            t => format!(" · {}/{t}", d["done"]),
-        };
-        print!(
+        // The tree changes slowly next to the spinner; read it once a second.
+        if tree_read.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(1)) {
+            tree = client
+                .call("list", json!({"scope": "children", "summon": id, "recursive": true, "limit": 10000}))
+                .ok()
+                .and_then(|v| v.as_array().cloned());
+            tree_read = Some(std::time::Instant::now());
+        }
+        let elapsed = d["started"]
+            .as_i64()
+            .map(|s| util::now_ms() - s)
+            .unwrap_or(started.elapsed().as_millis() as i64);
+        let text = clip_to_width(&format!("{id} labours · {}", progress_line(&d, tree.as_deref(), elapsed)), terminal_width().saturating_sub(6));
+        eprint!(
             "\r\x1b[2K  {} {} {}",
             paint(Ink::Ember, theme::phase(tick)),
             paint(Ink::Gold, &theme::sigil(id)),
-            paint(
-                Ink::Dim,
-                &format!(
-                    "{id} labours{progress} · {} · {} tokens",
-                    fmt_dur(started.elapsed().as_millis() as i64),
-                    d["tokens"]
-                )
-            )
+            paint(Ink::Dim, &text)
         );
-        use std::io::Write;
-        std::io::stdout().flush().ok();
+        std::io::stderr().flush().ok();
         tick += 1;
         std::thread::sleep(std::time::Duration::from_millis(150));
     }
+}
+
+/// Columns of the terminal on stderr, or 80 when it cannot be read.
+fn terminal_width() -> usize {
+    // SAFETY: TIOCGWINSZ only writes a `winsize` into the struct passed.
+    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+    let ok = unsafe { libc::ioctl(libc::STDERR_FILENO, libc::TIOCGWINSZ, &mut ws) } == 0;
+    if ok && ws.ws_col > 0 { ws.ws_col as usize } else { 80 }
+}
+
+/// `s` cut to `width` characters, so an in-place line never wraps.
+fn clip_to_width(s: &str, width: usize) -> String {
+    if s.chars().count() <= width {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(width.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+/// One line of progress for a waiting run: items done, the child ritual at
+/// work (down to the deepest running descendant), how many child runs
+/// failed, and the whole tree's requests, tokens and elapsed time. `tree`
+/// is every descendant, depth first, or `None` when it could not be read.
+pub(crate) fn progress_line(root: &Value, tree: Option<&[Value]>, elapsed_ms: i64) -> String {
+    let mut parts = Vec::new();
+    if let t @ 1.. = root["total"].as_i64().unwrap_or(0) {
+        parts.push(format!("{}/{t}", root["done"].as_i64().unwrap_or(0)));
+    }
+    if let Some(tree) = tree {
+        // The deepest running descendant, and the running chain above it.
+        let running = |r: &&Value| r["status"] != "ended";
+        if let Some(leaf) = tree.iter().filter(running).max_by_key(|r| r["depth"].as_u64().unwrap_or(0)) {
+            let mut chain = vec![leaf];
+            while let Some(parent) = chain.last().and_then(|c| c["parent"].as_str()) {
+                match tree.iter().find(|r| r["id"].as_str() == Some(parent)) {
+                    Some(p) => chain.push(p),
+                    None => break,
+                }
+            }
+            let names: Vec<&str> = chain.iter().rev().filter_map(|r| r["ritual"].as_str()).collect();
+            let shown = if names.len() > 3 { &names[names.len() - 3..] } else { &names[..] };
+            parts.push(shown.join(" › "));
+        }
+        if !tree.is_empty() {
+            let failed = tree
+                .iter()
+                .filter(|r| r["status"] == "ended" && !matches!(r["outcome"].as_str(), Some("returned" | "abstained")))
+                .count();
+            let noun = if tree.len() == 1 { "child" } else { "children" };
+            parts.push(match failed {
+                0 => format!("{} {noun}", tree.len()),
+                f => format!("{} {noun}, {f} failed", tree.len()),
+            });
+        }
+    }
+    parts.push(format!("{} requests", util::thousands(root["requests"].as_u64().unwrap_or(0))));
+    parts.push(format!("{} tokens", util::thousands(root["tokens"].as_u64().unwrap_or(0))));
+    parts.push(fmt_dur(elapsed_ms));
+    parts.join(" · ")
 }
 
 pub(crate) fn invoke(op: &Op, client: &mut Client) -> i32 {
@@ -418,5 +490,31 @@ pub(crate) fn follow_command(op: &Op, client: &mut Client) -> i32 {
             return outcome_exit(s(&info, "outcome"));
         }
         std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_progress_line_rolls_up_the_whole_tree() {
+        let root = json!({"id": "s-1", "ritual": "bughunt-test", "status": "running", "done": 3, "total": 25, "requests": 41, "tokens": 223555});
+        let tree = vec![
+            json!({"id": "s-2", "parent": "s-1", "ritual": "bughunt-gather", "status": "ended", "outcome": "returned", "depth": 1}),
+            json!({"id": "s-3", "parent": "s-1", "ritual": "bughunt-triage", "status": "ended", "outcome": "invalid", "depth": 1}),
+            json!({"id": "s-4", "parent": "s-1", "ritual": "bughunt-verdict", "status": "running", "done": 1, "total": 4, "depth": 1}),
+            json!({"id": "s-5", "parent": "s-4", "ritual": "bughunt-compile", "status": "running", "depth": 2}),
+            json!({"id": "s-6", "parent": "s-1", "ritual": "bughunt-triage", "status": "ended", "outcome": "cancelled", "depth": 1}),
+        ];
+        let line = progress_line(&root, Some(&tree), 723_000);
+        assert_eq!(
+            line,
+            "3/25 · bughunt-verdict › bughunt-compile · 5 children, 2 failed · 41 requests · 223,555 tokens · 12:03"
+        );
+        let quiet = progress_line(&json!({"requests": 0, "tokens": 0, "done": 0, "total": 0}), Some(&[]), 1500);
+        assert_eq!(quiet, "0 requests · 0 tokens · 00:01");
+        let unknown = progress_line(&root, None, 1000);
+        assert!(!unknown.contains("children"), "no tree, no rollup: {unknown}");
     }
 }

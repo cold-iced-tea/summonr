@@ -787,6 +787,7 @@ mod tests {
                 tokens: None,
                 cost: None,
                 time: Some("1m".into()),
+                cleanup_time: None,
             }))],
             selected: Arc::new(Mutex::new(HashSet::from(["m1".to_string()]))),
             cancel: Arc::new(AtomicBool::new(false)),
@@ -798,6 +799,7 @@ mod tests {
             actor: Some(core.actor_context_for("operator:limited")),
             done: 0,
             total: 0,
+            finally_report: None,
         };
 
         let fin = run.execute();

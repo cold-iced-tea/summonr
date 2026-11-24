@@ -431,7 +431,7 @@ fn cassette_error(e: crate::cassette::LoadError) -> RpcErr {
     }
 }
 
-fn setting_value(s: &str) -> Value {
+pub(crate) fn setting_value(s: &str) -> Value {
     serde_json::from_str(s).unwrap_or_else(|_| Value::String(s.to_string()))
 }
 
@@ -1305,6 +1305,7 @@ impl Core {
             actor,
             done: 0,
             total: 0,
+            finally_report: None,
         };
         (id, run, cancel)
     }
@@ -1374,7 +1375,7 @@ impl Core {
             active.keys().filter(|k| k.as_str() != run.id.as_str()).count()
         };
         let models: Vec<String> = run.models_used.lock().unwrap().iter().cloned().collect();
-        let cleanup: Vec<Value> = models
+        let mut cleanup: Vec<Value> = models
             .iter()
             .map(|m| {
                 let result = if run.io.offline() {
@@ -1402,6 +1403,9 @@ impl Core {
                 ),
                 c.clone(),
             );
+        }
+        if let Some(report) = run.finally_report.take() {
+            cleanup.push(json!({"finally": report}));
         }
         self.finish_summon(&run.id, &fin, Value::Array(cleanup));
         if run.depth == 0 {
@@ -2271,7 +2275,7 @@ impl Core {
                 self.emit(
                     &root,
                     "banish",
-                    "termination requested; running commands and servers are stopped, and a model request is abandoned (the backend may keep generating until it answers)",
+                    "termination requested; running commands and servers are stopped, a plain-HTTP model request's connection is closed, and an HTTPS one is abandoned (that backend may keep generating until it answers)",
                     json!({}),
                 );
                 Ok(json!({"summon": root, "requested": true}))
@@ -2349,6 +2353,7 @@ impl Core {
                 }
             }
             named(&def.steps, &mut children);
+            named(&def.finally, &mut children);
             if let Some((other, _)) = found.get(&def.ritual) {
                 return Err(RpcErr::invalid(format!(
                     "{} and {} both define ritual `{}`",
@@ -2605,6 +2610,7 @@ impl Core {
                         }
                         let mut kids = Vec::new();
                         children(&def.steps, &mut kids);
+                        children(&def.finally, &mut kids);
                         for k in kids {
                             queue.push_back((k, Some(name.clone())));
                         }

@@ -90,6 +90,7 @@ fn output_name(path: &[String]) -> Option<String> {
 pub fn unbounded_loop_warnings(def: &Ritual) -> Vec<String> {
     let mut all = Vec::new();
     walk(&def.steps, &mut all);
+    walk(&def.finally, &mut all);
     let mut warnings = Vec::new();
     for lp in all.iter().filter(|s| s.each.is_some() && s.keep.is_none()) {
         let Some(id) = lp.id.as_deref() else { continue };

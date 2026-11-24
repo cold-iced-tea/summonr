@@ -14,9 +14,10 @@ model: BACKEND/MODEL
 settings: {KEY: VALUE, ...}
 reagents: {REAGENT: {select: [TOOL, ...], version: N}, ...}
 requires: [REQUIREMENT, ...]
-essence: {requests: N, tokens: N, time: DURATION, tool_calls: N, items: N}
+essence: {requests: N, tokens: N, time: DURATION, tool_calls: N, items: N, cleanup_time: DURATION}
 drift: {on_mismatch: note | warn | refuse}
 steps: [STEP, ...]           # required, at least one
+finally: [STEP, ...]         # optional cleanup, runs however `steps` end
 output_schema: {type: object, ...}   # optional final return contract
 return: {NAME: VALUE, ...}
 ```
@@ -31,7 +32,8 @@ return: {NAME: VALUE, ...}
 | `settings` | Default model settings. See [Settings](#settings). |
 | `essence` | All fields optional; an omitted field is unlimited. See [Essence](../concepts/essence.md). |
 | `drift.on_mismatch` | What an invocation does when the backend fingerprint differs from the baseline. Default `warn`. |
-| `return` | Values rendered after the last step. Strings may contain references. |
+| `finally` | Cleanup steps that run after `steps`, whatever the outcome. See [Finally](#finally). |
+| `return` | Values rendered after the last step. Strings may contain references; they cannot name a `finally` step. |
 
 ## Inputs
 
@@ -198,6 +200,29 @@ Any step may carry a bounded `retry` count (`1..=5`) and/or a `fallback` branch:
 
 `retry` must be in `1..=5`; values outside that range are rejected at validation. If the step still fails after exhausting retries, `fallback` steps run in order and the last fallback step's output becomes the step's output. Exhaustion, cancellation, and abstention are not retried.
 
+## Finally
+
+`finally:` lists steps that run once `steps` have ended, however they ended: `returned`, `abstained`, `failed`, `invalid`, `exhausted` or `cancelled`. Use it to undo what the ritual made outside itself, such as a worktree:
+
+```yaml
+steps:
+  - {id: wt, operation: git.worktree_add, arguments: {repo: target, branch: "${inputs.branch}"}}
+  - {id: tested, operation: trial.run, arguments: {repo: target, worktree: "${steps.wt.output.path}"}}
+finally:
+  - if: steps.wt.status == "returned"
+    then:
+      - {id: remove, operation: git.remove_worktree, arguments: {repo: target, path: "${steps.wt.output.path}"}}
+return: {passed: "${steps.tested.output.passed}"}
+```
+
+- **What cleanup can see.** Every main step. A step the run never reached reads as `skipped` with a `null` output, so test `steps.ID.status == "returned"` before using what a step made. Neither `return` nor a main step can name a `finally` step, and ids are unique across both lists.
+- **Checked like main steps.** Cleanup steps are validated and typed like any other step. Their effects need `requires` and grants, and they appear in `describe` and `preview`.
+- **Its own limits.** A stopped run still cleans up: cleanup has a cancel flag of its own, so a second `stop` does not interrupt it. It gets `essence.cleanup_time` (default `30s`, at most `10m`), counted from when it starts, in place of whatever was left of `time`. It gets a fresh allowance of `tool_calls` and `items`, but only the requests, tokens and cost the main steps left over. What it uses still counts toward the run's totals and its ancestors'.
+- **Outcomes.** A cleanup failure turns a `returned` run into that failure, with an error starting `finally:`, and keeps the computed return under `result.return`. Any other outcome is kept as it was: cleanup never hides why a run stopped.
+- **Where to see it.** The outcome is recorded in the run's `cleanup` (`{"finally": {"outcome", "error", "ran", "ms"}}`) and in `finally` / `finally.end` events. `summonr graveyard ID` prints it as a `finally` row.
+
+A child ritual's `finally` runs when that child ends, before the parent continues.
+
 ## Settings
 
 Settings come from three places, later ones winning: the ritual's `settings`, the invocation's `at k=v` / `--set k=v`, then the step's `settings`.
@@ -210,6 +235,26 @@ The Ollama backend accepts:
 | `think` | top-level `think` (default `false`) |
 
 Unknown settings, invalid types and out-of-range values are rejected during definition validation and for invocation overrides. `num_predict` is further capped by the remaining token essence.
+
+### Thinking models
+
+`think` (a boolean) turns a thinking model's reasoning on or off. Summonr sends `"think": false` to Ollama unless a setting says otherwise, so a thinking model does not spend its generation cap reasoning before it writes the answer. To let it think, give it room as well:
+
+```yaml
+settings: {think: true, num_predict: 8192, num_ctx: 16384}
+```
+
+`summonr run NAME --set think=false` overrides the ritual for one run, and a step's own `settings` override both. The OpenAI-compatible and Anthropic backends have no thinking switch: they accept `think: false`, which is what they already do, and send nothing for it, and they refuse `think: true` when the step runs rather than drop it silently.
+
+### When generation is truncated
+
+A model step whose backend stops because it ran out of room (Ollama's `done_reason: length`) ends `invalid`, and nothing that depends on it runs. The error says what to change:
+
+```text
+step test: backend truncated generation after 512 output tokens (prompt 900 tokens; generation cap of 512 from `num_predict`; num_ctx 16384; thinking on); dependent work refused. ...
+```
+
+The output count includes thinking tokens. A cap described as "the token essence left" means the run's `essence.tokens` is what ran out, not the setting. Output well below the cap with a large prompt usually means `num_ctx` filled up.
 
 The `mock` backend does not use sampling settings, but compiled definitions still validate them so a spelling error cannot hide behind a mock run.
 

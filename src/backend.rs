@@ -246,10 +246,18 @@ fn http_with_headers(
     let Some(cancel) = crate::cancel::current() else {
         return http_blocking(method, url, body, headers, timeout);
     };
-    // ureq 2 cannot abort a request in progress, so it runs on a helper
-    // thread and this one returns as soon as the run is cancelled. The
-    // abandoned request keeps its connection until the backend answers or
-    // the timeout ends it (a server may go on generating until then).
+    // A plain-HTTP backend (a local Ollama) gets a socket Summonr owns and
+    // closes on cancel, so the backend sees the hang-up and stops.
+    if url.starts_with("http://") {
+        return match crate::cancellable_http::request(method, url, body, headers, timeout, &cancel) {
+            crate::cancellable_http::Outcome::Done(r) => r,
+            crate::cancellable_http::Outcome::Cancelled => Err(CANCELLED.into()),
+        };
+    }
+    // ureq 2 cannot abort an HTTPS request in progress, so it runs on a
+    // helper thread and this one returns as soon as the run is cancelled.
+    // The abandoned request keeps its connection until the backend answers
+    // or the timeout ends it (a server may go on generating until then).
     let (tx, rx) = std::sync::mpsc::channel();
     let (method, url) = (method.to_string(), url.to_string());
     let body = body.cloned();
@@ -553,7 +561,7 @@ pub fn validate_settings(settings: &BTreeMap<String, Value>) -> Result<(), Strin
     )
 }
 
-fn resolve_generation_cap(
+pub(crate) fn resolve_generation_cap(
     settings: &BTreeMap<String, Value>,
     max_output_tokens: Option<u64>,
 ) -> Result<Option<u64>, String> {
@@ -574,6 +582,19 @@ fn resolve_generation_cap(
         (Some(rem), None) => Ok(Some(rem.min(i32::MAX as u64))),
         (None, Some(exp)) => Ok(Some(exp.min(i32::MAX as u64))),
         (None, None) => Ok(None),
+    }
+}
+
+/// `think: false` asks for what a backend without a thinking switch already
+/// does, so it is accepted and sent nowhere; `think: true` is refused rather
+/// than silently dropped.
+fn thinking_off(backend: &str, v: &Value) -> Result<(), String> {
+    if v.as_bool() == Some(false) {
+        Ok(())
+    } else {
+        Err(format!(
+            "setting `think: true` is not supported by the {backend} backend; only the ollama backend forwards `think`"
+        ))
     }
 }
 
@@ -664,6 +685,7 @@ pub(crate) fn openai_payload(model: &str, req: &ChatReq, mode: ImageMode) -> Res
                 body[k.as_str()] = v.clone();
             }
             "max_tokens" | "num_predict" => {}
+            "think" => thinking_off("openai", v)?,
             other => {
                 return Err(format!(
                     "setting `{other}` is not supported by the openai backend"
@@ -724,6 +746,7 @@ pub(crate) fn anthropic_payload(
                 body[k.as_str()] = v.clone();
             }
             "max_tokens" | "num_predict" => {}
+            "think" => thinking_off("anthropic", v)?,
             other => {
                 return Err(format!(
                     "setting `{other}` is not supported by the anthropic backend"
@@ -983,6 +1006,31 @@ mod tests {
             let ant = anthropic_payload("test", &req, ImageMode::Inline).unwrap();
             assert_eq!(ant["max_tokens"], expected);
         }
+    }
+
+    #[test]
+    fn think_is_forwarded_to_ollama_ignored_when_false_elsewhere_and_refused_when_true() {
+        let req_with = |settings: &BTreeMap<String, Value>, f: &dyn Fn(&ChatReq)| {
+            f(&ChatReq {
+                model: "m", system: "", user: "hi", schema: None, settings,
+                timeout: None, max_output_tokens: None, images: &[],
+            })
+        };
+        let on = BTreeMap::from([("think".to_string(), json!(true))]);
+        let off = BTreeMap::from([("think".to_string(), json!(false))]);
+        req_with(&on, &|req| {
+            assert_eq!(ollama_payload("m", req, ImageMode::Inline).unwrap()["think"], json!(true));
+            for e in [openai_payload("m", req, ImageMode::Inline).unwrap_err(),
+                      anthropic_payload("m", req, ImageMode::Inline).unwrap_err()] {
+                assert!(e.contains("`think: true`") && e.contains("only the ollama backend"), "{e}");
+            }
+        });
+        req_with(&off, &|req| {
+            assert_eq!(ollama_payload("m", req, ImageMode::Inline).unwrap()["think"], json!(false));
+            let o = openai_payload("m", req, ImageMode::Inline).unwrap();
+            let a = anthropic_payload("m", req, ImageMode::Inline).unwrap();
+            assert!(o.get("think").is_none() && a.get("think").is_none(), "nothing to turn off");
+        });
     }
 
     #[test]

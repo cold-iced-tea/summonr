@@ -120,7 +120,11 @@ impl Core {
         }
         let mut held = def.clone();
         for h in &t.held_by_caller {
-            match find_step(&mut held.steps, &h.step) {
+            let found = match find_step(&mut held.steps, &h.step) {
+                Some(step) => Some(step),
+                None => find_step(&mut held.finally, &h.step),
+            };
+            match found {
                 None => problems.push(format!("held_by_caller: no step `{}` in `{}`", h.step, t.ritual.name)),
                 Some(step) => step.hold = Some(h.when.clone()),
             }

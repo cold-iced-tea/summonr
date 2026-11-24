@@ -30,6 +30,25 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(step['arguments']['params'],{'floor':'${inputs.floor}'})
         self.assertNotIn('${',step['arguments']['predicate'])
 
+    def test_cleanup_steps_go_to_finally_and_can_test_what_ran(self):
+        r=Ritual('test', essence={'cleanup_time':'1m'})
+        branch=r.input('branch',Str)
+        wt=r.op('git.worktree_add',repo='demo',branch=branch,id='wt')
+        with r.cleanup():
+            with r.when(r.status('wt') == 'returned'):
+                r.op('git.remove_worktree',repo='demo',path=wt['path'],id='remove')
+        r.returns({'path':wt['path']})
+        definition=r.definition()
+        self.assertEqual([s['id'] for s in definition['steps']],['wt'])
+        guard=definition['finally'][0]
+        self.assertEqual(guard['if'],'steps.wt.status == "returned"')
+        self.assertEqual(guard['then'][0]['arguments']['path'],'${steps.wt.output.path}')
+        self.assertIn('remove_worktree',definition['reagents']['git']['select'])
+        with self.assertRaises(ValueError):
+            with r.cleanup():
+                with r.cleanup(): pass
+        self.assertNotIn('finally',Ritual('plain').definition())
+
     def test_scopes_expressions_and_literal_types(self):
         r=Ritual('test', essence={'requests':0})
         values=r.input('values',List)

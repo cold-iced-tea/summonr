@@ -11,6 +11,7 @@ essence: {requests: 60, tokens: 400000, time: 30m}
 | `requests` | Model requests admitted | A failed or timed-out request still counts. A failure is never a free retry. |
 | `tokens` | Prompt + output tokens reported by the backend | See the limitation below. |
 | `time` | Wall-clock time from the start of the summon | `500ms`, `30s`, `10m`, `2h` |
+| `cleanup_time` | Wall-clock time for the [`finally` steps](../reference/ritual-format.md#finally) | Counted from when cleanup starts; default `30s`, at most `10m`. Only valid with `finally`. |
 
 Every field is optional. A field you leave out is unlimited.
 
@@ -56,7 +57,7 @@ The item that was cut short is not counted as processed; it stays in `remaining`
 
 ## Cancellation
 
-`summonr banish ID` (or `stop`, or `stop_run` over MCP) asks the whole summon tree to stop. Banishing a child stops its root. A request already in flight may finish first; nothing after it runs. The outcome is `cancelled`.
+`summonr banish ID` (or `stop`, or `stop_run` over MCP) asks the whole summon tree to stop. Banishing a child stops its root. A running command is killed, and a model request to a plain-HTTP backend (a local Ollama) has its connection closed so the backend stops generating; see [Reliability](reliability.md) for HTTPS backends. Nothing after it runs except the ritual's [`finally` steps](../reference/ritual-format.md#finally). The outcome is `cancelled`.
 
 Disconnecting from a remote backend cannot prove it stopped computing. Scheduling, DNS and cleanup can delay the final return slightly, so time limits are firm bounds on what Summonr *acts on*, not a guarantee of an exact wall-clock stop.
 

@@ -388,6 +388,7 @@ pub fn normalize(def: &mut Ritual) -> Result<(), String> {
     let mut desugared_assert = false;
     let mut seq = 0;
     normalize_steps(&mut def.steps, &def.defs, &mut data_tools, &mut desugared_assert, &mut seq)?;
+    normalize_steps(&mut def.finally, &def.defs, &mut data_tools, &mut desugared_assert, &mut seq)?;
 
     let mut from_requires: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for req in &def.requires {
@@ -559,5 +560,6 @@ pub fn prepare(def: &mut Ritual, base: &Path, resolve: Resolver) -> Result<(), S
         }
         b.hash = Some(sha256_hex(b.content.as_deref().unwrap_or("").as_bytes()));
     }
-    pin_steps(&mut def.steps, resolve)
+    pin_steps(&mut def.steps, resolve)?;
+    pin_steps(&mut def.finally, resolve)
 }

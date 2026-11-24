@@ -73,12 +73,20 @@ Scripts and agents should use the flag spelling with `--json`. `summonr help` li
 | `replacement` | `--replace` | Explicitly replace the named target |
 | `against SET` | `--against SET` | Assay set to run |
 | `baseline` | `--baseline` | Record the account as the baseline |
-| `tethered` | `--cancel-on-drop` | With `run --wait`: if this client goes away before the summon ends (killed, interrupted, or stopped by `--timeout`), the core cancels the summon instead of leaving it running. A step already in flight, such as a model request or command, finishes first |
+| `tethered` | `--cancel-on-drop` | With `run --wait`: if this client goes away before the summon ends (killed, interrupted, or stopped by `--timeout`), the core cancels the summon instead of leaving it running, as `stop` would (see [Reliability](../concepts/reliability.md)) |
 | `recording PATH` | `--record PATH` | `invoke` only: save every model call and every read or write tool call to a cassette (pure `data` operations are not recorded). Replaces an existing cassette; refuses (exit 2) a file that is not one |
 | `replaying PATH` | `--replay PATH` | `invoke` only: answer model calls and reads from a cassette, fully offline; compute `data` operations; always simulate writes. A missing cassette is exit 3, an unparseable one exit 2 |
 | `simulating` | `--simulate` | `invoke` only: authorize writes but do not perform them |
 
 `recording`, `replaying` and `simulating` are each refused with `rehearse` or `--dry-run`, and `recording` together with `replaying` is refused; each is exit 2. `simulating` combines with `recording`; with `replaying` it is accepted but redundant, since a replay always simulates writes. The MCP server offers none of the three, nor `drill`, and the core refuses all three from an agent caller (exit 4). See [Safe building](../guides/safe-building.md).
+
+While `--wait` (`then return`) waits and stderr is a terminal, one line on stderr is redrawn in place: items done, the child ritual at work (down to the deepest running descendant), how many child runs there are and how many failed, and the whole tree's requests, tokens and elapsed time:
+
+```text
+  ◑ △☉♂ s-36b7… labours · 3/25 · bughunt-test › bughunt-verdict · 26 children, 2 failed · 41 requests · 223,555 tokens · 12:03
+```
+
+Nothing is drawn when stderr is not a terminal, and stdout only ever carries the result, so `--json` output stays clean even in a terminal. The line is cleared before the result is printed.
 
 Duplicate clauses are errors. `at` values are parsed as JSON when they can be (`at temperature=0.2` is a number) and kept as strings otherwise.
 
