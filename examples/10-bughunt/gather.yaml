@@ -1,14 +1,15 @@
 language_version: 1
 ritual: bughunt-gather
 description: >-
-  Merge the findings of several hunts, drop unquoted, low-confidence, and
-  degenerate noise claims (angle echoes and no-bug statements), dedupe by
-  (file, kind, snippet), and say whether the batch is big enough to test.
-  Pure: no model, no files.
+  Merge the findings of several hunts, drop unquoted, low-confidence, low-severity,
+  and degenerate noise claims (angle echoes and no-bug statements) using pure
+  expression string helpers, dedupe by (file, kind, snippet), and say whether
+  the batch is big enough to test. Pure: no model, no files.
 inputs:
   hunts: list
   min_batch: {type: integer, default: 5, min: 1, max: 1000}
   min_confidence: {type: number, default: 0.3, min: 0, max: 1}
+  min_severity: {type: string, default: low, enum: [low, medium, high, critical]}
 essence: {requests: 0, time: 30m}
 steps:
   - id: hunt_lists
@@ -20,68 +21,30 @@ steps:
   - id: all
     operation: data.flatten
     arguments: {values: "${steps.hunt_lists.output}"}
-  - id: confident
+  # Filter quoted, confident, severity-qualified, non-noise findings in one pass.
+  - id: clean
     operation: data.filter
     arguments:
       values: "${steps.all.output}"
-      predicate: "item.quoted and item.confidence >= params.floor"
-      params: {floor: "${inputs.min_confidence}"}
-  # Drop degenerate claims observed in small-model hunts: verbatim angle echoes
-  # and "no bug / does not panic" statements rated high confidence.
-  - id: checked
-    each: found in steps.confident.output
-    keep: [keep_item]
-    steps:
-      - id: lc
-        operation: data.case
-        arguments: {text: "${found.claim}", mode: lower}
-      - id: claim
-        operation: data.trim
-        arguments: {text: "${steps.lc.output}"}
-      - id: neg_panic
-        operation: data.contains
-        arguments: {value: "${steps.claim.output}", needle: "does not panic"}
-      - id: neg_vuln
-        operation: data.contains
-        arguments: {value: "${steps.claim.output}", needle: "does not have a vulnerability"}
-      - id: neg_no_vuln
-        operation: data.contains
-        arguments: {value: "${steps.claim.output}", needle: "no vulnerability"}
-      - id: neg_no_bug
-        operation: data.contains
-        arguments: {value: "${steps.claim.output}", needle: "no bug"}
-      - id: echo_inject
-        operation: data.starts_with
-        arguments: {text: "${steps.claim.output}", prefix: "untrusted text reaching a path"}
-      - id: echo_panic
-        operation: data.starts_with
-        arguments: {text: "${steps.claim.output}", prefix: "panics, overflows or unbounded work"}
-      - id: echo_bypass
-        operation: data.starts_with
-        arguments: {text: "${steps.claim.output}", prefix: "ways to bypass a permission"}
-      - id: is_noise
-        operation: data.any
-        arguments:
-          values:
-            - "${steps.neg_panic.output}"
-            - "${steps.neg_vuln.output}"
-            - "${steps.neg_no_vuln.output}"
-            - "${steps.neg_no_bug.output}"
-            - "${steps.echo_inject.output}"
-            - "${steps.echo_panic.output}"
-            - "${steps.echo_bypass.output}"
-      - id: keep_item
-        operation: data.select
-        arguments: {condition: "${steps.is_noise.output}", then: [], else: ["${found}"]}
-  - id: kept_lists
-    operation: data.map
-    arguments:
-      values: "${steps.checked.output}"
-      operation: data.get
-      arguments: {value: "${item}", path: /outputs/keep_item}
-  - id: clean
-    operation: data.flatten
-    arguments: {values: "${steps.kept_lists.output}"}
+      predicate: >-
+        item.quoted
+        and item.confidence >= params.floor
+        and (
+          params.min_sev == "low"
+          or (params.min_sev == "medium" and item.severity != "low")
+          or (params.min_sev == "high" and (item.severity == "high" or item.severity == "critical"))
+          or (params.min_sev == "critical" and item.severity == "critical")
+        )
+        and not contains(lower(trim(item.claim)), "does not panic")
+        and not contains(lower(trim(item.claim)), "does not have a vulnerability")
+        and not contains(lower(trim(item.claim)), "no vulnerability")
+        and not contains(lower(trim(item.claim)), "no bug")
+        and not starts_with(lower(trim(item.claim)), "untrusted text reaching a path")
+        and not starts_with(lower(trim(item.claim)), "panics, overflows or unbounded work")
+        and not starts_with(lower(trim(item.claim)), "ways to bypass a permission")
+      params:
+        floor: "${inputs.min_confidence}"
+        min_sev: "${inputs.min_severity}"
   - id: findings
     operation: data.unique_by
     arguments: {values: "${steps.clean.output}", fields: [file, kind, snippet]}

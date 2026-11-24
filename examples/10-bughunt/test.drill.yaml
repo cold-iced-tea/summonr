@@ -30,7 +30,7 @@ cases:
         - {needs_file: "lib/withtests.rs", symbol: "fn"}
       triaged:
         - {real_bug: true, diagnosis: "prefix match allows adminx", target_fn: "crate::auth::allowed", test_strategy: "call allowed(\"adminx\")"}
-      write_big:
+      write_repro:
         - rust_source: "use crate::auth::allowed;\n#[test]\nfn repro() {\n    assert!(!allowed(\"adminx\"), \"BUGHUNT-CONFIRMED: prefix bypass\");\n}\n"
     expect:
       outcome: returned
@@ -56,7 +56,7 @@ cases:
       findings:
         - {kind: bug, severity: low, confidence: 0.8, claim: "maybe panics", trigger: "x", snippet: "role.starts_with(\"admin\")", file: src/auth.rs, start: 0, quoted: true}
     model:
-      write_small:
+      write_repro:
         - rust_source: "use crate::auth::allowed;\n#[test]\nfn repro() {\n    // PASS_CASE\n    assert!(allowed(\"admin\"));\n}\n"
     expect:
       outcome: returned

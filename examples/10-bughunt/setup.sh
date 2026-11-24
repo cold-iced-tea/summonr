@@ -49,7 +49,15 @@ git -C "$target" archive HEAD | tar -x -C "$snap"
 chmod -R a-w "$snap"
 
 export SUMMONR_HOME="$lab/home"
-mkdir -p "$SUMMONR_HOME/config" "$SUMMONR_HOME/rituals"
+mkdir -p "$SUMMONR_HOME/config" "$SUMMONR_HOME/rituals" "$lab/bin"
+# Tiny stdin-to-flag wrapper so agy -p works as a first-class kind: command
+# model provider with multi-line prompts on stdin.
+cat > "$lab/bin/agy-stdin" <<'SH'
+#!/bin/sh
+prompt="$(cat)"
+exec agy --model gemini-4-neon-medium --sandbox --disable-slash-commands --print-timeout 600s -p "$prompt"
+SH
+chmod +x "$lab/bin/agy-stdin"
 cat > "$SUMMONR_HOME/config/config.yaml" <<EOF
 ollama_url: "${OLLAMA_HOST:-http://127.0.0.1:11434}"
 repos:
@@ -61,29 +69,23 @@ repos:
     # here, so timeout and env are plain programs). -q keeps the tail short.
     test: timeout 300 env CARGO_TARGET_DIR=$lab/cargo-target cargo test --offline -q $only bughunt_repro
     disposable: [target/, Cargo.lock]
-# Optional cloud escalation (test.yaml, escalate=codex|gemini, critical
-# findings only). Uses explicit env allowlist and stdin for multi-line prompts.
-commands:
-  bughunt-gemini:
-    # Gemini 4 Neon through the Antigravity CLI, print mode, sandboxed.
-    # agy -p requires the prompt as a flag argument (does not read stdin).
-    program: agy
-    args: [--model, gemini-4-neon-medium, --sandbox, --disable-slash-commands, --print-timeout, 600s, -p, "\${prompt}"]
+# Optional command-backed cloud model providers (test.yaml model: {one_of, choose}).
+providers:
+  gemini:
+    kind: command
+    program: $lab/bin/agy-stdin
     cwd: $snap
-    effect: read
     env: [HOME, PATH]
-    params:
-      prompt: {max_length: 20000}
-  bughunt-codex:
-    # Codex CLI in read-only sandbox; "-" reads the multi-line prompt from stdin.
+    stdin: prompt
+    timeout_ms: 600000
+  codex:
+    kind: command
     program: codex
     args: [exec, --sandbox, read-only, --skip-git-repo-check, -C, $target, "-"]
     cwd: $target
-    effect: read
     env: [HOME, PATH]
     stdin: prompt
-    params:
-      prompt: {max_length: 20000}
+    timeout_ms: 600000
 EOF
 
 # Rewrite root placeholders into a staging dir and inscribe the directory in

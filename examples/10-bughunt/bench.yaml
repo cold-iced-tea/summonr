@@ -9,7 +9,7 @@ inputs:
   angles: list
   gold: {type: string, default: gold.json}
 requires:
-  - {reagent: file, action: list, on: {root: /absolute/path/to/target}}
+  - {reagent: file, action: walk, on: {root: /absolute/path/to/target}}
   - {reagent: file, action: read_text, on: {root: /absolute/path/to/target}}
   - {reagent: file, action: read_json, on: {root: /absolute/path/to/lab/benchmark}}
 essence: {requests: 1500, time: 6h}

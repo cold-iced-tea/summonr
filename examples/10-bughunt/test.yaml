@@ -33,7 +33,6 @@ requires:
   - {reagent: git, action: remove_worktree}
   - {reagent: git, action: delete_branch}
   - {reagent: trial, action: run}
-  - {reagent: cmd, action: read}
 essence: {requests: 200, time: 4h, cleanup_time: 1m}
 defs:
   context_req:
@@ -350,217 +349,87 @@ steps:
           else: "${found.trigger}"
       - if: steps.should_test.output
         then:
-          - id: not_big
-            operation: data.logic
-            arguments: {operator: not, left: "${steps.is_big.output}"}
-          - id: use_big
-            operation: data.logic
-            arguments: {operator: and, left: "${steps.not_cloud.output}", right: "${steps.is_big.output}"}
-          - id: use_small
-            operation: data.logic
-            arguments: {operator: and, left: "${steps.not_cloud.output}", right: "${steps.not_big.output}"}
-          - if: steps.use_codex.output
-            then:
-              - id: codex
-                operation: cmd.read
-                arguments:
-                  command: bughunt-codex
-                  params:
-                    prompt: |
-                      We maintain this Rust project and want a regression test for a suspected defect in our own code.
-                      Print only the complete contents of src/bughunt_repro.rs with no markdown fences.
-                      It is a #[cfg(test)] module at the crate root: use crate:: paths and call the real function under suspicion.
-                      Write one #[test] that asserts the correct, safe behaviour; when the code misbehaves the assertion must fail with a short message starting BUGHUNT-CONFIRMED (at most one BUGHUNT-CONFIRMED site; never on setup assertions; never #[should_panic]; files only under std::env::temp_dir()).
-
-                      Diagnosis: ${steps.diagnosis_text.output}
-                      Target function: ${steps.target_fn_text.output}
-                      Test strategy: ${steps.strategy_text.output}
-                      Suspected defect:
-                      ${steps.brief.output}
-          - if: steps.use_gemini.output
-            then:
-              - id: gemini
-                operation: cmd.read
-                arguments:
-                  command: bughunt-gemini
-                  params:
-                    # agy -p takes the prompt as an argument (no stdin), so keep
-                    # it on one folded line (cmd arguments forbid newlines).
-                    prompt: >-
-                      We maintain this Rust project and want a regression test for a suspected
-                      defect in our own code. Print only the complete contents of
-                      src/bughunt_repro.rs with no markdown fences. It is a #[cfg(test)] module at
-                      the crate root: use crate:: paths and call the real function under suspicion.
-                      Write one #[test] that asserts the correct, safe behaviour; when the code
-                      misbehaves the assertion must fail with a short message starting
-                      BUGHUNT-CONFIRMED (at most one BUGHUNT-CONFIRMED site; never on setup
-                      assertions; never #[should_panic]; files only under std::env::temp_dir()).
-                      Diagnosis: ${steps.diagnosis_text.output} Target: ${steps.target_fn_text.output}
-                      Suspected defect: ${steps.brief.output}
-          - if: steps.use_big.output
-            then:
-              - id: write_big
-                model:
-                  name: ollama/hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M
-                  bind: [harness]
-                  prompt: |
-                    Diagnosis: ${steps.diagnosis_text.output}
-                    Target function: ${steps.target_fn_text.output}
-                    Test strategy: ${steps.strategy_text.output}
-                    Original lead: ${steps.brief.output}
-
-                    ${steps.header_block.output}Code from ${found.file}, lines from ${steps.win_start.output}:
-                    ${steps.code.output}${steps.sibling_context.output}
-                  schema: {$ref: "#/$defs/repro"}
-          - if: steps.use_small.output
-            then:
-              - id: write_small
-                model:
-                  bind: [harness]
-                  prompt: |
-                    Diagnosis: ${steps.diagnosis_text.output}
-                    Target function: ${steps.target_fn_text.output}
-                    Test strategy: ${steps.strategy_text.output}
-                    Original lead: ${steps.brief.output}
-
-                    ${steps.header_block.output}Code from ${found.file}, lines from ${steps.win_start.output}:
-                    ${steps.code.output}${steps.sibling_context.output}
-                  schema: {$ref: "#/$defs/repro"}
-          - id: test_file_opt
-            operation: data.coalesce
-            arguments:
-              values:
-                - "${steps.gemini.output.stdout}"
-                - "${steps.codex.output.stdout}"
-                - "${steps.write_big.output.rust_source}"
-                - "${steps.write_small.output.rust_source}"
-          - id: has_test_file
-            operation: data.compare
-            arguments: {left: "${steps.test_file_opt.output}", right: null, operator: ne}
-          - id: test_file
+          # Pick one model from the static set: local 4B/35B or command-backed cloud agent.
+          - id: local_model
             operation: data.select
-            arguments: {condition: "${steps.has_test_file.output}", then: "${steps.test_file_opt.output}", else: ""}
+            arguments:
+              condition: "${steps.is_big.output}"
+              then: ollama/hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M
+              else: ollama/qwen3:4b
+          - id: after_codex
+            operation: data.select
+            arguments:
+              condition: "${steps.use_codex.output}"
+              then: codex/default
+              else: "${steps.local_model.output}"
+          - id: repro_model
+            operation: data.select
+            arguments:
+              condition: "${steps.use_gemini.output}"
+              then: gemini/default
+              else: "${steps.after_codex.output}"
+          - id: write_repro
+            model:
+              one_of:
+                - ollama/qwen3:4b
+                - ollama/hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M
+                - codex/default
+                - gemini/default
+              choose: "${steps.repro_model.output}"
+              bind: [harness]
+              prompt: |
+                Diagnosis: ${steps.diagnosis_text.output}
+                Target function: ${steps.target_fn_text.output}
+                Test strategy: ${steps.strategy_text.output}
+                Original lead: ${steps.brief.output}
+
+                ${steps.header_block.output}Code from ${found.file}, lines from ${steps.win_start.output}:
+                ${steps.code.output}${steps.sibling_context.output}
+              schema: {$ref: "#/$defs/repro"}
           - id: write
             operation: file.write_text
-            arguments: {root: /absolute/path/to/target-repro, path: src/bughunt_repro.rs, text: "${steps.test_file.output}"}
+            arguments: {root: /absolute/path/to/target-repro, path: src/bughunt_repro.rs, text: "${steps.write_repro.output.rust_source}"}
           - id: run
             operation: trial.run
             arguments: {repo: bughunt-target, worktree: /absolute/path/to/target-repro}
           - id: judged
             ritual: bughunt-verdict
-            arguments: {file: "${found.file}", test_file: "${steps.test_file.output}", passed: "${steps.run.output.passed}", tail: "${steps.run.output.tail}"}
+            arguments: {file: "${found.file}", test_file: "${steps.write_repro.output.rust_source}", passed: "${steps.run.output.passed}", tail: "${steps.run.output.tail}"}
           - id: build_failed
             operation: data.get
             arguments: {value: "${steps.judged.output}", path: /build_failed}
-          - id: retry_gemini
-            operation: data.logic
-            arguments: {operator: and, left: "${steps.build_failed.output}", right: "${steps.use_gemini.output}"}
-          - id: retry_codex
-            operation: data.logic
-            arguments: {operator: and, left: "${steps.build_failed.output}", right: "${steps.use_codex.output}"}
-          - id: retry_local_big
-            operation: data.logic
-            arguments: {operator: and, left: "${steps.build_failed.output}", right: "${steps.use_big.output}"}
-          - id: retry_local_small
-            operation: data.logic
-            arguments: {operator: and, left: "${steps.build_failed.output}", right: "${steps.use_small.output}"}
-          - if: steps.retry_gemini.output
-            then:
-              - id: error_line
-                operation: data.replace
-                arguments: {text: "${steps.run.output.tail}", from: "\n", to: " | "}
-              - id: first_try_line
-                operation: data.replace
-                arguments: {text: "${steps.test_file.output}", from: "\n", to: " | "}
-              - id: gemini_retry
-                operation: cmd.read
-                arguments:
-                  command: bughunt-gemini
-                  params:
-                    prompt: >-
-                      Your previous src/bughunt_repro.rs (newlines shown as " | ") did not compile.
-                      Print a corrected complete file only, no markdown fences, same rules as
-                      before. Previous file: ${steps.first_try_line.output} Compiler output:
-                      ${steps.error_line.output} Suspected defect: ${steps.brief.output}
-          - if: steps.retry_codex.output
-            then:
-              - id: codex_retry
-                operation: cmd.read
-                arguments:
-                  command: bughunt-codex
-                  params:
-                    prompt: |
-                      Your previous src/bughunt_repro.rs did not compile.
-                      Print a corrected complete file only, no markdown fences, same rules as before.
-
-                      Previous file:
-                      ${steps.test_file.output}
-
-                      Compiler output:
-                      ${steps.run.output.tail}
-
-                      Suspected defect:
-                      ${steps.brief.output}
-          - if: steps.retry_local_big.output
-            then:
-              - id: rewrite_big
-                model:
-                  name: ollama/hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M
-                  bind: [harness]
-                  prompt: |
-                    Diagnosis: ${steps.diagnosis_text.output}
-                    Target function: ${steps.target_fn_text.output}
-                    ${steps.header_block.output}Code from ${found.file}, lines from ${steps.win_start.output}:
-                    ${steps.code.output}${steps.sibling_context.output}
-
-                    Your previous file did not compile:
-                    ${steps.test_file.output}
-
-                    Compiler output (tail):
-                    ${steps.run.output.tail}
-                  schema: {$ref: "#/$defs/repro"}
-          - if: steps.retry_local_small.output
-            then:
-              - id: rewrite_small
-                model:
-                  bind: [harness]
-                  prompt: |
-                    Diagnosis: ${steps.diagnosis_text.output}
-                    Target function: ${steps.target_fn_text.output}
-                    ${steps.header_block.output}Code from ${found.file}, lines from ${steps.win_start.output}:
-                    ${steps.code.output}${steps.sibling_context.output}
-
-                    Your previous file did not compile:
-                    ${steps.test_file.output}
-
-                    Compiler output (tail):
-                    ${steps.run.output.tail}
-                  schema: {$ref: "#/$defs/repro"}
-          - id: retry_text_opt
-            operation: data.coalesce
-            arguments:
-              values:
-                - "${steps.gemini_retry.output.stdout}"
-                - "${steps.codex_retry.output.stdout}"
-                - "${steps.rewrite_big.output.rust_source}"
-                - "${steps.rewrite_small.output.rust_source}"
-          - id: has_retry_text
-            operation: data.compare
-            arguments: {left: "${steps.retry_text_opt.output}", right: null, operator: ne}
-          - id: retry_text
-            operation: data.select
-            arguments: {condition: "${steps.has_retry_text.output}", then: "${steps.retry_text_opt.output}", else: ""}
           - if: steps.build_failed.output
             then:
+              - id: rewrite_repro
+                model:
+                  one_of:
+                    - ollama/qwen3:4b
+                    - ollama/hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M
+                    - codex/default
+                    - gemini/default
+                  choose: "${steps.repro_model.output}"
+                  bind: [harness]
+                  prompt: |
+                    Diagnosis: ${steps.diagnosis_text.output}
+                    Target function: ${steps.target_fn_text.output}
+                    ${steps.header_block.output}Code from ${found.file}, lines from ${steps.win_start.output}:
+                    ${steps.code.output}${steps.sibling_context.output}
+
+                    Your previous file did not compile:
+                    ${steps.write_repro.output.rust_source}
+
+                    Compiler output (tail):
+                    ${steps.run.output.tail}
+                  schema: {$ref: "#/$defs/repro"}
               - id: rewrite_write
                 operation: file.write_text
-                arguments: {root: /absolute/path/to/target-repro, path: src/bughunt_repro.rs, text: "${steps.retry_text.output}"}
+                arguments: {root: /absolute/path/to/target-repro, path: src/bughunt_repro.rs, text: "${steps.rewrite_repro.output.rust_source}"}
               - id: rerun
                 operation: trial.run
                 arguments: {repo: bughunt-target, worktree: /absolute/path/to/target-repro}
               - id: rejudged
                 ritual: bughunt-verdict
-                arguments: {file: "${found.file}", test_file: "${steps.retry_text.output}", passed: "${steps.rerun.output.passed}", tail: "${steps.rerun.output.tail}"}
+                arguments: {file: "${found.file}", test_file: "${steps.rewrite_repro.output.rust_source}", passed: "${steps.rerun.output.passed}", tail: "${steps.rerun.output.tail}"}
           - id: restore
             operation: file.write_text
             arguments: {root: /absolute/path/to/target-repro, path: src/bughunt_repro.rs, text: ""}
@@ -569,7 +438,7 @@ steps:
             arguments: {condition: "${steps.build_failed.output}", then: "${steps.rejudged.output.verdict}", else: "${steps.judged.output.verdict}"}
           - id: tested_file
             operation: data.select
-            arguments: {condition: "${steps.build_failed.output}", then: "${steps.retry_text.output}", else: "${steps.test_file.output}"}
+            arguments: {condition: "${steps.build_failed.output}", then: "${steps.rewrite_repro.output.rust_source}", else: "${steps.write_repro.output.rust_source}"}
           - id: tested_tail
             operation: data.select
             arguments: {condition: "${steps.build_failed.output}", then: "${steps.rerun.output.tail}", else: "${steps.run.output.tail}"}

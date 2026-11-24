@@ -1,15 +1,16 @@
 language_version: 1
 ritual: bughunt-hunt
 description: >-
-  Read source files in a few directories, chunk by chunk, and ask a small
-  model for bugs or ways around the system from one angle. Read-only.
+  Recursively walk source files beneath one or more directories using file.walk,
+  scan each file chunk by chunk, and ask a small model for bugs or ways around
+  the system from one angle. Read-only.
 inputs:
   dirs: {type: list, default: [src]}
   angle: string
   ext: {type: string, default: ".rs"}
   chunk: {type: integer, default: 150, min: 1, max: 2000}
 requires:
-  - {reagent: file, action: list, on: {root: /absolute/path/to/target}}
+  - {reagent: file, action: walk, on: {root: /absolute/path/to/target}}
   - {reagent: file, action: read_text, on: {root: /absolute/path/to/target}}
 essence: {requests: 400, time: 3h}
 steps:
@@ -18,74 +19,47 @@ steps:
     keep: [dir_findings, dir_chunks_failed, dir_files_failed, dir_files_wanted]
     steps:
       - id: listing
-        operation: file.list
-        arguments: {root: /absolute/path/to/target, path: "${dir}"}
+        operation: file.walk
+        arguments: {root: /absolute/path/to/target, path: "${dir}", ext: "${inputs.ext}"}
       # An unreadable file (not UTF-8, over 1 MiB) is skipped, not fatal.
-      - id: per_entry
-        each: entry in steps.listing.output.entries
+      - id: per_file
+        each: file_path in steps.listing.output.paths
         on_failure: continue
-        keep: [entry_out, entry_chunks_failed, wanted]
+        keep: [scanned]
         steps:
-          - id: is_source
-            operation: data.ends_with
-            arguments: {text: "${entry.name}", suffix: "${inputs.ext}"}
-          - id: is_file
-            operation: data.compare
-            arguments: {left: "${entry.kind}", right: file, operator: eq}
-          - id: wanted
-            operation: data.logic
-            arguments: {operator: and, left: "${steps.is_source.output}", right: "${steps.is_file.output}"}
-          - if: steps.wanted.output
-            then:
-              - id: scanned
-                ritual: bughunt-scan-file
-                arguments: {path: "${dir}/${entry.name}", angle: "${inputs.angle}", chunk: "${inputs.chunk}"}
-          - id: entry_out
-            operation: data.select
-            arguments:
-              condition: "${steps.wanted.output}"
-              then: "${steps.scanned.output.findings}"
-              else: []
-          - id: entry_chunks_failed
-            operation: data.select
-            arguments:
-              condition: "${steps.wanted.output}"
-              then: "${steps.scanned.output.chunks_failed}"
-              else: 0
-      - id: entries_ok
+          - id: scanned
+            ritual: bughunt-scan-file
+            arguments: {path: "${file_path}", angle: "${inputs.angle}", chunk: "${inputs.chunk}"}
+      - id: files_ok
         operation: data.filter
-        arguments: {values: "${steps.per_entry.output}", predicate: 'item.status == "returned"'}
-      - id: entry_lists
+        arguments: {values: "${steps.per_file.output}", predicate: 'item.status == "returned"'}
+      - id: file_lists
         operation: data.map
         arguments:
-          values: "${steps.entries_ok.output}"
+          values: "${steps.files_ok.output}"
           operation: data.get
-          arguments: {value: "${item}", path: /outputs/entry_out}
+          arguments: {value: "${item}", path: /outputs/scanned/findings}
       - id: dir_findings
         operation: data.flatten
-        arguments: {values: "${steps.entry_lists.output}"}
-      - id: entry_fail_counts
+        arguments: {values: "${steps.file_lists.output}"}
+      - id: file_fail_counts
         operation: data.map
         arguments:
-          values: "${steps.entries_ok.output}"
+          values: "${steps.files_ok.output}"
           operation: data.get
-          arguments: {value: "${item}", path: /outputs/entry_chunks_failed}
+          arguments: {value: "${item}", path: /outputs/scanned/chunks_failed}
       - id: dir_chunks_failed
         operation: data.sum_integers
-        arguments: {values: "${steps.entry_fail_counts.output}"}
-      # Files that were wanted (source files) but failed to scan.
+        arguments: {values: "${steps.file_fail_counts.output}"}
       - id: dir_files_failed_list
         operation: data.filter
-        arguments: {values: "${steps.per_entry.output}", predicate: 'item.status != "returned"'}
+        arguments: {values: "${steps.per_file.output}", predicate: 'item.status != "returned"'}
       - id: dir_files_failed
         operation: data.count
         arguments: {value: "${steps.dir_files_failed_list.output}"}
-      - id: dir_files_wanted_list
-        operation: data.filter
-        arguments: {values: "${steps.per_entry.output}", predicate: 'item.status != "returned" or item.outputs.wanted'}
       - id: dir_files_wanted
         operation: data.count
-        arguments: {value: "${steps.dir_files_wanted_list.output}"}
+        arguments: {value: "${steps.listing.output.paths}"}
   - id: dir_finding_lists
     operation: data.map
     arguments:

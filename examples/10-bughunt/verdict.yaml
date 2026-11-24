@@ -102,28 +102,11 @@ steps:
   - id: test_lines
     operation: data.lines
     arguments: {text: "${inputs.test_file}"}
-  - id: strip_comments
-    each: line in steps.test_lines.output
-    keep: [kept]
-    steps:
-      - id: trimmed
-        operation: data.trim
-        arguments: {text: "${line}"}
-      - id: is_comment
-        operation: data.starts_with
-        arguments: {text: "${steps.trimmed.output}", prefix: "//"}
-      - id: kept
-        operation: data.select
-        arguments: {condition: "${steps.is_comment.output}", then: [], else: ["${line}"]}
-  - id: code_line_lists
-    operation: data.map
-    arguments:
-      values: "${steps.strip_comments.output}"
-      operation: data.get
-      arguments: {value: "${item}", path: /outputs/kept}
   - id: code_lines
-    operation: data.flatten
-    arguments: {values: "${steps.code_line_lists.output}"}
+    operation: data.filter
+    arguments:
+      values: "${steps.test_lines.output}"
+      predicate: 'not starts_with(trim(item), "//")'
   - id: code_only
     operation: data.join
     arguments: {values: "${steps.code_lines.output}", separator: "\n"}

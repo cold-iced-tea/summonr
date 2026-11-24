@@ -50,12 +50,9 @@ steps:
       - id: stop_idx
         operation: data.index_of
         arguments: {values: "${steps.lines.output}", needle: "${inputs.stop_at}", match: contains}
-  - id: found_stop
-    operation: data.compare
-    arguments: {left: "${steps.stop_idx.output}", right: null, operator: ne}
   - id: code_lines
-    operation: data.select
-    arguments: {condition: "${steps.found_stop.output}", then: "${steps.stop_idx.output}", else: "${steps.line_count.output}"}
+    operation: data.coalesce
+    arguments: {values: ["${steps.stop_idx.output}", "${steps.line_count.output}"]}
   - id: starts
     operation: data.range
     arguments: {start: 0, end: "${steps.code_lines.output}", step: "${inputs.chunk}"}
@@ -81,16 +78,20 @@ steps:
       - id: scan
         model:
           instructions: |
-            You are a careful security and correctness reviewer.
-            Look only for problems matching the angle you are given.
-            Report only real problems you can point to in the code shown.
+            You are a strict security and correctness auditor.
+            Look only for concrete, reachable bugs or security bypasses matching
+            the angle you are given.
+            Skip style nits, theoretical issues on trusted internal config,
+            missing abstractions, and speculative concerns — prefer returning an
+            empty list unless you can point to a specific failing input or bypass
+            in the code shown.
             Never report "no bug" or "does not panic", and never repeat the
             angle text as a claim.
-            For each problem give: kind (bug, or bypass for a way around a
+            For each real problem give: kind (bug, or bypass for a way around a
             permission or limit), severity, your confidence from 0 to 1,
             the claim in one concrete sentence, an input or sequence that
             triggers it, and snippet: one line copied exactly from the
-            code. If you find nothing, return an empty list.
+            code. If you find nothing concrete, return an empty list.
           prompt: |
             Angle: ${inputs.angle}
             File: ${inputs.path} (lines from ${start})
@@ -101,7 +102,7 @@ steps:
             required: [findings]
             additionalProperties: false
             properties:
-              findings: {type: array, maxItems: 8, items: {$ref: "#/$defs/finding"}}
+              findings: {type: array, maxItems: 5, items: {$ref: "#/$defs/finding"}}
       - id: per_finding
         each: found in steps.scan.output.findings
         keep: [placed]
