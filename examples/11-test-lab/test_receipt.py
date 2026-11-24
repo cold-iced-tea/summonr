@@ -13,3 +13,9 @@ class ReceiptTests(unittest.TestCase):
             }},
         }]}
         self.assertEqual(json.loads(export(record, False))["rite_id"], "rite-original")
+
+    def test_duplicate_stages_are_rejected(self):
+        stage = {"stage": "verify", "accepted": True, "output": {"patch": "patch"}}
+        record = {"name": "report-to-test", "stages": [stage, stage]}
+        with self.assertRaisesRegex(ValueError, "duplicate stage"):
+            export(record, True)

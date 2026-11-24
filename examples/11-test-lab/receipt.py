@@ -5,7 +5,12 @@ import sys
 
 
 def export(record, patch):
-    stages = {s["stage"]: s for s in record["stages"]}
+    stages = {}
+    for stage in record["stages"]:
+        stage_id = stage["stage"]
+        if stage_id in stages:
+            raise ValueError(f"duplicate stage {stage_id}")
+        stages[stage_id] = stage
     name = record["name"]
     if name == "flake-court":
         groups = [("probe", "evidence"), ("hearing", "comparison")]
