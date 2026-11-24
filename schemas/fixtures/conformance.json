@@ -392,5 +392,87 @@
         "count": "${steps.n.output}"
       }
     }
+  },
+  {
+    "name": "window",
+    "structural": true,
+    "semantic": true,
+    "definition": {
+      "ritual": "sample",
+      "language_version": 1,
+      "reagents": {
+        "data": {
+          "select": [
+            "count"
+          ]
+        }
+      },
+      "essence": {
+        "requests": 0,
+        "tool_calls": 1
+      },
+      "steps": [
+        {
+          "id": "n",
+          "operation": "data.count",
+          "arguments": {
+            "value": [
+              1,
+              2
+            ]
+          }
+        }
+      ],
+      "return": {
+        "count": "${steps.n.output}"
+      },
+      "window": {
+        "layout": "sidebar",
+        "title": "Batch gate",
+        "by": "nightjar",
+        "accent": "#e9A879",
+        "masthead": [
+          " /|\\ "
+        ]
+      }
+    }
+  },
+  {
+    "name": "window_bad_accent",
+    "structural": false,
+    "semantic": false,
+    "definition": {
+      "ritual": "sample",
+      "language_version": 1,
+      "reagents": {
+        "data": {
+          "select": [
+            "count"
+          ]
+        }
+      },
+      "essence": {
+        "requests": 0,
+        "tool_calls": 1
+      },
+      "steps": [
+        {
+          "id": "n",
+          "operation": "data.count",
+          "arguments": {
+            "value": [
+              1,
+              2
+            ]
+          }
+        }
+      ],
+      "return": {
+        "count": "${steps.n.output}"
+      },
+      "window": {
+        "accent": "e9a879"
+      }
+    }
   }
 ]

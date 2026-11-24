@@ -54,6 +54,9 @@ def build():
         'settings': mapping({}), 'instructions': nullable(string),
         'bind': arr(string), 'prompt': string, 'schema': nullable(ref('valueSchema')), 'abstain_if': nullable(string),
         'images': {'anyOf': [string, {**arr(string), 'maxItems': 8}, {'type': 'null'}]}}, ['prompt'])
+    label = dict(type='string', maxLength=64, pattern='^[^\\u0000-\\u001f\\u007f-\\u009f]*$')
+    definitions['window'] = obj({'layout': {'enum': ['banner', 'sidebar']}, 'title': label, 'by': label,
+        'accent': dict(type='string', pattern='^#[a-fA-F0-9]{6}$'), 'masthead': {**arr(label), 'maxItems': 5}})
     definitions['verify'] = obj({'observe': string, 'arguments': mapping({}), 'expect': mapping({})}, ['observe', 'expect'])
     properties = {'id': nullable(string), 'operation': nullable(string), 'arguments': nullable(mapping({})),
         'verify': nullable(ref('verify')), 'hold': {'type':['boolean','string','null']}, 'model': nullable(ref('model')), 'ritual': nullable(string),
@@ -88,7 +91,7 @@ def build():
         'description':'Structural authoring/interchange contract. Rust compilation remains mandatory for references, operations, scopes, bindings, budgets, and pins. This is not the restricted schema dialect used for model outputs.',
         **obj({'language_version': {'const':1, 'default':1}, 'defs': mapping({}), '$defs': mapping({}),
             'ritual':dict(type='string',pattern='^[A-Za-z0-9_-]+$'),
-            'description':string, 'inputs':mapping(ref('input')), 'bindings':mapping(ref('binding')),
+            'description':string, 'window':nullable(ref('window')), 'inputs':mapping(ref('input')), 'bindings':mapping(ref('binding')),
             'model':nullable(string), 'settings':mapping({}), 'reagents':mapping(ref('reagent')),
             'requires':arr(ref('requirement')), 'essence':ref('essence'), 'drift':ref('drift'),
             'output_schema':nullable(ref('valueSchema')), 'steps':arr(ref('step')), 'return':mapping({})}, ['ritual','steps']),

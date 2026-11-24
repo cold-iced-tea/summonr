@@ -24,6 +24,16 @@
     "description": {
       "type": "string"
     },
+    "window": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/window"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "inputs": {
       "type": "object",
       "additionalProperties": {
@@ -531,6 +541,42 @@
       "required": [
         "prompt"
       ],
+      "additionalProperties": false
+    },
+    "window": {
+      "type": "object",
+      "properties": {
+        "layout": {
+          "enum": [
+            "banner",
+            "sidebar"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$"
+        },
+        "by": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$"
+        },
+        "accent": {
+          "type": "string",
+          "pattern": "^#[a-fA-F0-9]{6}$"
+        },
+        "masthead": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 64,
+            "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$"
+          },
+          "maxItems": 5
+        }
+      },
+      "required": [],
       "additionalProperties": false
     },
     "verify": {
