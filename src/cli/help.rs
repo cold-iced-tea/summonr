@@ -104,9 +104,12 @@ const SPECS: &[Spec] = &[
     },
     Spec {
         verb: "drill",
-        usage: "cases RITUAL --against FILE [--json]",
-        flags: &["--against", "--version", "--json"],
-        examples: &["summonr cases route-form --against route-form.drill.yaml --json"],
+        usage: "cases RITUAL --against FILE [--arg k=v ...] [--json]",
+        flags: &["--against", "--arg", "--version", "--json"],
+        examples: &[
+            "summonr cases route-form --against route-form.drill.yaml --json",
+            "summonr drill describe-image against describe-image.drill.yaml given root=/home/me/images",
+        ],
         data: &[
             ("passed", "how many cases passed"),
             ("failed", "how many cases failed"),
@@ -388,6 +391,9 @@ mod tests {
         assert!(run["clauses"].as_array().unwrap().contains(&json!("given k=v ...")));
         assert_eq!(run["exit_codes"]["7"], "--timeout passed; the summon is still running");
         assert!(run["data_shape"]["outcome"].as_str().unwrap().contains("verdict"));
+        let drill = descriptor("drill").unwrap();
+        assert!(drill["flags"].as_array().unwrap().iter().any(|f| f["flag"] == "--arg k=v ..." && f["keyword"] == "given k=v ..."));
+        assert!(text("drill", Style::Flag).unwrap().iter().any(|l| l.contains("--arg k=v")));
         assert_eq!(descriptor("drill").unwrap()["exit_codes"]["14"], "one or more cases failed");
         // A command without its own spec still has a usable descriptor.
         let d = descriptor("identity").unwrap();

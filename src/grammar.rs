@@ -348,7 +348,7 @@ pub const VERBS: &[(&str, &str, bool, &str)] = &[
         "drill",
         "cases",
         true,
-        "Run a ritual's drill cases against scripted model answers; writes are simulated",
+        "Run scripted drill cases with optional input overrides for every case; writes are simulated",
     ),
     (
         "satchel",
@@ -1372,6 +1372,7 @@ mod tests {
         ("petition deny p-1 p-2", "approval deny p-1 p-2"),
         ("glean classify-message 10 against ./set.yaml", "sample classify-message 10 --against ./set.yaml"),
         ("drill route-form against ./d.yaml", "cases route-form --against ./d.yaml"),
+        ("drill scan against ./d.yaml given root=/home/me/Work", "cases scan --against ./d.yaml --arg root=/home/me/Work"),
         ("invoke bench reading gold=./g.json", "run bench --arg-file gold=./g.json"),
         ("invoke bench then return json brief", "run bench --wait --json --brief"),
         ("elegy s-1 brief returning json", "record s-1 --brief --json"),

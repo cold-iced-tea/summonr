@@ -44,7 +44,7 @@ Scripts and agents should use the flag spelling with `--json`. `summonr help` li
 | `satchel` | `tools` | List reagents and their tools |
 | `petition` | `approval` | List held operations; `permit` / `deny` by id or `all` |
 | `glean` | `sample` | Sample real runs as unlabeled assay cases |
-| `drill R against FILE` | `cases R --against FILE` | Run a ritual against scripted model answers and expected outcomes; never contacts a model, never performs a write. A missing drill file is exit 3. Exit 14 if any case fails |
+| `drill R against FILE [given k=v ...]` | `cases R --against FILE [--arg k=v ...]` | Run a ritual against scripted model answers and expected outcomes; never contacts a model, never performs a write. Each repeatable input override applies to every case and takes precedence over the case’s input. A missing drill file is exit 3. Exit 14 if any case fails |
 | `mcp` | | Serve rituals over MCP: `mcp` (stdio) or `mcp http ADDR:PORT` |
 | `core` | | Run the core in the foreground; `core status` checks it; `core stop` ends it; `core restart` reloads it |
 | `help` | | Show help |
@@ -140,6 +140,7 @@ summonr invoke route-form given form="..." recording cassettes/a.json then retur
 summonr invoke route-form given form="..." replaying cassettes/a.json then return
 summonr invoke inbox-triage given apply=true simulating then return
 summonr drill route-form against route-form.drill.yaml
+summonr cases describe-image --against describe-image.drill.yaml --arg root=/home/me/images
 ```
 
 ## Choosing a home
