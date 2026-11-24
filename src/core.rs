@@ -3291,6 +3291,8 @@ mod robustness_tests;
 #[cfg(test)]
 mod safe_build_tests;
 #[cfg(test)]
+mod command_model_tests;
+#[cfg(test)]
 mod test_home;
 #[cfg(test)]
 mod perf_bench;

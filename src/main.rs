@@ -5,6 +5,7 @@
 mod backend;
 mod cancel;
 mod cancellable_http;
+mod command_backend;
 mod cassette;
 mod cli;
 mod core;

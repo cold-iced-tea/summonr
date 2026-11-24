@@ -1178,6 +1178,7 @@ mod tests {
                 kind: "openai".into(),
                 url: "https://llm.example.com".into(),
                 api_key_env: Some("MY_CUSTOM_LLM_KEY".into()),
+                ..Default::default()
             },
         );
         let cmd = command("git", true, Some(&cfg));

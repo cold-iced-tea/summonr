@@ -110,7 +110,7 @@ impl Prepared<'_> {
 }
 
 /// A command's `env:` list, resolved from the core's environment.
-fn resolve_env(cmd_name: &str, names: &[String], cfg: &Config) -> Result<Vec<(String, String)>, Fail> {
+pub(crate) fn resolve_env(cmd_name: &str, names: &[String], cfg: &Config) -> Result<Vec<(String, String)>, Fail> {
     let mut out = Vec::with_capacity(names.len());
     for name in names {
         if name.is_empty() || name.contains(['=', '\0']) {
