@@ -200,6 +200,8 @@ fn block(title: impl Into<String>) -> Block<'static> {
 fn decode<T: serde::de::DeserializeOwned>(v: Value) -> Result<T, String> {
     serde_json::from_value(v).map_err(|e| format!("invalid core response: {e}"))
 }
+const MAX_COMMAND_BYTES: usize = 16 * 1024;
+
 fn clean(s: &str) -> String {
     s.chars()
         .map(|c| {
@@ -643,7 +645,14 @@ impl App {
         }
         match key {
             KeyCode::Enter=>return self.submit(paths),
-            KeyCode::Char(c)=>{self.input.insert(self.cursor,c);self.cursor+=c.len_utf8();},
+            KeyCode::Char(c) => {
+                if self.input.len() + c.len_utf8() <= MAX_COMMAND_BYTES {
+                    self.input.insert(self.cursor, c);
+                    self.cursor += c.len_utf8();
+                } else {
+                    self.append(Ink::Rubric, "Command exceeds the 16 KiB input limit.");
+                }
+            },
             KeyCode::Left=>{self.cursor=self.input[..self.cursor].char_indices().last().map(|(i,_)|i).unwrap_or(0);},
             KeyCode::Right=>{if let Some(c)=self.input[self.cursor..].chars().next(){self.cursor+=c.len_utf8();}},
             KeyCode::Home=>self.cursor=0,KeyCode::End=>self.cursor=self.input.len(),
@@ -1540,6 +1549,15 @@ mod tests {
         );
         assert_eq!(words("run r --arg text=\"\"").unwrap()[3], "text=");
         assert!(words("run r --arg 'unfinished").is_err());
+    }
+    #[test]
+    fn editor_keeps_commands_within_its_byte_limit() {
+        let mut app = App::new();
+        app.input = "x".repeat(16 * 1024 - 1);
+        app.cursor = app.input.len();
+        app.key(KeyCode::Char('é'), KeyModifiers::NONE, &Paths::resolve());
+        assert_eq!(app.input.len(), 16 * 1024 - 1);
+        assert_eq!(app.cursor, app.input.len());
     }
     #[test]
     fn editor_handles_unicode_and_history_without_splitting_characters() {
