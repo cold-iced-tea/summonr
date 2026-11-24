@@ -30,7 +30,7 @@ requires:
   - {reagent: git, action: delete_branch}
   - {reagent: trial, action: run}
   - {reagent: cmd, action: read}
-essence: {requests: 200, time: 4h}
+essence: {requests: 200, time: 4h, cleanup_time: 1m}
 defs:
   triage_verdict:
     type: object
@@ -84,7 +84,9 @@ bindings:
       message to one short line (under 80 characters, no {:?} dumps). If the
       code behaves correctly the test must pass.
       Never use #[should_panic]; to check for a panic, wrap the call in
-      std::panic::catch_unwind and assert on the result with the marker.
+      std::panic::catch_unwind and assert `result.is_ok()` with the marker
+      (NEVER `assert!(result.is_err(), "BUGHUNT-CONFIRMED...")`, which inverts
+      the check and falsely fires when no panic occurred).
       Write any files only under std::env::temp_dir(). Use only the
       standard library and crates the project already uses. No network.
       You must call the real code under suspicion; a test that copies the
@@ -467,30 +469,31 @@ steps:
   - id: dismissed_count
     operation: data.count
     arguments: {value: "${steps.dismissed.output}"}
-  # Leave the worktree clean even if the last item stopped half way.
-  - id: clean
-    operation: file.write_text
-    arguments: {root: /absolute/path/to/target-repro, path: src/bughunt_repro.rs, text: ""}
-  # Cleanup never fails the run: a repro that left files behind blocks
-  # removal, and the results above must still be returned.
-  - id: remove
-    operation: git.remove_worktree
-    arguments: {repo: bughunt-target, path: /absolute/path/to/target-repro}
-    fallback:
-      - id: remove_skipped
-        operation: data.select
-        arguments: {condition: true, then: "worktree left in place; see README", else: ""}
-  - id: drop_branch
-    operation: git.delete_branch
-    arguments: {repo: bughunt-target, branch: repro}
-    fallback:
-      - id: drop_skipped
-        operation: data.select
-        arguments: {condition: true, then: "branch left in place; see README", else: ""}
+finally:
+  # Always remove the throwaway worktree and branch if add succeeded, even when
+  # the main steps fail, exhaust, or are cancelled.
+  - if: steps.add.status == "returned"
+    then:
+      - id: clean
+        operation: file.write_text
+        arguments: {root: /absolute/path/to/target-repro, path: src/bughunt_repro.rs, text: ""}
+      - id: remove
+        operation: git.remove_worktree
+        arguments: {repo: bughunt-target, path: /absolute/path/to/target-repro}
+        fallback:
+          - id: remove_skipped
+            operation: data.select
+            arguments: {condition: true, then: "worktree left in place; see README", else: ""}
+      - id: drop_branch
+        operation: git.delete_branch
+        arguments: {repo: bughunt-target, branch: repro}
+        fallback:
+          - id: drop_skipped
+            operation: data.select
+            arguments: {condition: true, then: "branch left in place; see README", else: ""}
 return:
   results: "${steps.results.output}"
   confirmed: "${steps.confirmed_count.output}"
   dismissed: "${steps.dismissed_count.output}"
   tested: "${steps.per_finding.counts}"
   untested: "${steps.untested.output}"
-  cleanup: {worktree: "${steps.remove.output}", branch: "${steps.drop_branch.output}"}
