@@ -1,32 +1,53 @@
 #!/usr/bin/env bash
-# Run the bughunt benchmark: one lab per gold set, the rite's three angles.
-#   benchmark/run.sh REPO OUT_DIR SUMMONR_BIN [--tier smoke|core|full] [--category CAT]
-#                    [--suite SUITE_JSON] [--gold-dir DIR] [NAME...]
+# Run the bughunt benchmark over a suite of gold sets, the rite's three angles.
+#   benchmark/run.sh REPO OUT_DIR SUMMONR_BIN [--isolated | --shared-core | --core-home PATH]
+#                    [--tier smoke|core|full] [--category CAT] [--suite SUITE_JSON]
+#                    [--gold-dir DIR] [--model M] [NAME...]
 #
 # Reads cases from benchmark/suite.json, or --suite (default: --tier smoke
 # unless NAMEs or --category are given). For external-suite.json, REPO is the
-# fetch_external.py cache (one clone per repo_name, each case's crate_path
-# passed to setup.sh) and --gold-dir the gold sets it built there. Fix-commit gold sets run at the fix's parent commit;
+# fetch_external.py cache (one clone per repo_name) and --gold-dir the gold
+# sets it built there. Fix-commit gold sets run at the fix's parent commit;
 # audit sets run at their target_commit.
 #
-# Prints a live workbench attach hint for each lab, one summary line per gold
-# set, and a category rollup table at the end. Results: OUT_DIR/bench-NAME.json
-# and OUT_DIR/hunts-NAME.json (raw hunts, for bughunt-rescore). Needs sqlite3.
+# Two ways to run:
+#   --isolated (default)  One standalone lab per case (setup.sh): its own clone,
+#                         SUMMONR_HOME and core, so a run is reproducible on
+#                         its own and leaves your core alone.
+#   --shared-core         Every case on the core you already use (SUMMONR_HOME,
+#                         or the default home). The bench rituals are saved once
+#                         (a new version only if a file changed), granted with
+#                         --under OUT_DIR and --under the gold directory, and
+#                         each case's parent commit is unpacked read-only into
+#                         OUT_DIR/NAME/target and passed as `root`.
+#   --core-home PATH      --shared-core on the core whose home is PATH.
+#
+# Prints a live console hint per case, one summary line per gold set, and a
+# category rollup at the end. Results: OUT_DIR/bench-NAME.json and
+# OUT_DIR/hunts-NAME.json (raw hunts, for bughunt-rescore), taken from the
+# run's own --json record.
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
+lab_src="$(cd "$here/.." && pwd)"
 repo="$1"; out="$(mkdir -p "$2" && cd "$2" && pwd)"; bin="$3"; shift 3
 
+mode=isolated
 tier=""
 category=""
 suite="$here/suite.json"
 gold_dir=""
+model=()
 only=()
 while [ $# -gt 0 ]; do
   case "$1" in
+    --isolated) mode=isolated; shift ;;
+    --shared-core) mode=shared; shift ;;
+    --core-home) mode=shared; export SUMMONR_HOME="$(mkdir -p "$2" && cd "$2" && pwd)"; shift 2 ;;
     --tier) tier="$2"; shift 2 ;;
     --category) category="$2"; shift 2 ;;
     --suite) suite="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"; shift 2 ;;
     --gold-dir) gold_dir="$(cd "$2" && pwd)"; shift 2 ;;
+    --model) model=(--model "$2"); shift 2 ;;
     *) only+=("$1"); shift ;;
   esac
 done
@@ -37,7 +58,56 @@ summary() {  # name took
   python3 -I "$here/summary.py" "$out/bench-$1.json" "$1" "$2"
 }
 
-bench() {  # name commit gold dirs case_repo crate_path
+# bench-NAME.json and hunts-NAME.json from `run --wait --brief --json`. The
+# brief record keeps the whole result; when the bench did not return, the
+# hunts that did are read from its child runs.
+extract() {  # name run_json [SUMMONR_HOME]
+  ( if [ -n "${3:-}" ]; then export SUMMONR_HOME="$3"; fi
+  python3 -I - "$1" "$2" "$out" "$bin" <<'PY'
+import json, os, subprocess, sys
+
+name, run_json, out, bin_ = sys.argv[1:]
+try:
+    env = json.load(open(run_json, encoding="utf-8"))
+except (OSError, ValueError) as e:
+    env = {"error": {"message": f"no readable run output ({e})"}}
+d = env.get("data") or {}
+err = d.get("error") or (env.get("error") or {}).get("message")
+bench = {"outcome": d.get("outcome"), "error": err, "requests": d.get("requests"),
+         "tokens": d.get("tokens"), "result": d.get("result")}
+hunts = (d.get("result") or {}).get("hunts")
+if hunts is None:
+    hunts = []
+    for c in d.get("children") or []:
+        if c.get("ritual") != "bughunt-hunt" or c.get("outcome") != "returned":
+            continue
+        p = subprocess.run([bin_, "record", c["id"], "--brief", "--json"], capture_output=True, text=True)
+        try:
+            r = (json.loads(p.stdout).get("data") or {}).get("result")
+        except ValueError:
+            r = None
+        if r is not None:
+            hunts.append(r)
+with open(os.path.join(out, f"bench-{name}.json"), "w", encoding="utf-8") as f:
+    json.dump(bench, f)
+    f.write("\n")
+with open(os.path.join(out, f"hunts-{name}.json"), "w", encoding="utf-8") as f:
+    json.dump(hunts, f)
+    f.write("\n")
+PY
+  )
+}
+
+run_bench() {  # name dirs gold root benchmark_root  (SUMMONR_HOME already set)
+  local name="$1" dirs="$2" gold="$3" root="$4" broot="$5"
+  # --brief keeps the reply small but the result whole; --cancel-on-drop
+  # stops the summon if this script is killed or stops waiting.
+  "$bin" run bughunt-bench --arg "root=$root" --arg "benchmark_root=$broot" \
+    --arg "dirs=$dirs" --arg "angles=$angles" --arg "gold=$gold" "${model[@]}" \
+    --wait --brief --cancel-on-drop --json --timeout 4h > "$out/run-$name.json" 2>"$out/run-$name.err"
+}
+
+isolated_bench() {  # name commit gold dirs case_repo crate_path
   local name="$1" commit="$2" gold="$3" dirs="$4" case_repo="$5" crate_path="$6" lab="$out/$1"
   "$here/../setup.sh" "$lab" "$case_repo" "$commit" "$bin" "$crate_path" >/dev/null || { echo "$name: setup failed"; return; }
   if [ -n "$gold_dir" ]; then
@@ -46,18 +116,51 @@ bench() {  # name commit gold dirs case_repo crate_path
   fi
   echo "[$name] watch live: SUMMONR_HOME=\"$lab/home\" $bin console"
   local s=$SECONDS
-  # --brief avoids oversized RPC frames; --cancel-on-drop stops the summon if
-  # this script is killed. Results are also extracted from SQLite for hunts-*.
-  SUMMONR_HOME="$lab/home" "$bin" run bughunt-bench --arg "dirs=$dirs" --arg "angles=$angles" \
-    --arg "gold=$gold" --wait --brief --cancel-on-drop --json --timeout 4h > /dev/null 2>&1
-  local took=$((SECONDS - s)) db="$lab/home/state/summonr.db"
-  sqlite3 "$db" "select json_object('outcome', outcome, 'error', error, 'requests', requests, 'tokens', tokens, 'result', json(result)) from summons where ritual='bughunt-bench' order by started desc limit 1" > "$out/bench-$name.json"
-  sqlite3 "$db" "select '[' || coalesce(group_concat(result, ','), '') || ']' from summons where ritual='bughunt-hunt' and outcome='returned'" > "$out/hunts-$name.json"
-  summary "$name" "$took"
+  SUMMONR_HOME="$lab/home" run_bench "$name" "$dirs" "$gold" "$lab/target" "$lab/benchmark"
+  extract "$name" "$out/run-$name.json" "$lab/home"
+  summary "$name" "$((SECONDS - s))"
   SUMMONR_HOME="$lab/home" "$bin" core stop --json >/dev/null 2>&1 || true
 }
 
-# Resolve selected cases from suite.json.
+# Shared core: the gold sets are read where they are.
+broot="${gold_dir:-$here}"
+
+shared_setup() {
+  # Children before parents; identical contents keep their version.
+  local r
+  for r in scan-file hunt gather score bench; do
+    "$bin" inscribe "$lab_src/$r.yaml" --replace --json > "$out/inscribe-$r.json" \
+      || { echo "inscribe $r.yaml failed:" >&2; cat "$out/inscribe-$r.json" >&2; exit 1; }
+  done
+  allow() { "$bin" allow "$@" --json >/dev/null || { echo "grant failed: $*" >&2; exit 1; }; }
+  allow bughunt-scan-file --from file --select read_text --under "$out"
+  allow bughunt-hunt --from file --select walk,read_text --under "$out"
+  allow bughunt-bench --from file --select walk,read_text --under "$out"
+  allow bughunt-bench --from file --select read_json --under "$broot"
+}
+
+shared_bench() {  # name commit gold dirs case_repo crate_path
+  local name="$1" commit="$2" gold="$3" dirs="$4" case_repo="$5" case_dir="$out/$1"
+  [ -f "$broot/$gold" ] || { echo "$name: no $gold in $broot"; return; }
+  local target="$case_dir/target" want
+  want="$(git -C "$case_repo" rev-parse "$commit^{commit}")" || { echo "$name: no commit $commit in $case_repo"; return; }
+  if [ "$(cat "$case_dir/COMMIT" 2>/dev/null)" != "$want" ]; then
+    [ -d "$target" ] && { chmod -R u+w "$target"; rm -rf "$target"; }
+    mkdir -p "$target"
+    git -C "$case_repo" archive "$want" | tar -x -C "$target" || { echo "$name: checkout failed"; return; }
+    # The hunt reads files and refuses symlinks; a snapshot needs none.
+    find "$target" -type l -delete
+    chmod -R a-w "$target"
+    echo "$want" > "$case_dir/COMMIT"
+  fi
+  echo "[$name] watch live: $bin console"
+  local s=$SECONDS
+  run_bench "$name" "$dirs" "$gold" "$target" "$broot"
+  extract "$name" "$out/run-$name.json"
+  summary "$name" "$((SECONDS - s))"
+}
+
+# Resolve selected cases from the suite.
 mapfile -t selected < <(python3 -I - "$suite" "$repo" "$tier" "$category" "${only[@]}" <<'PY'
 import json, os, subprocess, sys
 
@@ -94,10 +197,23 @@ if [ ${#selected[@]} -eq 0 ]; then
   exit 1
 fi
 
+if [ "$mode" = shared ]; then
+  echo "shared core: ${SUMMONR_HOME:-default home}; granting --under $out and --under $broot"
+  shared_setup
+fi
+
 for row in "${selected[@]}"; do
   IFS=$'\t' read -r name commit gold dirs case_repo crate_path <<< "$row"
-  bench "$name" "$commit" "$gold" "$dirs" "$case_repo" "$crate_path"
+  "${mode}_bench" "$name" "$commit" "$gold" "$dirs" "$case_repo" "$crate_path"
 done
 
 echo ""
 python3 -I "$here/report.py" "$out" --suite "$suite"
+if [ "$mode" = shared ]; then
+  echo ""
+  echo "The --under grants stay on the core; to withdraw them:"
+  for r in scan-file:read_text hunt:walk,read_text bench:walk,read_text; do
+    echo "  $bin disallow bughunt-${r%%:*} --from file --select ${r#*:} --under $out"
+  done
+  echo "  $bin disallow bughunt-bench --from file --select read_json --under $broot"
+fi

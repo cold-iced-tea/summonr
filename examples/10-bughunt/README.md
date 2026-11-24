@@ -91,20 +91,46 @@ the hunt scanned (`gemini-reagents.json` is `src/reagents`). Those are
 unverified model claims: use them for recall only, and treat `confirmed`
 test results on them as spot checks of the list.
 
-`benchmark/run.sh REPO OUT_DIR SUMMONR_BIN` runs every shipped gold set, one
-lab each, with the rite's three angles.
+`benchmark/run.sh REPO OUT_DIR SUMMONR_BIN` runs the suite's gold sets (the
+smoke tier unless `--tier`, `--category` or case names say otherwise) with the
+rite's three angles, in one of two ways:
+
+- **On your own core** (`--shared-core`, or `--core-home PATH` for another
+  home). No labs and no `setup.sh`: the bench rituals are saved once (a new
+  version only if a file changed), each case's parent commit is unpacked
+  read-only into `OUT_DIR/NAME/target`, and `bughunt-bench` runs with
+  `root=OUT_DIR/NAME/target` and `benchmark_root=` the gold directory, under
+  two `--under` grants:
+
+  ```bash
+  examples/10-bughunt/benchmark/run.sh ~/Work/summonr ~/bughunt-out "$PWD/target/release/summonr" --shared-core
+  ```
+
+  The run is narrowed to the one root it was given, so cases cannot read
+  each other's checkouts. The grants stay afterwards; the script prints the
+  `disallow` lines that withdraw them.
+- **In isolated labs** (`--isolated`, the default): one `setup.sh` lab per
+  case with its own clone, `SUMMONR_HOME` and core, which leaves your core
+  untouched and makes each run reproducible on its own.
+
+Either way the results are `OUT_DIR/bench-NAME.json` and
+`OUT_DIR/hunts-NAME.json` (the raw hunts, for `bughunt-rescore`), taken from
+the run's own `--json` record, followed by a category table. `--model M`
+overrides the hunter model.
 
 ### External suite
 
-`benchmark/external-suite.json` is an out-of-distribution set: 14 real fix
-commits in four third-party crates (`http`, `rust-url`, `httparse`,
-`semver`), pinned by full SHA. Summonr ships no third-party source; build
+`benchmark/external-suite.json` is an out-of-distribution set: 22 real fix
+commits in six third-party crates (`http`, `rust-url`, `httparse`, `semver`,
+`tar`, `toml`), pinned by full SHA. They cover path traversal during archive
+extraction, archive and HTTP framing, parser recursion, integer overflow,
+input validation and logic errors. Summonr ships no third-party source; build
 the repos, Cargo cache and gold sets locally, then benchmark them:
 
 ```bash
 examples/10-bughunt/benchmark/fetch_external.py ~/bughunt-ext   # [--repo http] [--tier smoke]
 examples/10-bughunt/benchmark/run.sh ~/bughunt-ext ~/bughunt-ext/out "$PWD/target/release/summonr" \
-  --suite examples/10-bughunt/benchmark/external-suite.json --gold-dir ~/bughunt-ext/gold --tier smoke
+  --suite examples/10-bughunt/benchmark/external-suite.json --gold-dir ~/bughunt-ext/gold --tier smoke --shared-core
 examples/10-bughunt/benchmark/verify_repros.py ~/bughunt-ext \
   --suite examples/10-bughunt/benchmark/external-suite.json --name ext-httparse-c0631f2 TEST_RESULT.json
 ```
