@@ -26,8 +26,7 @@ const STDOUT_MARK: &str = "\n--- stdout ---\n";
 /// The last `n` lines, then at most the last `max` bytes of those, cut on a
 /// character boundary. The end of a test log is where the failure is.
 pub(crate) fn tail_within(text: &str, n: usize, max: usize) -> String {
-    let lines: Vec<&str> = text.trim_end().lines().collect();
-    let joined = lines[lines.len().saturating_sub(n)..].join("\n");
+    let joined = crate::util::tail_lines(text.trim_end(), n);
     let mut start = joined.len().saturating_sub(max);
     while !joined.is_char_boundary(start) {
         start += 1;

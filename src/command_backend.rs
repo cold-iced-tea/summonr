@@ -217,7 +217,7 @@ pub(crate) fn chat(name: &str, label: &str, p: &ProviderConfig, cfg: Option<&Con
             other => format!("provider `{name}`: {}", other.message()),
         })?;
     if code != 0 {
-        let tail: String = stderr.trim().lines().rev().take(5).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" | ");
+        let tail: String = crate::util::tail_lines(stderr.trim(), 5).replace('\n', " | ");
         return Err(format!("provider `{name}` exited with code {code}: {}", if tail.is_empty() { "(no stderr)" } else { &tail }));
     }
     if stdout.len() > MAX_OUTPUT {

@@ -43,11 +43,6 @@ pub(crate) const TOOLS: &[ToolSpec] = &[
     },
 ];
 
-fn tail(text: &str, n: usize) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    lines[lines.len().saturating_sub(n)..].join("\n")
-}
-
 fn bounded_text(text: &str) -> String {
     let trimmed = text.trim_end_matches(['\r', '\n']);
     if trimmed.chars().count() > MAX_OUTPUT_CHARS {
@@ -456,7 +451,7 @@ impl Reagent for Cmd {
                             "code": code,
                             "stdout": stdout,
                             "stderr": stderr,
-                            "tail": tail(&format!("{out}{err}"), 30),
+                            "tail": crate::util::tail_lines(&format!("{out}{err}"), 30),
                             "json": parsed_json,
                         }))
                     }

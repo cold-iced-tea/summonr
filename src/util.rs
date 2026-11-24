@@ -965,3 +965,8 @@ mod iso_tests {
         assert_eq!(super::iso_minute(951_782_400_000), "2000-02-29T00:00Z");
     }
 }
+
+pub(crate) fn tail_lines(text: &str, n: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(n)..].join("\n")
+}
