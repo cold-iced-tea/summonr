@@ -1384,10 +1384,14 @@ pub fn validate_grant_scope(
         }
         _ => return Ok(()),
     };
+    // A file or sight grant may name a directory the root lies `under`.
+    let key = if key == "root" && on.contains_key("under") { "under" } else { key };
     if !into.is_empty() || on.len() != 1 || !on.contains_key(key) {
-        return Err(format!(
-            "{reagent} grants require exactly on {key}=VALUE and no destination scope"
-        ));
+        return Err(if key == "origin" {
+            format!("{reagent} grants require exactly on {key}=VALUE and no destination scope")
+        } else {
+            format!("{reagent} grants require exactly one of on root=DIR or on under=DIR, and no destination scope")
+        });
     }
     match reagent {
         "file" | "sight" => crate::file_reagent::validate_root(&on[key]),

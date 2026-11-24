@@ -1594,7 +1594,10 @@ impl Run {
         );
         let mut meters = vec![Arc::new(Meter::new(&def.essence))];
         meters.extend(self.meters.iter().cloned());
-        let child_grants = ritual::narrow_grants(&self.grants, &def.requires);
+        // The child's own requirements, rendered with its inputs, so a root
+        // it takes as an input narrows to the directory it was given.
+        let child_requires = crate::core::Core::render_requires(&def.requires, &inputs).map_err(|e| Fail::Invalid(e.message))?;
+        let child_grants = ritual::narrow_grants(&self.grants, &child_requires);
         let mut run = Run {
             job_claim: self.job_claim.clone(),
             core: self.core.clone(),

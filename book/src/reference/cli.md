@@ -68,6 +68,7 @@ Scripts and agents should use the flag spelling with `--json`. `summonr help` li
 | `selecting a b` | `--select a,b` | Select tools in the open scope |
 | `all` | `--all` | Select every tool in the open scope |
 | `on k=v` | `--on k=v` | Resource scope of a permission |
+| `on under=DIR` | `--under DIR` | A `file` or `sight` grant for any root at or beneath `DIR` ([roots chosen at run time](../concepts/authority.md#roots-chosen-at-run-time)) |
 | `into k=v` | `--into k=v` | Destination scope of a permission |
 | `version N` | `--version N` | Pin the preceding target or reagent |
 | `replacement` | `--replace` | Explicitly replace the named target |

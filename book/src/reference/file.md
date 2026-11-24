@@ -35,14 +35,21 @@ return:
   document: "${steps.document.output}"
 ```
 
-Replace the root and filename before saving this example. Paths in operations are
+Replace the root and filename before saving this example. To point one ritual at
+any project instead, take the root from an input (`on: {root: "${inputs.target}"}`)
+and grant the directory the projects live in with `--under DIR`; the run then
+holds only the root it was given. See
+[roots chosen at run time](../concepts/authority.md#roots-chosen-at-run-time).
+
+Paths in operations are
 relative to the explicitly granted root, never to a model-selected working
 directory. An unscoped file grant is refused. No recursive traversal
 operation is provided. A list grant does not imply a read or write grant.
 
 Every path component is opened relative to an already-open directory descriptor
 with symlink following disabled. Absolute child paths, `.` and `..` components,
-symlink traversal (including in the root), and non-regular file reads fail.
+symlink traversal (including in the root), and non-regular file reads fail. A
+symlink is refused as *not authorized*, wherever it points.
 Listings identify symlinks but never follow them. Linux `/proc/self/fd` is used to
 list an already-open directory. This is the current Linux implementation, not a
 portable filesystem sandbox.

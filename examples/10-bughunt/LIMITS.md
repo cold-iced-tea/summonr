@@ -68,6 +68,9 @@ how much they cost the build.
    `setup.sh`/`drill.sh` rewrite `/absolute/path/to/...` placeholders and
    re-inscribe (the same trick example 08 uses). *Proposal:* a root input
    whose value must fall inside a granted root, checked at run time.
+   *Now available:* `on: {root: "${inputs.target}"}` with a grant
+   `--under DIR` (see the book's "Roots chosen at run time"). These
+   examples still use the placeholders until they are migrated.
 10. **`file.list` is not recursive.** Directories to hunt are an input
    list. *Proposal:* `file.walk` with depth and entry bounds.
 11. **The CLI cannot read an input from a file.** A 98-finding list or a

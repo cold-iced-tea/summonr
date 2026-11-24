@@ -276,6 +276,64 @@ pub fn narrow_grants(have: &[Grant], requirements: &[Requirement]) -> Vec<Grant>
     intersect_grants(have, &needs)
 }
 
+/// Reagents whose `root` scope is a directory, so a grant may name a
+/// directory it lies `under` instead of the root itself.
+fn has_directory_roots(reagent: &str) -> bool {
+    matches!(reagent, "file" | "sight")
+}
+
+/// Whether directory `root` is `dir` or lies beneath it. Purely lexical:
+/// both must be absolute with no `.` or `..` parts, so the comparison is of
+/// path components and `/work-other` is not under `/work`. Symlinks are not
+/// resolved here; the file and sight reagents refuse any symlink along a
+/// root when they open it.
+pub fn root_is_under(root: &str, dir: &str) -> bool {
+    let parts = |p: &str| -> Option<Vec<String>> {
+        crate::file_reagent::validate_root(p).ok()?;
+        Some(p.split('/').filter(|x| !x.is_empty()).map(String::from).collect())
+    };
+    match (parts(root), parts(dir)) {
+        (Some(r), Some(d)) => r.starts_with(&d),
+        _ => false,
+    }
+}
+
+/// The resource scope two grants share, or `None` when they do not overlap.
+/// `under` (on file and sight grants) meets `root` when the root lies under
+/// it, and the result names the root: the narrower scope wins.
+fn meet_on(
+    reagent: &str,
+    a: &BTreeMap<String, String>,
+    b: &BTreeMap<String, String>,
+) -> Option<BTreeMap<String, String>> {
+    let mut a = a.clone();
+    let mut b = b.clone();
+    if has_directory_roots(reagent) {
+        let dirs: Vec<String> = [a.remove("under"), b.remove("under")].into_iter().flatten().collect();
+        match a.get("root").or(b.get("root")) {
+            // A root (equal on both sides, checked below) under every directory.
+            Some(r) => {
+                if !dirs.iter().all(|d| root_is_under(r, d)) {
+                    return None;
+                }
+            }
+            // Only directories: the deeper one, if one contains the other.
+            None => {
+                if let Some(deepest) = dirs.iter().find(|d| dirs.iter().all(|o| root_is_under(d, o))) {
+                    a.insert("under".into(), deepest.clone());
+                } else if !dirs.is_empty() {
+                    return None;
+                }
+            }
+        }
+    }
+    if a.iter().any(|(k, v)| b.get(k).is_some_and(|w| w != v)) {
+        return None;
+    }
+    a.extend(b);
+    Some(a)
+}
+
 pub fn intersect_grants(left: &[Grant], right: &[Grant]) -> Vec<Grant> {
     let mut out = Vec::new();
     for a in left {
@@ -293,7 +351,7 @@ pub fn intersect_grants(left: &[Grant], right: &[Grant]) -> Vec<Grant> {
                 result.extend(b.clone());
                 Some(result)
             };
-            if let (Some(on), Some(into)) = (merge(&a.on, &b.on), merge(&a.into, &b.into)) {
+            if let (Some(on), Some(into)) = (meet_on(&a.reagent, &a.on, &b.on), merge(&a.into, &b.into)) {
                 let g = Grant {
                     reagent: a.reagent.clone(),
                     action: a.action.clone(),
@@ -312,13 +370,25 @@ pub fn intersect_grants(left: &[Grant], right: &[Grant]) -> Vec<Grant> {
 impl Grant {
     /// An empty scope on the grant means "any"; otherwise every key the grant
     /// names must match what is needed.
+    ///
+    /// On file and sight grants, `under: DIR` covers a needed `root` that is
+    /// DIR or lies beneath it (see [`root_is_under`]).
     pub fn covers(&self, need: &Grant) -> bool {
         let scope_ok = |have: &BTreeMap<String, String>, want: &BTreeMap<String, String>| {
             have.iter().all(|(k, v)| want.get(k) == Some(v))
         };
+        let on_ok = || {
+            self.on.iter().all(|(k, v)| {
+                if k == "under" && has_directory_roots(&self.reagent) {
+                    want_under(need, v)
+                } else {
+                    need.on.get(k) == Some(v)
+                }
+            })
+        };
         self.reagent == need.reagent
             && self.action == need.action
-            && scope_ok(&self.on, &need.on)
+            && on_ok()
             && scope_ok(&self.into, &need.into)
     }
 
@@ -331,6 +401,15 @@ impl Grant {
             s.push_str(&format!(" into {k}={v}"));
         }
         s
+    }
+}
+
+/// Whether `need` asks for a root under `dir`, or for a directory under it.
+fn want_under(need: &Grant, dir: &str) -> bool {
+    match (need.on.get("root"), need.on.get("under")) {
+        (Some(r), _) => root_is_under(r, dir),
+        (None, Some(d)) => root_is_under(d, dir),
+        (None, None) => false,
     }
 }
 

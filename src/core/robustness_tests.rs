@@ -1943,3 +1943,102 @@ return: {path: "${steps.wt.output.path}"}
     assert_eq!(fin["outcome"], "returned", "{fin}");
     assert_eq!(fin["ran"], json!(["remove"]));
 }
+
+#[test]
+fn a_ritual_points_at_any_project_under_a_granted_directory_and_nowhere_else() {
+    let p = paths();
+    let c = Core::open(p.clone()).unwrap();
+    let base = p.state.parent().unwrap().join("work");
+    let secret = p.state.parent().unwrap().join("secret");
+    for d in ["alpha", "beta", "beta/deep"] {
+        std::fs::create_dir_all(base.join(d)).unwrap();
+    }
+    std::fs::create_dir_all(&secret).unwrap();
+    std::fs::write(base.join("alpha/x.txt"), "alpha").unwrap();
+    std::fs::write(base.join("beta/x.txt"), "beta").unwrap();
+    std::fs::write(base.join("beta/deep/x.txt"), "deep").unwrap();
+    std::fs::write(secret.join("x.txt"), "secret").unwrap();
+    std::os::unix::fs::symlink(&secret, base.join("link")).unwrap();
+    // A symlink inside a project, to a file outside it.
+    std::os::unix::fs::symlink(secret.join("x.txt"), base.join("alpha/escape.txt")).unwrap();
+
+    let child = r#"
+ritual: read-one
+inputs:
+  target: {type: string}
+  path: {type: string, default: x.txt}
+requires:
+  - {reagent: file, action: read_text, on: {root: "${inputs.target}"}}
+essence: {requests: 0, tool_calls: 2}
+steps:
+  - id: read
+    operation: file.read_text
+    arguments: {root: "${inputs.target}", path: "${inputs.path}"}
+return: {text: "${steps.read.output.text}"}
+"#;
+    let parent = r#"
+ritual: scan
+inputs:
+  target: {type: string}
+  path: {type: string, default: x.txt}
+requires:
+  - {reagent: file, action: read_text, on: {root: "${inputs.target}"}}
+essence: {requests: 0, tool_calls: 4}
+steps:
+  - id: direct
+    operation: file.read_text
+    arguments: {root: "${inputs.target}", path: "${inputs.path}"}
+  - id: child
+    ritual: read-one
+    arguments: {target: "${inputs.target}", path: "${inputs.path}"}
+return: {direct: "${steps.direct.output.text}", child: "${steps.child.output.text}"}
+"#;
+    for (name, text) in [("read-one", child), ("scan", parent)] {
+        let f = p.config.join(format!("{name}.yaml"));
+        std::fs::create_dir_all(&p.config).unwrap();
+        std::fs::write(&f, text).unwrap();
+        c.dispatch("inscribe", json!({"path": f.to_str().unwrap()})).unwrap();
+    }
+    let base_s = base.to_str().unwrap().to_string();
+    // A grant under a directory must name an absolute path without dot parts.
+    for bad in ["relative/dir", "/tmp/../etc"] {
+        let err = c
+            .dispatch("grant", json!({"ritual": "scan", "scopes": [{"reagent": "file", "select": ["read_text"]}], "on": {"under": bad}}))
+            .unwrap_err();
+        assert_eq!(err.code, "invalid_invocation", "{bad}: {err:?}");
+    }
+    c.dispatch("grant", json!({"ritual": "scan", "scopes": [{"reagent": "file", "select": ["read_text"]}], "on": {"under": base_s}}))
+        .unwrap();
+
+    let run = |target: &str, path: &str| -> Result<Value, RpcErr> {
+        let id = c.dispatch("invoke", json!({"target": "scan", "args": {"target": target, "path": path}}))?["summon"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        c.dispatch("wait", json!({"summon": id, "timeout_ms": 5000}))
+    };
+    // Any project beneath the granted directory, with no new grant or inscription.
+    for (dir, want) in [("alpha", "alpha"), ("beta", "beta"), ("beta/deep", "deep")] {
+        let done = run(&format!("{base_s}/{dir}"), "x.txt").unwrap();
+        assert_eq!(done["outcome"], "returned", "{dir}: {done}");
+        assert_eq!(done["result"], json!({"direct": want, "child": want}), "{dir}: {done}");
+    }
+    // Outside the directory, a sibling whose name only shares the prefix, and
+    // `..` back out of it are refused before anything runs.
+    let sibling = format!("{base_s}-other");
+    std::fs::create_dir_all(&sibling).unwrap();
+    for target in [secret.to_str().unwrap().to_string(), sibling.clone(), format!("{base_s}/alpha/../../secret"), "relative".to_string()] {
+        let err = run(&target, "x.txt").unwrap_err();
+        assert!(matches!(err.code.as_str(), "not_authorized" | "invalid_invocation"), "{target}: {err:?}");
+    }
+    // A symlink that leads out is refused when the run reaches it: as the root
+    // itself, or as a file inside an allowed project.
+    for (target, path) in [(format!("{base_s}/link"), "x.txt"), (format!("{base_s}/alpha"), "escape.txt")] {
+        let done = run(&target, path).unwrap();
+        assert_eq!(done["outcome"], "failed", "{target}/{path}: {done}");
+        let error = done["error"].as_str().unwrap();
+        assert!(error.contains("not authorized") && error.contains("symlink"), "{target}/{path}: {error}");
+    }
+    drop(c);
+    std::fs::remove_dir_all(p.state.parent().unwrap()).unwrap();
+}

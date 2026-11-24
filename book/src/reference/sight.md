@@ -6,6 +6,8 @@ Select the operation under `reagents`, declare it under `requires` with an absol
 
 ```bash
 summonr allow read-page --from sight --select read_image --on root=/absolute/scans
+# or, for a root taken from an input, any directory beneath one:
+summonr allow read-page --from sight --select read_image --under /absolute/scans
 ```
 
 An unscoped grant is refused.

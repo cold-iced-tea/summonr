@@ -90,9 +90,23 @@ pub(crate) fn open_at(parent: &File, name: &str, directory: bool) -> Result<File
         | if directory { libc::O_DIRECTORY } else { 0 };
     let fd = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), flags) };
     if fd < 0 {
+        let err = std::io::Error::last_os_error();
+        // O_NOFOLLOW reports a symlink as ELOOP, or ENOTDIR when a
+        // directory was asked for. Following it could leave the granted
+        // directory, so it is an authority refusal.
+        let is_symlink = || {
+            let mut st: libc::stat = unsafe { std::mem::zeroed() };
+            let rc = unsafe { libc::fstatat(parent.as_raw_fd(), name.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) };
+            rc == 0 && (st.st_mode & libc::S_IFMT) == libc::S_IFLNK
+        };
+        if matches!(err.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR)) && is_symlink() {
+            return Err(Fail::Denied(format!(
+                "`{}` is a symlink, and symlinks are never followed",
+                name.to_string_lossy()
+            )));
+        }
         return Err(Fail::Failed(format!(
-            "cannot open path component (symlinks forbidden): {}",
-            std::io::Error::last_os_error()
+            "cannot open path component (symlinks forbidden): {err}"
         )));
     }
     Ok(unsafe { File::from_raw_fd(fd) })

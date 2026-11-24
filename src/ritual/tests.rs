@@ -147,6 +147,35 @@ return:
     }
 
     #[test]
+    fn a_grant_under_a_directory_covers_roots_beneath_it_and_narrows_to_them() {
+        let g = |reagent: &str, on: &[(&str, &str)]| Grant {
+            reagent: reagent.into(),
+            action: "read_text".into(),
+            on: on.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            into: BTreeMap::new(),
+        };
+        let under = g("file", &[("under", "/home/u/Work")]);
+        for root in ["/home/u/Work", "/home/u/Work/a", "/home/u/Work/a/b/", "/home/u//Work/a"] {
+            assert!(under.covers(&g("file", &[("root", root)])), "{root}");
+        }
+        for root in ["/home/u/Work-other", "/home/u", "/home/u/Work/../x", "/home/u/Work/./a", "Work/a", "/"] {
+            assert!(!under.covers(&g("file", &[("root", root)])), "{root}");
+        }
+        // Only directory-rooted reagents read `under` as a directory.
+        assert!(!g("http", &[("under", "/home/u/Work")]).covers(&g("http", &[("root", "/home/u/Work/a")])));
+        assert!(g("sight", &[("under", "/p")]).covers(&g("sight", &[("root", "/p/q")])));
+        // Narrowing keeps the exact root, so run-time checks compare roots only.
+        let need = [g("file", &[("root", "/home/u/Work/a")])];
+        assert_eq!(intersect_grants(std::slice::from_ref(&under), &need), need.to_vec());
+        assert!(intersect_grants(std::slice::from_ref(&under), &[g("file", &[("root", "/etc")])]).is_empty());
+        // Two directories meet at the deeper one, or not at all.
+        let deeper = g("file", &[("under", "/home/u/Work/a")]);
+        assert_eq!(intersect_grants(std::slice::from_ref(&under), std::slice::from_ref(&deeper)), vec![deeper.clone()]);
+        assert!(intersect_grants(&[deeper], &[g("file", &[("under", "/home/u/Work/b")])]).is_empty());
+        assert!(root_is_under("/a/b", "/a") && !root_is_under("/ab", "/a") && !root_is_under("/a", "/a/b"));
+    }
+
+    #[test]
     fn object_input_accepts_object() {
         let v = coerce("delivery", &obj_decl(None), &json!({"accept": true})).unwrap();
         assert_eq!(v, json!({"accept": true}));

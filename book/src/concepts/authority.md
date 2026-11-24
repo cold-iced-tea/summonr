@@ -62,6 +62,64 @@ A grant is an atom: one reagent, one action, a resource scope (`on`) and a desti
 
 > **Careful with broad grants.** `summonr allow inbox-triage --from mail --all --on folder=Inbox` is convenient for trying things out, but it grants `move` with no `into` scope: moves from Inbox to *any* folder. For real use, grant `move` separately, with one `into` per destination.
 
+### Roots chosen at run time
+
+A `file` or `sight` requirement can take its root from an input, so one
+inscribed ritual can be pointed at any project:
+
+```yaml
+inputs:
+  target: {type: string}
+requires:
+  - {reagent: file, action: read_text, on: {root: "${inputs.target}"}}
+steps:
+  - id: readme
+    operation: file.read_text
+    arguments: {root: "${inputs.target}", path: README.md}
+```
+
+The owner grants a directory the roots may lie under, instead of one root:
+
+```bash
+summonr allow scan --from file --select read_text --under /home/me/Work
+# same thing:
+summonr grant scan from file selecting read_text on under=/home/me/Work
+```
+
+How it is checked:
+
+1. **Before the run.** `requires` is rendered with the run's inputs, so the
+   requirement above becomes `root=/home/me/Work/alpha`. An `under` grant covers
+   it when the root is the granted directory or lies beneath it. The comparison
+   is by path component: both paths must be absolute with no `.` or `..` parts,
+   so `/home/me/Work/../.ssh` is refused, and `/home/me/Work-old` is not under
+   `/home/me/Work`. A root that no grant covers refuses the run (exit 4), and
+   nothing executes.
+2. **Narrowing.** The run's grants are narrowed to the rendered root. The run
+   holds `read_text` on `root=/home/me/Work/alpha` only, not the whole directory.
+   A step that names any other root, even one under `/home/me/Work`, is refused
+   exactly as with a fixed root. A child ritual's requirements are rendered with
+   the child's own inputs and narrowed again, so a child gets the root it was
+   given, and only if its caller held that root.
+3. **At the call.** The reagent opens the root one component at a time from
+   `/`, refusing to follow a symlink anywhere along the root or the path. A
+   symlink that would lead out of the granted directory is therefore refused as
+   *not authorized* when the run reaches it, and so is one that stays inside.
+   Because every call reopens the path, swapping a directory for a symlink
+   after the check does not help.
+
+Things to know:
+
+- `under` is a separate kind of grant. An existing `--on root=DIR` grant still
+  covers exactly `DIR`, never its subdirectories.
+- Anyone who can run the ritual chooses the root within the granted directory,
+  including a calling agent over MCP. To keep agents on the default, mark the
+  input `user_only` with a default (see [below](#inputs-only-the-user-can-change)).
+- `under` applies to `file` and `sight` only. `http` origins stay exact.
+- What the directory holds is the owner's responsibility, including hard links
+  and mount points (see [scoped file operations](../reference/file.md)).
+- Revoke it with the same scope: `summonr disallow scan --from file --select read_text --under /home/me/Work`.
+
 ### Revoking
 
 ```bash
@@ -72,7 +130,7 @@ A revoke removes grants that match. If you leave out `on` or `into`, it withdraw
 
 ## Child rituals get no more
 
-When a ritual calls another ritual as a step, validation checks that every atom the child requires is covered by the parent's own `requires`. A child can never be a route to more authority than its parent declared.
+When a ritual calls another ritual as a step, validation checks that every atom the child requires is covered by the parent's own `requires`. A child can never be a route to more authority than its parent declared. A root taken from an input is compared as written (`${inputs.target}` in both), and checked again at run time with the values the child was given.
 
 At run time, the whole tree of summons uses the standing grants of the ritual you invoked, and shares one **selection**: a message selected by the parent's search can be read by the child.
 

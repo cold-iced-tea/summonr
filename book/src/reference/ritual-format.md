@@ -80,7 +80,7 @@ requires:
   - {reagent: mail, action: locate}
 ```
 
-`reagents.R.select` lists the tools steps may use. `requires` lists the authority the ritual needs and narrows its execution grants. Pure `data` operations need no external-resource grant. If `reagents` omits a reagent already listed in `requires` (or omits `data`), the compiler derives its `select` list automatically from `requires` and `data.*` steps. Each `into` key maps to one value or a list; a list expands into one requirement per value. See [Authority](../concepts/authority.md).
+`reagents.R.select` lists the tools steps may use. `requires` lists the authority the ritual needs and narrows its execution grants. Pure `data` operations need no external-resource grant. If `reagents` omits a reagent already listed in `requires` (or omits `data`), the compiler derives its `select` list automatically from `requires` and `data.*` steps. Each `into` key maps to one value or a list; a list expands into one requirement per value. Scope values may reference inputs (`on: {root: "${inputs.target}"}`); they are rendered with the run's inputs before grants are checked, and the run is narrowed to the rendered value. A `file` or `sight` root taken from an input is usually granted with `--under DIR` ([roots chosen at run time](../concepts/authority.md#roots-chosen-at-run-time)). See [Authority](../concepts/authority.md).
 
 ## Ergonomic shorthands
 

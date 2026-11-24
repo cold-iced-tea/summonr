@@ -430,6 +430,7 @@ pub const CLAUSES: &[(&str, &str, &str)] = &[
     ),
     ("all", "--all", "Select every tool in the open scope"),
     ("on k=v", "--on k=v", "Resource scope of a permission"),
+    ("on under=DIR", "--under DIR", "File or sight roots anywhere beneath DIR"),
     (
         "into k=v",
         "--into k=v",
@@ -775,6 +776,7 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
                 "select" => "selecting",
                 "all" => "all",
                 "on" => "on",
+                "under" => "under",
                 "into" => "into",
                 "version" => "version",
                 "replace" => "replacement",
@@ -852,6 +854,14 @@ pub fn parse(args: &[String]) -> Result<Op, ParseError> {
             "tsa-ca" => {
                 let v = value(&mut cur, pos, attached, is_flag, "tsa-ca ./ca.pem")?;
                 set_once(&mut op.tsa_ca, v, &cur, pos, "the timestamp CA file")?;
+            }
+            // `--under DIR` is `--on under=DIR`: a file or sight grant for
+            // any root beneath DIR.
+            "under" => {
+                let v = value(&mut cur, pos, attached, is_flag, "--under /home/me/Work")?;
+                if op.on.insert("under".into(), v).is_some() {
+                    return Err(cur.err(pos, "name one directory with `--under`", "--under /home/me/Work"));
+                }
             }
             "via" => {
                 let v = value(&mut cur, pos, attached, is_flag, "via lab")?;
@@ -1312,6 +1322,7 @@ mod tests {
             "allow inbox-rite --from mail --select move --on folder=Inbox --into folder=Receipts",
         ),
         ("grant inbox-rite from mail version 2 all", "allow inbox-rite --from mail --version 2 --all"),
+        ("grant scan from file selecting read_text on under=/home/me/Work", "allow scan --from file --select read_text --under /home/me/Work"),
         ("revoke inbox-rite from mail selecting move", "disallow inbox-rite --from=mail --select=move"),
         ("inscribe ./r.yaml as inbox-rite replacement", "save ./r.yaml --name inbox-rite --replace"),
         ("assay inbox-rite against ./set.yaml baseline", "test inbox-rite --against ./set.yaml --baseline"),
