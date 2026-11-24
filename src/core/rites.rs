@@ -265,13 +265,28 @@ impl Core {
                 self.record_rite_event(&id, "stage_started", json!({"stage": sid, "ritual": st_decl.ritual}));
 
                 // Run the pinned stage ritual through the normal summon executor.
-                let started = self.invoke(json!({
+                let started = match self.invoke(json!({
                     "target": st_decl.ritual,
                     "version": st_decl.version,
                     "expected_hash": st_decl.hash,
                     "args": rendered_args,
                     "cwd": "/",
-                }))?;
+                })) {
+                    Ok(started) => started,
+                    Err(error) => {
+                        self.persisted(self.db.lock().unwrap().execute(
+                            "UPDATE rite_stages SET status='failed', gate_status='rejected', accepted=0 WHERE rite=?1 AND stage=?2",
+                            params![id, sid],
+                        ));
+                        self.record_rite_event(
+                            &id,
+                            "stage_failed",
+                            json!({"stage": sid, "error": error.message}),
+                        );
+                        self.refresh_rite_status(&id)?;
+                        return Err(error);
+                    }
+                };
                 let summon_id = started["summon"].as_str().unwrap_or("").to_string();
                 let ended = self.wait(json!({"summon": summon_id, "timeout_ms": 300_000}))?;
                 let outcome = ended["outcome"].as_str().unwrap_or("failed");
@@ -758,6 +773,25 @@ mod tests {
         std::fs::create_dir_all(&paths.state).unwrap();
         std::fs::create_dir_all(&paths.runtime).unwrap();
         Core::open(paths).unwrap()
+    }
+
+    #[test]
+    fn refused_stage_invocation_does_not_leave_rite_running() {
+        let home = crate::core::test_home::Home::new("{}");
+        home.inscribe_def(json!({
+            "ritual":"requires-text", "inputs":{"text":"string"},
+            "steps":[{"id":"clean","operation":"data.trim","arguments":{"text":"${inputs.text}"}}]
+        }), false);
+        let file = home.path("refused.yaml");
+        std::fs::write(&file, "rite: refused
+stages:
+  - id: stage
+    ritual: requires-text
+").unwrap();
+        assert!(home.call("rite_start", json!({"file":file})).is_err());
+        let record = home.call("rite_show", json!({"rite":"refused"})).unwrap();
+        assert_eq!(record["stages"][0]["status"], "failed");
+        assert_eq!(record["status"], "failed");
     }
 
     #[test]
