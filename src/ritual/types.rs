@@ -177,6 +177,51 @@ impl Ty {
     }
 }
 
+/// The type of `data.coalesce` over a literal list whose elements have
+/// `elems` types. Only the elements up to the first one that cannot be null
+/// can be chosen. If there is such an element the result is not nullable,
+/// and it has the chosen elements' common type (`any` when they disagree).
+/// Otherwise the result is nullable.
+pub(super) fn coalesce_type(elems: &[Ty]) -> Ty {
+    let certain = elems
+        .iter()
+        .position(|t| !matches!(t, Ty::Any | Ty::Null | Ty::Nullable(_)));
+    let reachable = &elems[..certain.map_or(elems.len(), |i| i + 1)];
+    let mut common: Option<Ty> = None;
+    for t in reachable {
+        let t = match t {
+            Ty::Null => continue,
+            Ty::Nullable(inner) => (**inner).clone(),
+            other => other.clone(),
+        };
+        common = Some(match common {
+            None => t,
+            Some(prev) if prev == t => prev,
+            Some(_) => Ty::Any,
+        });
+    }
+    match (certain, common) {
+        (Some(_), Some(t)) => t,
+        (None, Some(t)) => nullable(t),
+        (_, None) if elems.is_empty() => Ty::Any,
+        (_, None) => Ty::Null,
+    }
+}
+
+/// The type of a list with elements of `elems` types: their common type, or
+/// `any` when they disagree.
+pub(super) fn list_of(elems: impl IntoIterator<Item = Ty>) -> Ty {
+    let mut elem: Option<Ty> = None;
+    for t in elems {
+        elem = Some(match elem {
+            None => t,
+            Some(prev) if prev == t => prev,
+            Some(_) => Ty::Any,
+        });
+    }
+    Ty::List(Box::new(elem.unwrap_or(Ty::Any)))
+}
+
 pub(super) fn operation_output_type(
     op: &str,
     args: Option<&BTreeMap<String, Value>>,

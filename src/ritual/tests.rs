@@ -85,6 +85,68 @@ steps:
     }
 
     #[test]
+    fn coalesce_with_a_non_null_element_is_not_nullable() {
+        let none = |_: &str, _: Option<u32>| None;
+        let def = parse_file(
+            r#"
+ritual: r
+inputs:
+  text: {type: string}
+  flag: {type: boolean}
+reagents:
+  data: {select: [index_of, coalesce, range, trim]}
+steps:
+  - id: at
+    operation: data.index_of
+    arguments: {values: ["a", "b"], needle: "${inputs.text}"}
+  - if: inputs.flag
+    then:
+      - id: t
+        operation: data.trim
+        arguments: {text: "${inputs.text}"}
+  - id: pos
+    operation: data.coalesce
+    arguments: {values: ["${steps.at.output}", 0]}
+  - id: name
+    operation: data.coalesce
+    arguments: {values: ["${steps.t.output}", "${inputs.text}", ""]}
+  - id: first
+    operation: data.coalesce
+    arguments: {values: [null, 3, "${steps.t.output}"]}
+  - id: mixed
+    operation: data.coalesce
+    arguments: {values: ["${steps.t.output}", 0]}
+  - id: maybe
+    operation: data.coalesce
+    arguments: {values: ["${steps.at.output}", null]}
+  - id: dynamic
+    operation: data.coalesce
+    arguments: {values: ["${steps.at.output}"]}
+  - id: nums
+    operation: data.range
+    arguments: {start: 0, end: "${steps.pos.output}"}
+return:
+  pos: "${steps.pos.output}"
+  name: "${steps.name.output}"
+  first: "${steps.first.output}"
+  mixed: "${steps.mixed.output}"
+  maybe: "${steps.maybe.output}"
+  dynamic: "${steps.dynamic.output}"
+"#,
+        )
+        .unwrap();
+        let (_, types) = validate_with_return_types_cfg(&def, &none, &crate::util::Config::default(), 3).unwrap();
+        assert_eq!(types["pos"], "integer", "{types:?}");
+        assert_eq!(types["name"], "string", "{types:?}");
+        // Elements after the first certain one can never be chosen.
+        assert_eq!(types["first"], "integer", "{types:?}");
+        // Non-null, but the candidates disagree.
+        assert_eq!(types["mixed"], "any", "{types:?}");
+        assert_eq!(types["maybe"], "nullable integer", "{types:?}");
+        assert_eq!(types["dynamic"], "nullable integer", "{types:?}");
+    }
+
+    #[test]
     fn object_input_accepts_object() {
         let v = coerce("delivery", &obj_decl(None), &json!({"accept": true})).unwrap();
         assert_eq!(v, json!({"accept": true}));

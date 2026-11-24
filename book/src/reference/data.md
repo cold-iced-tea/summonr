@@ -43,7 +43,7 @@ The `data` reagent contains deterministic functions over explicit arguments. It 
 | `data.starts_with` / `data.ends_with` | `text`, `prefix` / `suffix` | Boolean prefix or suffix check. |
 | `data.case` | `text`, `mode` (`lower`, `upper`) | Unicode lowercase or uppercase string. |
 | `data.lines` | `text`, optional integer `number_from` | Array of lines (`\n` or `\r\n`), up to 10,000 lines. With `number_from`, each line is prefixed `N: ` counting from that number, so a model can cite lines. |
-| `data.coalesce` | array `values` | First element that is not `null`, or `null` (so its type is nullable). Picks the output of whichever `if` branch ran. |
+| `data.coalesce` | array `values` | First element that is not `null`, or `null`. Picks the output of whichever `if` branch ran. The result is nullable unless `values` is a literal list with an element that can never be null, such as a trailing `""` or `0`; then it is not nullable, and it has the type the candidates share (see below). |
 | `data.unique_by` | array `values` of objects, string array `fields` (1–100) | The first object for each distinct combination of those fields' values, in input order. A non-object or a missing field fails. Equality as in `data.unique`. |
 | `data.flatten` | array `values` of arrays | The inner arrays concatenated, one level deep; any non-array element fails. At most 10,000 elements. |
 | `data.range` | integers `start`, `end`, optional `step` (≥ 1, default 1) | Integers from `start` up to but not including `end`; empty when `start ≥ end`. More than 10,000 elements fails. |
@@ -52,6 +52,31 @@ The `data` reagent contains deterministic functions over explicit arguments. It 
 `data.assert.condition` is a boolean value or a reference to one; it does not evaluate an expression string. Use `if` for expression-based control flow. All operations reject unknown arguments. Input schema checks apply before execution; the optional schema passed to `parse_json` uses the [supported subset](../guides/validation.md).
 
 Pure results carry the evidence class `computed by the runtime`. This describes their derivation; it does not establish that the input is true or the business rule appropriate. `verify` observations still use read tools: a pure assertion is not an external-state observation.
+
+## A default with `data.coalesce`
+
+A trailing literal turns a value that may be `null` into one that is not, in
+one step:
+
+```yaml
+  - id: at
+    operation: data.index_of          # nullable integer
+    arguments: {values: "${steps.names.output}", needle: "${inputs.name}"}
+  - id: start
+    operation: data.coalesce          # integer: 0 when the name is absent
+    arguments: {values: ["${steps.at.output}", 0]}
+  - id: rest
+    operation: data.range
+    arguments: {start: "${steps.start.output}", end: 10}
+```
+
+The checker reads the literal list's elements in order and stops at the first
+one that can never be `null` (a literal, an input, or an operation
+that always returns a value). Elements after it can never be chosen and do not
+affect the type. If the elements up to it all have the same type, ignoring
+`null`, the result has that type; if they differ (`["${steps.t.output}", 0]`
+with a string `t`), the result is `any`. When `values` is a reference to a
+list, or no element is certain, the result stays nullable.
 
 ## A receipt total without inference
 

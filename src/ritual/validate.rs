@@ -1,7 +1,7 @@
 use super::*;
 use super::template::{scan_template, single_template_ref, TemplatePart};
 use super::inputs::coerce;
-use super::types::{closed_obj, image_handle_type, nullable, operation_output_type};
+use super::types::{closed_obj, coalesce_type, image_handle_type, list_of, nullable, operation_output_type};
 
 type ToolMetaLookup<'a> = &'a dyn Fn(&str, &str) -> Option<crate::reagent::ToolMeta>;
 
@@ -246,16 +246,8 @@ impl V<'_> {
                 }
             },
             Value::Array(a) => {
-                let mut elem: Option<Ty> = None;
-                for x in a {
-                    let xt = self.value_type(x, at);
-                    elem = Some(match elem {
-                        None => xt,
-                        Some(prev) if prev == xt => prev,
-                        Some(_) => Ty::Any,
-                    });
-                }
-                Ty::List(Box::new(elem.unwrap_or(Ty::Any)))
+                let elems: Vec<Ty> = a.iter().map(|x| self.value_type(x, at)).collect();
+                list_of(elems)
             }
             Value::Object(m) => {
                 let mut fields = BTreeMap::new();
@@ -516,13 +508,23 @@ impl V<'_> {
             ));
         }
         let mut arg_types = BTreeMap::new();
+        let mut coalesced = None;
         let schema_opt = crate::reagent::input_schema(op);
         if let Some(args) = &s.arguments {
             for (key, v) in args {
                 if key == "arguments" && matches!(op, "data.map" | "data.fold") {
                     continue;
                 }
-                let actual = self.check_values(v, &format!("step {at}"));
+                let actual = match (op, key.as_str(), v) {
+                    // A literal list keeps each element's type, so a
+                    // trailing `""` or `0` makes the result non-null.
+                    ("data.coalesce", "values", Value::Array(items)) => {
+                        let elems: Vec<Ty> = items.iter().map(|x| self.value_type(x, &format!("step {at}"))).collect();
+                        coalesced = Some(coalesce_type(&elems));
+                        list_of(elems)
+                    }
+                    _ => self.check_values(v, &format!("step {at}")),
+                };
                 if let Some(sub) = schema_opt
                     .as_ref()
                     .and_then(|sc| sc["properties"].get(key))
@@ -738,7 +740,7 @@ impl V<'_> {
             determinism: determinism.into(),
             notes,
         });
-        operation_output_type(op, s.arguments.as_ref(), &arg_types)
+        coalesced.unwrap_or_else(|| operation_output_type(op, s.arguments.as_ref(), &arg_types))
     }
 
     fn check_images(&mut self, images: &Images, at: &str) {
