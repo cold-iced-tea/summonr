@@ -1,5 +1,6 @@
 //! A persistent command client with a live, non-authoritative instrument pane.
 //! Commands are argv, never shell programs. No inference occurs without a command.
+mod path;
 use crate::{
     grammar,
     outcome::Outcome,
@@ -137,6 +138,7 @@ struct Pending {
     rx: Receiver<Result<Reply, String>>,
 }
 struct App {
+    path: Option<path::View>,
     machine: String,
     opened: Instant,
     held: Vec<Held>,
@@ -215,6 +217,7 @@ fn clean(s: &str) -> String {
 impl App {
     fn new() -> Self {
         let mut app = Self {
+            path: None,
             machine: std::fs::read_to_string("/proc/sys/kernel/hostname")
                 .map(|s| clean(s.trim()))
                 .unwrap_or_else(|_| "localhost".into()),
@@ -597,6 +600,22 @@ impl App {
         self.cursor = self.input.len();
     }
     fn key(&mut self, key: KeyCode, mods: KeyModifiers, paths: &Paths) -> bool {
+        if let Some(view) = &mut self.path {
+            match key {
+                KeyCode::Esc | KeyCode::F(7) => self.path = None,
+                KeyCode::Char('r') => *view = path::View::open(paths, view.id.clone()),
+                _ => view.key(key),
+            }
+            return false;
+        }
+        if key == KeyCode::F(7) {
+            if let Some(id) = self.focus.clone().or_else(|| self.selected.as_ref().map(|r| r.id.clone())) {
+                self.path = Some(path::View::open(paths, id));
+            } else {
+                self.append(Ink::Dim, "Select a run to inspect its execution path.");
+            }
+            return false;
+        }
         if mods.contains(KeyModifiers::CONTROL) {
             match key {
                 KeyCode::Char('d') if self.input.is_empty() => return true,
@@ -648,7 +667,7 @@ impl App {
             },
             KeyCode::F(5)=>{self.detail = !self.detail;self.show_diagram=false;self.side_visible=true;self.side_scroll=0;},
             KeyCode::F(4)=>self.side_visible = !self.side_visible,
-            KeyCode::F(1)=>self.append(Ink::Dim,"Commands: rituals, run NAME, record ID, job status NAME, inspect NAME. F2 status/plan; F3 pins next run; follow resumes automatic selection; F4 panels; F5 run details; F6 petitions; Esc closes petition; Alt-PgUp/Dn sidebar scroll; PgUp/Dn transcript; arrows edit/history; Ctrl-L clear; Ctrl-C clear input; exit or Ctrl-D leave. Accepted daemon work continues."),
+            KeyCode::F(1)=>self.append(Ink::Dim,"Commands: rituals, run NAME, record ID, job status NAME, inspect NAME. F2 status/plan; F3 pins next run; follow resumes automatic selection; F4 panels; F5 run details; F6 petitions; F7 execution path; Esc closes petition; Alt-PgUp/Dn sidebar scroll; PgUp/Dn transcript; arrows edit/history; Ctrl-L clear; Ctrl-C clear input; exit or Ctrl-D leave. Accepted daemon work continues."),
             _=>{},
         }
         false
@@ -1313,6 +1332,10 @@ fn draw(f: &mut Frame, app: &mut App) {
         );
         return;
     }
+    if let Some(view) = &mut app.path {
+        view.draw(f, area);
+        return;
+    }
     let rows = Layout::vertical([
         Constraint::Length(2),
         Constraint::Min(8),
@@ -1414,7 +1437,7 @@ fn draw(f: &mut Frame, app: &mut App) {
     f.render_widget(
         Paragraph::new(line(
             Ink::Dim,
-            " F1 help   F2 plan   F3 next run   F4 panels   F5 details   F6 petitions",
+            " F1 help  F2 plan  F3 next run  F4 panels  F5 details  F6 petitions  F7 path",
         )),
         rows[2],
     );
@@ -1455,7 +1478,7 @@ pub fn run(paths: &Paths) -> Result<(), RpcErr> {
                             return Ok(());
                         }
                     }
-                    Event::Paste(text) => {
+                    Event::Paste(text) if app.path.is_none() => {
                         let text = clean(&text);
                         if app.input.len() + text.len() <= 32768 {
                             app.input.insert_str(app.cursor, &text);

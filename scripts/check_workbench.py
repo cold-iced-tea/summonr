@@ -17,7 +17,9 @@ BINARY = ROOT / 'target/debug/summonr'
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--capture", type=Path, help="save the 80x24 petition frame with terminal colours")
-    capture = parser.parse_args().capture
+    parser.add_argument("--path-capture", type=Path, help="save the execution path frame with terminal colours")
+    options = parser.parse_args()
+    capture = options.capture
     with tempfile.TemporaryDirectory(prefix='summonr-workbench-check-') as tmp:
         env = dict(os.environ, SUMMONR_HOME=tmp)
         env.pop('NO_COLOR', None)
@@ -68,6 +70,16 @@ def main():
             cli('save', str(ROOT / 'examples/10-bughunt/batch-ready.yaml'))
             send("""run bughunt-batch-ready --arg 'output={"pass":true}' --wait""")
             wait_for('bughunt-batch-ready', 'returned', 'data.get')
+            send('''run bughunt-batch-ready --arg 'output={"pass":false}' --wait''')
+            wait_for('"pass": false', '[2] exit 0')
+            gate = cli('history')[0]['id']
+            send('scry '+gate)
+            tmux('send-keys', '-t', 'work', 'F7')
+            wait_for('Execution path', 'bughunt-batch-ready v1', 'ready  data.get', 'result  {"pass":false}')
+            tmux('send-keys', '-t', 'work', 'Home')
+            wait_for('Evidence / ready', 'op  data.get')
+            tmux('send-keys', '-t', 'work', 'Escape')
+            send('follow')
             tmux('send-keys', '-t', 'work', '-l', 'inspect bug')
             wait_for('> inspect bug')
             draft_cursor = tmux('display-message', '-p', '-t', 'work', '#{cursor_x},#{cursor_y}')
@@ -88,6 +100,17 @@ def main():
             screen = wait_for('bughunt-batch-ready','publish-digest','Waiting for you','digest.md','inspect bug')
             assert len(screen.splitlines()) == 24
             assert draft_cursor == tmux('display-message', '-p', '-t', 'work', '#{cursor_x},#{cursor_y}')
+            # Reinscribe a changed plan while the original run stays selected.
+            definition['steps'].insert(0, {'id':'later_revision','operation':'data.trim','arguments':{'text':'v2'}})
+            path.write_text(json.dumps(definition))
+            cli('save', str(path), '--replace')
+            tmux('send-keys', '-t', 'work', 'F7')
+            view = wait_for('Execution path', 'publish-digest v1','held for review','Run outcome','returned','digest.md')
+            assert 'later_revision' not in view
+            if options.path_capture:
+                options.path_capture.write_text(tmux('capture-pane', '-e', '-p', '-t', 'work'))
+            tmux('send-keys', '-t', 'work', 'Escape')
+            wait_for('> inspect bug')
             print(screen)
             tmux('send-keys', '-t', 'work', 'F6')
             wait_for('Petition','petition list','digest.md','inspect bug')
@@ -148,6 +171,26 @@ def main():
             assert cli('record', waiting)['cancellation_requested'] is True
             release.set()
             wait_for('ready', 'cancelled')
+            # A failed step before a gate leaves the gate without evidence.
+            interrupted = {
+                'ritual': 'before-gate',
+                'steps': [
+                    {'if': 'false', 'then': [{'id':'unused','operation':'data.trim','arguments':{'text':'skip'}}],
+                     'else': [{'id':'prepare','operation':'data.trim','arguments':{'text':'bad json'}}]},
+                    {'id':'parse','operation':'data.parse_json','arguments':{'text':'${steps.prepare.output}'}},
+                    {'id':'gate','operation':'data.get','arguments':{'value':'${steps.parse.output}','path':'/pass'}}],
+                'return': {'pass':'${steps.gate.output}'},
+            }
+            path.write_text(json.dumps(interrupted))
+            cli('save', str(path))
+            stopped = cli('run', 'before-gate')['summon']
+            send('scry '+stopped)
+            wait_for('before-gate', stopped)
+            tmux('send-keys', '-t', 'work', 'F7')
+            wait_for('Evidence / parse', 'step.error', 'else taken / then skipped')
+            tmux('send-keys', '-t', 'work', 'Down')
+            wait_for('Evidence / gate', 'No recorded evidence')
+            tmux('send-keys', '-t', 'work', 'Escape')
             send('core stop')
             wait_for('DISCONNECTED')
             assert cli('core', 'status')['running'] is False
@@ -164,7 +207,7 @@ def main():
                 raise AssertionError('exit did not close workbench')
             assert 'pid' in cli('core', 'status'), 'closing workbench stopped the core'
             history = cli('history')
-            assert len(history) == 6 and all(r['requests'] == 0 for r in history)
+            assert len(history) == 8 and all(r['requests'] == 0 for r in history)
             print('PASS: real tmux workbench, readable output, wait timeout, invalid selection feedback, auto-follow, eight waits plus reserved stop, STOPPING, reconnect, daemon survives exit')
         finally:
             release.set()

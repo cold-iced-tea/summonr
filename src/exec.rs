@@ -674,6 +674,7 @@ impl Run {
             match attempt(self, scope) {
                 Ok(res) => return Ok(res),
                 Err(f @ (Fail::Exhausted(_) | Fail::Cancelled | Fail::Denied(_))) => {
+                    self.emit_light("step.error", format!("{sid}: {}", f.message()), json!({"step":sid}));
                     return Err(f);
                 }
                 Err(f @ (Fail::Failed(_) | Fail::Unverified(_) | Fail::Invalid(_))) => {
@@ -703,6 +704,7 @@ impl Run {
                             .unwrap_or(Value::Null);
                         return Ok((last_out, frame.abstained));
                     }
+                    self.emit_light("step.error", format!("{sid}: {}", f.message()), json!({"step":sid}));
                     return Err(f);
                 }
             }
@@ -740,7 +742,7 @@ impl Run {
                 Step::Operation(s) => {
                     let mut direct = false;
                     let (out, abstained) = self.run_with_recovery(
-                        &id,
+                        s.id.as_deref().unwrap_or(&s.operation),
                         s.retry,
                         &s.fallback,
                         scope,
@@ -763,7 +765,7 @@ impl Run {
                 }
                 Step::Model(s) => {
                     let (out, abstained) = self.run_with_recovery(
-                        &id,
+                        s.id.as_deref().unwrap_or("model"),
                         s.retry,
                         &s.fallback,
                         scope,
@@ -807,6 +809,11 @@ impl Run {
                         .map_err(Fail::Failed)?
                         .as_bool()
                         .ok_or_else(|| Fail::Failed("a condition must be boolean".into()))?;
+                    self.emit_light(
+                        if taken { "branch.then" } else { "branch.else" },
+                        format!("{} = {taken}; {} selected", s.condition_source, if taken { "then" } else { "else" }),
+                        json!({"step": s.id.as_ref().unwrap_or(&s.condition_source), "taken": taken}),
+                    );
                     let (run, skip) = if taken {
                         (&s.then, &s.otherwise)
                     } else {
@@ -973,7 +980,7 @@ impl Run {
             self.emit(
                 "held",
                 format!("{op} {} held as petition {pid}", brief(&args)),
-                json!({"petition": pid, "operation": op, "arguments": args,"state":"held"}),
+                json!({"step": sid, "petition": pid, "operation": op, "arguments": args,"state":"held"}),
             );
             scope
                 .frames
@@ -1447,7 +1454,7 @@ impl Run {
                 self.emit(
                     "model.error",
                     format!("{sid}: {e}"),
-                    json!({"model": model}),
+                    json!({"step": sid, "model": model}),
                 );
                 self.check_live().err().unwrap_or_else(|| chat_failure(sid, &e))
             })?;
@@ -1608,7 +1615,7 @@ impl Run {
         self.emit_light(
             "child",
             format!("{sid}: called {name} v{version} as {child_id}"),
-            json!({"summon": child_id, "ritual": name, "version": version}),
+            json!({"step": sid, "summon": child_id, "ritual": name, "version": version}),
         );
         let mut meters = vec![Arc::new(Meter::new(&def.essence))];
         meters.extend(self.meters.iter().cloned());

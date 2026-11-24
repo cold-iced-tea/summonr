@@ -32,6 +32,21 @@ F6 opens the next pending petition in the run area. Esc closes that view.
 Use `petition list` for the full request and the normal petition commands to
 decide it. Incoming updates preserve the text and cursor at the prompt.
 
+## Execution path
+
+Press F7 on a selected run to open its execution path. Summonr reads the saved
+ritual version, verifies its hash against the run, and shows the compiled steps
+beside their recorded activity. Up and Down select a row. The evidence pane shows
+its eight most recent entries, newest first. Page Up and Page Down scroll the evidence.
+Press `r` to refresh the snapshot or Esc to return to your draft.
+
+A pending write opens on its petition, including the operation, arguments, and
+petition ID. A returned run opens on the recorded result. For other outcomes the
+view starts at the last observed event and keeps the error in the outcome row.
+Branch rows show the latest recorded decision. Older runs may have no branch
+events. Rows without evidence have a blank status. Events with ambiguous or
+missing step IDs remain in the run ledger.
+
 ## Run details
 
 F5 switches between the board and the detailed instrument.
@@ -70,6 +85,7 @@ and live status. Opening or inspecting the interface performs no inference.
 | `F2` | Switch status / ritual plan |
 | `F3` | Select the next run |
 | `F4` | Show or hide the panels |
+| `F7` | Open the selected run’s execution path |
 | `F5` | Switch board / run details |
 | `F6` / `Esc` | Review the next petition / close review |
 | `PageUp` / `PageDown` | Scroll the transcript |
