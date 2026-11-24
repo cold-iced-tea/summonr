@@ -1,0 +1,11 @@
+ritual: court-probe
+description: Measure the target alone twice at the pinned head.
+requires: [{reagent: cmd, action: write}]
+essence: {requests: 0, time: 5m}
+steps:
+  - id: probe
+    operation: cmd.write
+    arguments: {command: court-probe}
+return:
+  plan: "${steps.probe.output.json.plan}"
+  evidence: "${steps.probe.output.json}"

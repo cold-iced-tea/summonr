@@ -648,7 +648,7 @@ impl Core {
             .collect::<Result<_, _>>()
             .map_err(sql)?;
 
-        Ok(json!({
+        let mut view = json!({
             "id": id,
             "name": def.rite,
             "description": def.description,
@@ -656,7 +656,11 @@ impl Core {
             "inputs": inputs,
             "assumptions": assumptions,
             "stages": ordered_stages,
-        }))
+        });
+        if let Some(window) = def.window {
+            view["window"] = json!(window);
+        }
+        Ok(view)
     }
 
     pub(super) fn rite_events(&self, p: Value) -> Result<Value, RpcErr> {
@@ -757,6 +761,63 @@ mod tests {
     }
 
     #[test]
+    fn local_test_lab_rites_produce_receipts() {
+        use std::process::Command;
+
+        let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/11-test-lab");
+        let home = std::env::temp_dir().join(new_id("summonr-test-lab"));
+        let setup = Command::new("python3")
+            .arg("-B")
+            .arg(example.join("prepare.py"))
+            .arg(&home)
+            .arg("--configure-only")
+            .status()
+            .unwrap();
+        assert!(setup.success());
+        let core = test_core(&home);
+        for (name, effect) in [
+            ("court-probe", "write"),
+            ("court-hearing", "write"),
+            ("report-draft", "read"),
+            ("report-verify", "write"),
+        ] {
+            core.dispatch("inscribe", json!({"path":example.join("rituals").join(format!("{name}.yaml"))})).unwrap();
+            core.dispatch("grant", json!({"ritual":name,"scopes":[{"reagent":"cmd","select":[effect]}]})).unwrap();
+        }
+        for (rite, expected, count) in [
+            ("flake-court", "order_sensitivity_on_both_revisions", 8),
+            ("report-to-test", "verified_fix", 2),
+        ] {
+            let run = core.dispatch("rite_start", json!({"file":example.join(format!("{rite}.rite.yaml"))})).unwrap();
+            let stages = run["stages"].as_array().unwrap();
+            assert_eq!(stages[1]["output"]["verdict"], expected, "{run}");
+            let receipt = home.join("receipt.json");
+            std::fs::write(&receipt, json!({"ok":true,"data":run}).to_string()).unwrap();
+            let export = Command::new("python3")
+                .arg(example.join("receipt.py"))
+                .stdin(std::fs::File::open(receipt).unwrap())
+                .output()
+                .unwrap();
+            assert!(export.status.success(), "{}", String::from_utf8_lossy(&export.stderr));
+            let lines = String::from_utf8(export.stdout).unwrap();
+            assert_eq!(lines.lines().count(), count);
+            for line in lines.lines() {
+                let row: Value = serde_json::from_str(line).unwrap();
+                assert_eq!(row["rite_id"], run["id"]);
+                assert_eq!(row["verdict"], expected);
+            }
+            if rite == "report-to-test" {
+                let patch = home.join("draft.patch");
+                std::fs::write(&patch, stages[1]["output"]["patch"].as_str().unwrap()).unwrap();
+                assert!(Command::new("git").args(["apply", "--check"]).arg(patch)
+                    .current_dir(home.join("fixture")).status().unwrap().success());
+            }
+        }
+        drop(core);
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
     fn rite_gates_and_assumption_reopening() {
         let tmp = std::env::temp_dir().join(format!("summonr-rite-test-{}", new_id("t")));
         std::fs::create_dir_all(&tmp).unwrap();
@@ -784,6 +845,7 @@ mod tests {
             &rite_file,
             r#"
 rite: release-prep
+window: {title: Release desk, by: release-team}
 inputs:
   msg: {type: string}
 assumptions:
@@ -814,6 +876,7 @@ stages:
         let started = core
             .rite_start(json!({"file": rite_file.to_str().unwrap(), "args": {"msg": "  hi  "}}))
             .unwrap();
+        assert_eq!(started["window"]["title"], "Release desk");
         let rite_id = started["id"].as_str().unwrap().to_string();
         // s1 completed & accepted by touchstone; s2 completed & waiting on owner petition; s3 still pending.
         let stages = started["stages"].as_array().unwrap();

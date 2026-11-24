@@ -16,6 +16,8 @@ Summonr separates judgment from execution at the runtime boundary. Every agent c
 
 ---
 
+The optional [GPUI desktop client](desktop/README.md) opens independent windows for rituals and rites. Authors can give a window its own masthead, accent, title, and handle.
+
 ## Quick start
 
 Run from the repository root with Rust (1.87+) and Git installed:

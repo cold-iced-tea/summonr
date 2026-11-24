@@ -26,6 +26,8 @@ pub struct Ritual {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<Value>,
     pub ritual: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<crate::window_design::WindowDesign>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
     #[serde(default)]

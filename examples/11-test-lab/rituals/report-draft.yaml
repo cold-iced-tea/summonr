@@ -1,0 +1,12 @@
+ritual: report-draft
+description: Generate an inspectable Python unittest patch from a structured report.
+requires: [{reagent: cmd, action: read}]
+essence: {requests: 0, time: 10s}
+steps:
+  - id: draft
+    operation: cmd.read
+    arguments: {command: report-draft}
+return:
+  patch: "${steps.draft.output.json.patch}"
+  sha256: "${steps.draft.output.json.sha256}"
+  report: "${steps.draft.output.json.report}"

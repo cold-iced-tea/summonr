@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -eu
+repo=$(cd "$(dirname "$0")/.." && pwd)
+if [[ -z ${SUMMONR_BIN:-} ]]; then
+    cargo build --locked --manifest-path "$repo/Cargo.toml"
+    export SUMMONR_BIN="${CARGO_TARGET_DIR:-$repo/target}/debug/summonr"
+fi
+exec cargo run --locked --manifest-path "$repo/desktop/Cargo.toml"

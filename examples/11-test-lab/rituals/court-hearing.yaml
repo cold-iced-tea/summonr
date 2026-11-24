@@ -1,0 +1,13 @@
+ritual: court-hearing
+description: Use the probe to select the next condition and return the full receipt.
+inputs: {probe: object}
+requires: [{reagent: cmd, action: write}]
+essence: {requests: 0, time: 15m}
+steps:
+  - id: compare
+    operation: cmd.write
+    arguments: {command: court-hearing, params: {plan: "${inputs.probe.plan}"}}
+return:
+  verdict: "${steps.compare.output.json.verdict}"
+  probe: "${inputs.probe.evidence}"
+  comparison: "${steps.compare.output.json}"

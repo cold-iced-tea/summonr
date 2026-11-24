@@ -1,0 +1,12 @@
+rite: report-to-test
+description: Turn a worked example in a report into a regression test, and judge the exact patch against the parent and fixed revisions.
+window:
+  title: Report to Test
+  accent: "#B39CC5"
+stages:
+  - id: draft
+    ritual: report-draft
+  - id: verify
+    ritual: report-verify
+    after: [draft]
+    inputs: {draft: "${stages.draft.output}"}

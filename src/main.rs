@@ -2,6 +2,8 @@
 //! capabilities. One binary: `summonr core` is the persistent core, and
 //! every other command is a thin client of its socket.
 
+mod window_design;
+mod ipc_frame;
 mod backend;
 mod cancel;
 mod cancellable_http;

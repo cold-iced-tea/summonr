@@ -1,5 +1,15 @@
 language_version: 1
 ritual: bughunt-batch-ready
+window:
+  title: Bughunt / Batch gate
+  accent: "#E9A879"
+  masthead:
+    - '      ╲  ╱'
+    - '   ╲ ▄██▄ ╱'
+    - '  ──██││██──'
+    - '   ╱██││██╲'
+    - '  ╱  ▀██▀  ╲'
+
 description: Touchstone gate for the bughunt rite; passes when gather says the batch is big enough.
 inputs:
   output: object

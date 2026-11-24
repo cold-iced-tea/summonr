@@ -5,3 +5,4 @@ book/build/
 __pycache__/
 *.py[cod]
 *.egg-info/
+/desktop/target/

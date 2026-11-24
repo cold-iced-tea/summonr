@@ -1,0 +1,14 @@
+ritual: report-verify
+description: Check the drafted comparison against both revisions, separating assertion failures from broken setups.
+inputs: {draft: object}
+requires: [{reagent: cmd, action: write}]
+essence: {requests: 0, time: 5m}
+steps:
+  - id: verify
+    operation: cmd.write
+    arguments: {command: report-verify, params: {digest: "${inputs.draft.sha256}"}}
+return:
+  verdict: "${steps.verify.output.json.verdict}"
+  evidence: "${steps.verify.output.json}"
+  report: "${inputs.draft.report}"
+  patch: "${inputs.draft.patch}"

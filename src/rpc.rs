@@ -2,37 +2,11 @@
 
 use crate::util::Paths;
 use serde_json::{json, Value};
-use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::time::{Duration, Instant};
 
-const MAX_FRAME: usize = 64 * 1024 * 1024;
-
-pub fn write_frame(s: &mut UnixStream, v: &Value) -> std::io::Result<()> {
-    let body = serde_json::to_vec(v)?;
-    s.write_all(&(body.len() as u32).to_be_bytes())?;
-    s.write_all(&body)?;
-    s.flush()
-}
-
-pub fn read_frame(s: &mut UnixStream) -> std::io::Result<Option<Value>> {
-    let mut len = [0u8; 4];
-    match s.read_exact(&mut len) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => return Err(e),
-    }
-    let n = u32::from_be_bytes(len) as usize;
-    if n > MAX_FRAME {
-        return Err(std::io::Error::other("frame too large"));
-    }
-    let mut body = vec![0u8; n];
-    s.read_exact(&mut body)?;
-    serde_json::from_slice(&body)
-        .map(Some)
-        .map_err(std::io::Error::other)
-}
+pub use crate::ipc_frame::{read_frame, write_frame};
 
 /// A failure with a stable code and the process exit code a CLI should use.
 #[derive(Debug, Clone)]

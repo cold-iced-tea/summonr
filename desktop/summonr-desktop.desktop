@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Summonr
+Comment=Open the Summonr console and run windows
+Exec=summonr-desktop
+Terminal=false
+Categories=Development;
+StartupWMClass=summonr-desktop

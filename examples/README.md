@@ -13,6 +13,7 @@ Runnable rituals for the "Learn by example" chapters of the Summonr Book (`book/
 | `07-pacts` | Two-core buyer/supplier contract with pinned ritual, approval threshold, and acceptance check |
 | `08-sight` | An image read in code, then shown to a vision model; the drill scripts the reply so no vision model is needed |
 | `09-redact-document` | Active boundary enforcement: scoped file roots, `user_only` petition hold, post-write `file.stat` verify, and `audit verify` |
+| [11-test-lab](11-test-lab/README.md) | Flake Court and Report to Test: adaptive reruns, regression patches, and per-execution JSONL receipts |
 
 Setup, from the repository root:
 

@@ -2,6 +2,16 @@
 # gated on batch size, then the test stage. Rites cannot take a variable
 # number of stages, so the angles are fixed here (inputs can retarget them).
 rite: bughunt
+window:
+  layout: sidebar
+  title: Bughunt / Field notes
+  accent: "#E9A879"
+  masthead:
+    - '      ╲  ╱'
+    - '   ╲ ▄██▄ ╱'
+    - '  ──██││██──'
+    - '   ╱██││██╲'
+    - '  ╱  ▀██▀  ╲'
 description: Hunt from three angles, gather when the batch is big enough, then try to prove each finding.
 inputs:
   dirs: {type: list, default: [src]}

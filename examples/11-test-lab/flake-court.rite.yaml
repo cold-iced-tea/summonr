@@ -1,0 +1,12 @@
+rite: flake-court
+description: Spend at most eight unittest suite invocations distinguishing order effects, isolated failures and revision differences.
+window:
+  title: Flake Court
+  accent: "#DCB887"
+stages:
+  - id: probe
+    ritual: court-probe
+  - id: hearing
+    ritual: court-hearing
+    after: [probe]
+    inputs: {probe: "${stages.probe.output}"}

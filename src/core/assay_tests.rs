@@ -341,3 +341,18 @@ fn assay_compare_accepts_saved_series_ids() {
     assert_eq!(cmp["unmatched_a"], 0, "{cmp}");
     assert_eq!(cmp["unmatched_b"], 0, "{cmp}");
 }
+
+#[test]
+fn laboratory_batch_gate_example_scores_the_two_cases() {
+    let h = Home::new("{}");
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/10-bughunt");
+    h.inscribe(&examples.join("batch-ready.yaml"), false);
+    let report = h.call("assay", json!({
+        "ritual": "bughunt-batch-ready",
+        "against": examples.join("batch-ready.assay.yaml"),
+        "live": false
+    })).unwrap();
+    assert_eq!(report["account"]["correct"], 2, "{report}");
+    assert_eq!(report["trials"][0]["got"]["pass"], true);
+    assert_eq!(report["trials"][1]["got"]["pass"], false);
+}
