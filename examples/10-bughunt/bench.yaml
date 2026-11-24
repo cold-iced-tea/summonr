@@ -5,25 +5,27 @@ description: >-
   set in the lab's benchmark folder, then report recall and noise. Large inputs never cross the command
   line: the gold set is read from a file.
 inputs:
+  root: {type: string, default: /absolute/path/to/target}
+  benchmark_root: {type: string, default: /absolute/path/to/lab/benchmark}
   dirs: {type: list, default: [src]}
   angles: list
   gold: {type: string, default: gold.json}
 requires:
-  - {reagent: file, action: walk, on: {root: /absolute/path/to/target}}
-  - {reagent: file, action: read_text, on: {root: /absolute/path/to/target}}
-  - {reagent: file, action: read_json, on: {root: /absolute/path/to/lab/benchmark}}
+  - {reagent: file, action: walk, on: {root: "${inputs.root}"}}
+  - {reagent: file, action: read_text, on: {root: "${inputs.root}"}}
+  - {reagent: file, action: read_json, on: {root: "${inputs.benchmark_root}"}}
 essence: {requests: 1500, time: 6h}
 steps:
   - id: gold
     operation: file.read_json
-    arguments: {root: /absolute/path/to/lab/benchmark, path: "${inputs.gold}"}
+    arguments: {root: "${inputs.benchmark_root}", path: "${inputs.gold}"}
   - id: per_angle
     each: angle in inputs.angles
     on_failure: continue
     steps:
       - id: hunt
         ritual: bughunt-hunt
-        arguments: {dirs: "${inputs.dirs}", angle: "${angle}"}
+        arguments: {root: "${inputs.root}", dirs: "${inputs.dirs}", angle: "${angle}"}
   - id: hunts_ok
     operation: data.filter
     arguments: {values: "${steps.per_angle.output}", predicate: 'item.status == "returned"'}

@@ -5,13 +5,14 @@ description: >-
   scan each file chunk by chunk, and ask a small model for bugs or ways around
   the system from one angle. Read-only.
 inputs:
+  root: {type: string, default: /absolute/path/to/target}
   dirs: {type: list, default: [src]}
   angle: string
   ext: {type: string, default: ".rs"}
   chunk: {type: integer, default: 150, min: 1, max: 2000}
 requires:
-  - {reagent: file, action: walk, on: {root: /absolute/path/to/target}}
-  - {reagent: file, action: read_text, on: {root: /absolute/path/to/target}}
+  - {reagent: file, action: walk, on: {root: "${inputs.root}"}}
+  - {reagent: file, action: read_text, on: {root: "${inputs.root}"}}
 essence: {requests: 400, time: 3h}
 steps:
   - id: per_dir
@@ -20,7 +21,7 @@ steps:
     steps:
       - id: listing
         operation: file.walk
-        arguments: {root: /absolute/path/to/target, path: "${dir}", ext: "${inputs.ext}"}
+        arguments: {root: "${inputs.root}", path: "${dir}", ext: "${inputs.ext}"}
       # An unreadable file (not UTF-8, over 1 MiB) is skipped, not fatal.
       - id: per_file
         each: file_path in steps.listing.output.paths
@@ -29,7 +30,7 @@ steps:
         steps:
           - id: scanned
             ritual: bughunt-scan-file
-            arguments: {path: "${file_path}", angle: "${inputs.angle}", chunk: "${inputs.chunk}"}
+            arguments: {root: "${inputs.root}", path: "${file_path}", angle: "${inputs.angle}", chunk: "${inputs.chunk}"}
       - id: files_ok
         operation: data.filter
         arguments: {values: "${steps.per_file.output}", predicate: 'item.status == "returned"'}

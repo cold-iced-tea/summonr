@@ -5,18 +5,19 @@ description: >-
   a gold set, both in the lab's benchmark folder. For re-scoring without
   re-running the model.
 inputs:
+  benchmark_root: {type: string, default: /absolute/path/to/lab/benchmark}
   hunts: {type: string, default: hunts.json}
   gold: {type: string, default: gold.json}
 requires:
-  - {reagent: file, action: read_json, on: {root: /absolute/path/to/lab/benchmark}}
+  - {reagent: file, action: read_json, on: {root: "${inputs.benchmark_root}"}}
 essence: {requests: 0, time: 1h}
 steps:
   - id: saved
     operation: file.read_json
-    arguments: {root: /absolute/path/to/lab/benchmark, path: "${inputs.hunts}"}
+    arguments: {root: "${inputs.benchmark_root}", path: "${inputs.hunts}"}
   - id: gold
     operation: file.read_json
-    arguments: {root: /absolute/path/to/lab/benchmark, path: "${inputs.gold}"}
+    arguments: {root: "${inputs.benchmark_root}", path: "${inputs.gold}"}
   - id: all_findings
     operation: data.fold
     arguments:

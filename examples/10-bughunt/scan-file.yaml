@@ -5,6 +5,7 @@ description: >-
   around the system from one angle. Returns only findings, so file text never
   leaves this summon. Uses data.index_of, data.range, and each keep:.
 inputs:
+  root: {type: string, default: /absolute/path/to/target}
   path: string
   angle: string
   # Chunks starting at or after this line are test code and are not scanned
@@ -17,7 +18,7 @@ model: ollama/hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M
 # higher recall and real bug diagnosis).
 settings: {temperature: 0, num_ctx: 16384, num_predict: 4096}
 requires:
-  - {reagent: file, action: read_text, on: {root: /absolute/path/to/target}}
+  - {reagent: file, action: read_text, on: {root: "${inputs.root}"}}
 essence: {requests: 40, time: 30m}
 defs:
   finding:
@@ -34,7 +35,7 @@ defs:
 steps:
   - id: source
     operation: file.read_text
-    arguments: {root: /absolute/path/to/target, path: "${inputs.path}"}
+    arguments: {root: "${inputs.root}", path: "${inputs.path}"}
   - id: lines
     operation: data.lines
     arguments: {text: "${steps.source.output.text}"}
