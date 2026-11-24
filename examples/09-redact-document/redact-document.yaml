@@ -1,59 +1,37 @@
+language_version: 1
 ritual: redact-document
+description: Copy one document from an intake directory to an output directory with its account identifiers masked, holding the write for review.
+window: {title: Redaction desk, accent: "#9c3d2e"}
 inputs:
-  path:
-    type: string
-  hold:
-    type: boolean
-    default: true
-    user_only: true
-essence:
-  requests: 0
-  time: 1m
+  intake: {type: string}
+  out: {type: string}
+  path: {type: string}
+  hold: {type: boolean, default: true, user_only: true}
+# Each root comes from an input; the owner grants the directories they may lie
+# under (`allow --under`), and the run holds only the roots it was given.
 requires:
-  - reagent: file
-    action: read_text
-    on:
-      root: /absolute/path/to/intake
-  - reagent: file
-    action: write_text
-    on:
-      root: /absolute/path/to/redacted
-  - reagent: file
-    action: stat
-    on:
-      root: /absolute/path/to/redacted
+  - {reagent: file, action: read_text, on: {root: "${inputs.intake}"}}
+  - {reagent: file, action: write_text, on: {root: "${inputs.out}"}}
+  - {reagent: file, action: stat, on: {root: "${inputs.out}"}}
+essence: {requests: 0, time: 1m}
 steps:
   - id: read_in
     operation: file.read_text
-    arguments:
-      root: /absolute/path/to/intake
-      path: "${inputs.path}"
+    arguments: {root: "${inputs.intake}", path: "${inputs.path}"}
   - id: mask_ssn
     operation: data.replace
-    arguments:
-      text: "${steps.read_in.output.text}"
-      from: "123-45-6789"
-      to: "[REDACTED-SSN]"
+    arguments: {text: "${steps.read_in.output.text}", from: "123-45-6789", to: "[REDACTED-SSN]"}
   - id: mask_acct
     operation: data.replace
-    arguments:
-      text: "${steps.mask_ssn.output}"
-      from: "ACCT-998811"
-      to: "[REDACTED-ACCT]"
+    arguments: {text: "${steps.mask_ssn.output}", from: "ACCT-998811", to: "[REDACTED-ACCT]"}
   - id: write_out
     operation: file.write_text
     hold: "${inputs.hold}"
-    arguments:
-      root: /absolute/path/to/redacted
-      path: "${inputs.path}"
-      text: "${steps.mask_acct.output}"
+    arguments: {root: "${inputs.out}", path: "${inputs.path}", text: "${steps.mask_acct.output}"}
     verify:
       observe: file.stat
-      arguments:
-        root: /absolute/path/to/redacted
-        path: "${inputs.path}"
-      expect:
-        exists: true
+      arguments: {root: "${inputs.out}", path: "${inputs.path}"}
+      expect: {exists: true}
 return:
   path: "${inputs.path}"
   held: "${steps.write_out.output.held}"

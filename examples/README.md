@@ -27,12 +27,16 @@ echo 'ollama_url: "http://127.0.0.1:11434"' > "$SUMMONR_HOME/config/config.yaml"
 
 Examples 02–05 name `ollama/qwen3:4b`. Use another model with `--model ollama/<name>`, or `--model mock/keyword` to exercise enum-based mechanics without a model (note: `03-receipt-total` asks the model to extract structured numeric line items, which requires a real model or a scripted `drill`).
 
-`08-sight` needs an absolute grant root, which a saved ritual cannot take from `$PWD`. Rewrite the placeholder to your checkout, grant it, then drill (no vision model needed):
+`08-sight` and `09-redact-document` take their directories as inputs, so they are saved as they are, and you grant the directory those inputs may lie under with `--under`. The run then holds only the root it was given. Drill `08-sight` with no vision model:
 
 ```bash
-sed "s|/absolute/path/to/summonr|$PWD|g" examples/08-sight/describe-image.yaml > "$SUMMONR_HOME/describe-image.yaml"
-summonr inscribe "$SUMMONR_HOME/describe-image.yaml"
-summonr allow describe-image --from sight --select read_image --on root="$PWD/examples/08-sight/fixtures"
-summonr drill describe-image against examples/08-sight/describe-image.drill.yaml
+summonr inscribe examples/08-sight/describe-image.yaml
+summonr allow describe-image --from sight --select read_image --under "$PWD/examples/08-sight"
+summonr run describe-image --arg root="$PWD/examples/08-sight/fixtures" --arg path=dot.png --wait   # needs ollama/qwen2.5vl:7b
+# drill takes no --arg, so point the drill case's root at your checkout once:
+sed "s|/absolute/path/to/summonr|$PWD|" examples/08-sight/describe-image.drill.yaml > "$SUMMONR_HOME/describe-image.drill.yaml"
+summonr drill describe-image against "$SUMMONR_HOME/describe-image.drill.yaml"
 summonr core stop
 ```
+
+`09-redact-document/README.md` walks through the held, reviewed write.

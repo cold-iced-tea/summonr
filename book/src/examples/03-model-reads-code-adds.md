@@ -58,6 +58,8 @@ return:
   subtotal_cents: "${steps.total.output}"
 ```
 
+(The file also has an `output_schema`; it is omitted here for space.)
+
 What each part contributes:
 
 1. **One model call** turns text into two things: a list of integers and one integer. Integers in cents, so nothing is ever rounded.

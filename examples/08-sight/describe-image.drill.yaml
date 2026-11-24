@@ -1,15 +1,16 @@
 # Drill for describe-image: the model's caption is scripted, so no vision model
-# is needed. The image is still read for real, so the ritual's root must be
-# rewritten to your checkout and granted. From the repository root:
-#   sed "s|/absolute/path/to/summonr|$PWD|g" examples/08-sight/describe-image.yaml > "$SUMMONR_HOME/describe-image.yaml"
-#   summonr inscribe "$SUMMONR_HOME/describe-image.yaml"
-#   summonr allow describe-image --from sight --select read_image --on root="$PWD/examples/08-sight/fixtures"
-#   summonr drill describe-image against examples/08-sight/describe-image.drill.yaml
+# is needed. The image is still read for real, from the root the case passes.
+# `drill` takes no --arg, so a case names its root literally; point it at your
+# checkout once. From the repository root:
+#   summonr inscribe examples/08-sight/describe-image.yaml
+#   summonr allow describe-image --from sight --select read_image --under "$PWD/examples/08-sight"
+#   sed "s|/absolute/path/to/summonr|$PWD|" examples/08-sight/describe-image.drill.yaml > "$SUMMONR_HOME/describe-image.drill.yaml"
+#   summonr drill describe-image against "$SUMMONR_HOME/describe-image.drill.yaml"
 drill: describe-image-cases
 ritual: describe-image
 cases:
   - id: tiny-png-is-captioned
-    inputs: {path: dot.png}
+    inputs: {root: /absolute/path/to/summonr/examples/08-sight/fixtures, path: dot.png}
     model: {described: [{caption: A single teal pixel}]}
     expect:
       outcome: returned
