@@ -1,4 +1,4 @@
-from typing import Any, Callable, ContextManager, TextIO, Literal, NoReturn
+from typing import Any, Callable, ContextManager, TextIO, Literal, NoReturn, TypedDict
 
 class Expr:
     source: str
@@ -92,12 +92,26 @@ class _Data:
     def range(self, start: Any, end: Any, step: Any = ..., *, id: str | None = ...) -> Ref: ...
     def index_of(self, values: Any, needle: Any, *, match: Literal['equal','contains'] = ..., id: str | None = ...) -> Ref: ...
 
+class _Window(TypedDict, total=False):
+    title: str
+    by: str
+    accent: str
+    layout: Literal['banner', 'sidebar']
+    masthead: list[str]
+
+class _File:
+    def walk(self, root: str | Ref, path: str | Ref | None = ..., *,
+             ext: str | Ref | None = ..., max_entries: int | Ref | None = ...,
+             max_depth: int | Ref | None = ..., id: str | None = ...) -> Ref: ...
+
 class Ritual:
     data: _Data
+    file: _File
     def __init__(self, name: str, *, description: str = ..., model: str | None = ...,
                  settings: dict[str, Any] | None = ..., essence: dict[str, Any] | None = ...,
                  reagents: dict[str, Any] | None = ..., requires: list[dict[str, Any]] | None = ...,
-                 bindings: dict[str, Any] | None = ..., drift: dict[str, Any] | None = ...) -> None: ...
+                 bindings: dict[str, Any] | None = ..., drift: dict[str, Any] | None = ...,
+                 window: _Window | None = ...) -> None: ...
     def input(self, name: str, type: Type = ..., *, default: Any = ..., user_only: bool = ...) -> Ref: ...
     def op(self, tool: str, *, id: str | None = ..., verify: dict[str, Any] | None = ..., hold: Any = ..., **arguments: Any) -> Ref: ...
     def model(self, *, prompt: Any, instructions: str | None = ..., returns: Type | dict[str, Any] | None = ...,

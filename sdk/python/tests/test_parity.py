@@ -130,6 +130,31 @@ class ParityTests(unittest.TestCase):
             r.require('file', 'read_text', on={'root': readme['root']})
         self.assertCompiles(r)
 
+    def test_file_walk_preserves_optional_arguments_and_compiles(self):
+        r = Ritual('walk', essence={'requests': 0})
+        root = r.input('root', Str)
+        r.require('file', 'walk', on={'root': root})
+        r.file.walk(root, id='whole')
+        walk = r.file.walk(root, 'src', ext='.rs', max_entries=10, max_depth=0, id='filtered')
+        r.returns({'paths': walk['paths']})
+        d = r.definition()
+        self.assertEqual(d['reagents']['file'], {'select': ['walk']})
+        self.assertEqual(d['steps'][0]['arguments'], {'root': '${inputs.root}'})
+        self.assertEqual(d['steps'][1]['arguments'], {
+            'root': '${inputs.root}', 'path': 'src', 'ext': '.rs',
+            'max_entries': 10, 'max_depth': 0,
+        })
+        self.assertCompiles(r)
+
+    def test_window_metadata_compiles(self):
+        window = {'title': 'Observatory', 'by': 'nightjar', 'accent': '#B39CC5',
+                  'layout': 'sidebar', 'masthead': ['◇  ◇', ' ╲╱']}
+        r = Ritual('observatory', window=window, essence={'requests': 0})
+        r.returns({'label': r.data.trim(' signal ')})
+        self.assertEqual(r.definition()['window'], window)
+        self.assertNotIn('window', Ritual('unadorned').definition())
+        self.assertCompiles(r)
+
     def test_a_model_step_routes_within_a_fixed_set(self):
         r = Ritual('route', essence={'requests': 1, 'tool_calls': 1})
         long = r.input('long', Bool)

@@ -238,9 +238,22 @@ class _Data:
         return build
 
 
+class _File:
+    def __init__(self, ritual):
+        self.ritual = ritual
+
+    def walk(self, root, path=None, *, ext=None, max_entries=None, max_depth=None, id=None):
+        arguments = {'root': root}
+        for name, value in [('path', path), ('ext', ext),
+                            ('max_entries', max_entries), ('max_depth', max_depth)]:
+            if value is not None:
+                arguments[name] = value
+        return self.ritual.op('file.walk', id=id, **arguments)
+
+
 class Ritual:
     def __init__(self, name, *, description='', model=None, settings=None, essence=None,
-                 reagents=None, requires=None, bindings=None, drift=None):
+                 reagents=None, requires=None, bindings=None, drift=None, window=None):
         _segment(name)
         self._definition = {'language_version':1, 'ritual':name, 'steps':[], 'inputs':{},
                             'reagents':{}, 'return':{}}
@@ -248,8 +261,9 @@ class Ritual:
         self._counter = 0
         self._ids = set()
         self.data = _Data(self)
+        self.file = _File(self)
         for key,value in [('description',description), ('model',model), ('settings',settings),
-                          ('essence',essence), ('requires',requires), ('bindings',bindings), ('drift',drift)]:
+                          ('essence',essence), ('requires',requires), ('bindings',bindings), ('drift',drift), ('window',window)]:
             if value is not None and value != '':
                 self._definition[key] = copy.deepcopy(value)
         for key,value in (reagents or {}).items():
