@@ -22,7 +22,7 @@ const RUN_DATA: &[(&str, &str)] = &[
     ("id", "the summon id (s-…)"),
     ("ritual", "the ritual's name"),
     ("status", "`running` or `ended`"),
-    ("outcome", "with --wait: the run's verdict (returned, abstained, exhausted, cancelled, invalid, failed, unverified, interrupted)"),
+    ("outcome", "with --wait: the run's verdict (returned, abstained, exhausted, cancelled, invalid, failed, unverified, interrupted); also at the envelope's top level"),
     ("result", "the return value, or {partial: …} when the run did not return"),
     ("error", "why the run did not return, or null"),
     ("usage", "requests, tokens and time used"),
@@ -70,7 +70,7 @@ const SPECS: &[Spec] = &[
         flags: &["--brief", "--json"],
         examples: &["summonr record s-1234 --brief --json"],
         data: &[
-            ("outcome", "the run's verdict, or null while running"),
+            ("outcome", "the run's verdict, or null while running; also at the envelope's top level"),
             ("result", "the return value or {partial: …}"),
             ("steps", "per-step status and output"),
             ("effects", "every write, with its state and evidence"),
@@ -107,7 +107,12 @@ const SPECS: &[Spec] = &[
         usage: "cases RITUAL --against FILE [--json]",
         flags: &["--against", "--version", "--json"],
         examples: &["summonr cases route-form --against route-form.drill.yaml --json"],
-        data: &[("passed", "true if every case passed"), ("cases", "each case's id, outcome and mismatches")],
+        data: &[
+            ("passed", "how many cases passed"),
+            ("failed", "how many cases failed"),
+            ("touchstone_errors", "cases whose touchstone could not compute an expectation"),
+            ("cases", "each case's id, passed, reasons"),
+        ],
         exits: &[(3, "no drill file"), (14, "one or more cases failed")],
     },
     Spec {
@@ -282,6 +287,7 @@ pub(crate) fn descriptor(verb: &str) -> Option<Value> {
         }),
         "envelope": {
             "ok": "transport status: the request was understood and answered. A run that failed still has ok: true",
+            "outcome": "the run's verdict: data.outcome on run --wait, wait and record; passed or failed on drill; null on every other command and on a run not waited on",
             "data": "the reply, shaped as data_shape",
             "error": "on ok: false, {code, message}",
         },
@@ -318,6 +324,8 @@ pub(crate) fn text(verb: &str, style: Style) -> Option<Vec<String>> {
     for (code, why) in d["exit_codes"].as_object().into_iter().flatten() {
         out.push(format!("  {code:>3}  {}", why.as_str().unwrap_or("")));
     }
+    out.push(String::new());
+    out.push("With --json, `ok` is transport status (a failed run is ok: true); the run's verdict is the envelope's top-level `outcome`.".into());
     Some(out)
 }
 

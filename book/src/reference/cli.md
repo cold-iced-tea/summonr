@@ -166,7 +166,7 @@ summonr help allow --json
   "examples": ["summonr run inbox-triage --arg count=10 --wait --json"],
   "exit_codes": {"0": "...", "7": "--timeout passed; the summon is still running", ...},
   "data_shape": {"id": "...", "outcome": "...", "result": "..."},
-  "envelope": {"ok": "...", "data": "...", "error": "..."}}}}
+  "envelope": {"ok": "...", "outcome": "...", "data": "...", "error": "..."}}}}
 ```
 
 `data_shape` lists the fields of `data` in that command's envelope; it is
@@ -179,10 +179,27 @@ clause.
 With `--json`, every command prints one envelope:
 
 ```json
-{"schema_version": 1, "ok": true, "data": { ... }, "error": null, "warnings": []}
+{"schema_version": 1, "ok": true, "outcome": null, "data": { ... }, "error": null, "warnings": []}
 ```
 
-On failure, `ok` is `false` and `error` carries a stable code and message. The process [exit code](outcomes.md) tells you the class of failure without parsing.
+`ok` and `outcome` answer different questions:
+
+- **`ok`** is transport status: the request was understood and answered. On
+  failure, `ok` is `false` and `error` carries a stable code and message.
+- **`outcome`** is the run's verdict. A run that ran and failed is
+  `"ok": true, "outcome": "failed"` (exit 11), so check `outcome`, not `ok`,
+  to know whether a run succeeded.
+
+| Command | Top-level `outcome` |
+| --- | --- |
+| `run --wait`, `wait`, `record` | the same as `data.outcome`: `returned`, `abstained`, `exhausted`, `cancelled`, `invalid`, `failed`, `unverified` or `interrupted` |
+| `run` without `--wait`, `record` of a running summon | `null` |
+| `cases` (drill) | `passed` if every case passed, else `failed` |
+| every other command, and every `ok: false` envelope | `null` |
+
+`outcome` was added within `schema_version` 1: every earlier field is
+unchanged, and `data.outcome` is still there. The process
+[exit code](outcomes.md) tells you the class of failure without parsing.
 
 ## Offline compiler
 

@@ -89,6 +89,7 @@ fn main() {
             std::process::exit(finish(Err(RpcErr::invalid(e.to_string())), wants_json, |_| {}));
         }
     };
+    let _ = VERB.set(op.verb.clone());
     if let Err(e) = read_arg_files(&mut op) {
         std::process::exit(finish(Err(e), wants_json, |_| {}));
     }
@@ -168,6 +169,30 @@ fn misplaced_config(paths: &Paths) -> Option<String> {
     })
 }
 
+/// The command being run, so an envelope can carry its run's verdict.
+static VERB: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// The run verdict an envelope carries at its top level: `ok` only says the
+/// request was answered, so a failed run is `ok: true`. Run, wait and record
+/// replies mirror `data.outcome`; a drill is `passed` or `failed`; every
+/// other command, and a run not waited on, has `null`.
+fn envelope_outcome(verb: &str, data: &Value) -> Value {
+    match verb {
+        "invoke" | "await" | "elegy" => data.get("outcome").filter(|o| o.is_string()).cloned().unwrap_or(Value::Null),
+        "drill" => match (data["failed"].as_u64(), data["touchstone_errors"].as_u64()) {
+            (Some(0), Some(0) | None) => json!("passed"),
+            (Some(_), _) => json!("failed"),
+            _ => Value::Null,
+        },
+        _ => Value::Null,
+    }
+}
+
+fn ok_envelope(verb: &str, data: Value, warnings: Value) -> Value {
+    let outcome = envelope_outcome(verb, &data);
+    json!({"schema_version": 1, "ok": true, "outcome": outcome, "data": data, "error": null, "warnings": warnings})
+}
+
 /// Print one result. JSON output is exactly one versioned envelope on stdout;
 /// diagnostics go to stderr.
 pub(crate) fn finish(res: Result<Value, RpcErr>, as_json: bool, human: impl FnOnce(&Value)) -> i32 {
@@ -175,10 +200,7 @@ pub(crate) fn finish(res: Result<Value, RpcErr>, as_json: bool, human: impl FnOn
         Ok(data) => {
             if as_json {
                 let warnings = merged_warnings(data.get("warnings"));
-                println!(
-                    "{}",
-                    json!({"schema_version": 1, "ok": true, "data": data, "error": null, "warnings": warnings})
-                );
+                println!("{}", ok_envelope(VERB.get().map(String::as_str).unwrap_or(""), data, warnings));
             } else {
                 human(&data);
             }
@@ -188,7 +210,7 @@ pub(crate) fn finish(res: Result<Value, RpcErr>, as_json: bool, human: impl FnOn
             if as_json {
                 println!(
                     "{}",
-                    json!({"schema_version": 1, "ok": false, "data": e.data, "error": {"code": e.code, "message": e.message}, "warnings": env_warnings()})
+                    json!({"schema_version": 1, "ok": false, "outcome": null, "data": e.data, "error": {"code": e.code, "message": e.message}, "warnings": env_warnings()})
                 );
             } else {
                 eprintln!("{} {}", paint(Ink::Rubric, "summonr:"), e.message);
@@ -1230,5 +1252,29 @@ mod misplaced_config_tests {
         };
         assert_eq!(super::misplaced_config(&xdg), None, "XDG layout: not ours to judge");
         std::fs::remove_dir_all(&home).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod envelope_tests {
+    use super::*;
+
+    #[test]
+    fn a_runs_verdict_is_at_the_top_of_its_envelope_and_ok_stays_transport() {
+        let failed = json!({"id": "s-1", "status": "ended", "outcome": "failed", "error": "boom"});
+        for verb in ["invoke", "await", "elegy"] {
+            let e = ok_envelope(verb, failed.clone(), json!([]));
+            assert_eq!((e["ok"].clone(), e["outcome"].clone(), e["schema_version"].clone()), (json!(true), json!("failed"), json!(1)), "{verb}");
+            assert_eq!(e["data"], failed, "data is unchanged");
+        }
+        // A run not waited on has no verdict yet.
+        assert_eq!(ok_envelope("invoke", json!({"id": "s-1", "status": "running"}), json!([]))["outcome"], Value::Null);
+        assert_eq!(ok_envelope("drill", json!({"passed": 3, "failed": 0, "touchstone_errors": 0}), json!([]))["outcome"], "passed");
+        assert_eq!(ok_envelope("drill", json!({"passed": 2, "failed": 1, "touchstone_errors": 0}), json!([]))["outcome"], "failed");
+        assert_eq!(ok_envelope("drill", json!({"passed": 2, "failed": 0, "touchstone_errors": 1}), json!([]))["outcome"], "failed");
+        // Other commands carry the key, as null, even when data has an `outcome`.
+        let e = ok_envelope("graveyard", json!([{"outcome": "failed"}]), json!([]));
+        assert!(e.as_object().unwrap().contains_key("outcome") && e["outcome"].is_null());
+        assert!(ok_envelope("petition", json!({"outcome": "x"}), json!([]))["outcome"].is_null());
     }
 }
