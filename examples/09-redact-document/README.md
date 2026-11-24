@@ -2,7 +2,7 @@
 
 A self-contained, zero-inference redaction ritual demonstrating Summonr's enterprise governance controls end-to-end:
 
-- **Scoped filesystem roots:** Separate read-only `/intake` and write-only `/redacted` grants (no `..`, no symlinks, no writes back to intake).
+- **Scoped filesystem roots:** The intake and output directories are inputs, granted with `allow --under`: read-only under the intake directory, write-and-stat under the output directory. The run holds only the roots it was given (no `..`, no symlinks, no writes back to intake).
 - **Owner-locked review gate:** `hold: true` is marked `user_only: true`, so remote agents/familiars cannot override it.
 - **Digest-bound petition approval:** `write_out` pauses as a petition until an authorized reviewer approves it, then `verify: file.stat` confirms the written file.
 - **Tamper-evident audit trail:** Every grant, invocation, petition decision, and finished run is hash-chained and Ed25519-signed in `audit_log`.
@@ -16,17 +16,15 @@ export PATH="$PWD/target/debug:$PATH"
 export SUMMONR_HOME="$(mktemp -d)"
 OUT_DIR="$(mktemp -d)"
 
-# Bind the ritual to absolute intake/output roots
-sed "s|/absolute/path/to/intake|$PWD/examples/09-redact-document/intake|g; s|/absolute/path/to/redacted|$OUT_DIR|g" \
-  examples/09-redact-document/redact-document.yaml > "$SUMMONR_HOME/redact-document.yaml"
-
-# Inscribe and grant least-privilege filesystem scopes
-summonr inscribe "$SUMMONR_HOME/redact-document.yaml"
-summonr allow redact-document --from file --select read_text --on root="$PWD/examples/09-redact-document/intake"
-summonr allow redact-document --from file --select write_text,stat --on root="$OUT_DIR"
+# The ritual takes its intake and output directories as inputs; grant the
+# directories they may lie under, each for only the operations it needs
+summonr inscribe examples/09-redact-document/redact-document.yaml
+summonr allow redact-document --from file --select read_text --under "$PWD/examples/09-redact-document/intake"
+summonr allow redact-document --from file --select write_text,stat --under "$OUT_DIR"
 
 # Run: write_out pauses as a petition (nothing written yet)
-summonr run redact-document --arg path=case-4817.txt --wait
+summonr run redact-document --arg intake="$PWD/examples/09-redact-document/intake" \
+  --arg out="$OUT_DIR" --arg path=case-4817.txt --wait
 
 # Inspect and approve the held write
 summonr petition

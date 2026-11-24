@@ -33,7 +33,7 @@ steps:
       schema: {type: object, required: [text], properties: {text: {type: string}}}
 ```
 
-`examples/08-sight` is runnable after rewriting its placeholder root to your checkout (see the examples README).
+`examples/08-sight` takes its root as an input and is granted with `--under` (see the examples README).
 
 ## What is read
 

@@ -73,14 +73,10 @@ def main():
             cli(home, "rbac", "revoke", "file-reader", "reagent", "file.read_text", "read")
 
             # 3. Runnable redaction example (09-redact-document) with held write + approval.
-            src_yaml = (ROOT / "examples/09-redact-document/redact-document.yaml").read_text()
-            ritual_path = tmp / "redact-document.yaml"
-            ritual_path.write_text(
-                src_yaml.replace("/absolute/path/to/intake", str(intake))
-                .replace("/absolute/path/to/redacted", str(out_dir))
-            )
-            cli(home, "inscribe", ritual_path)
-            cli(home, "allow", "redact-document", "--from", "file", "--select", "read_text", "--on", f"root={intake}")
+            # The ritual takes its roots as inputs: save it unchanged and
+            # grant the directories they may lie under.
+            cli(home, "inscribe", ROOT / "examples/09-redact-document/redact-document.yaml")
+            cli(home, "allow", "redact-document", "--from", "file", "--select", "read_text", "--under", str(intake))
             cli(
                 home,
                 "allow",
@@ -89,14 +85,18 @@ def main():
                 "file",
                 "--select",
                 "write_text,stat",
-                "--on",
-                f"root={out_dir}",
+                "--under",
+                str(out_dir),
             )
 
             run_res, _ = cli(
                 home,
                 "run",
                 "redact-document",
+                "--arg",
+                f"intake={intake}",
+                "--arg",
+                f"out={out_dir}",
                 "--arg",
                 "path=case-4817.txt",
                 "--wait",
