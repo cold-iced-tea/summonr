@@ -102,9 +102,11 @@ How a call works:
 - **The answer** is stdout, at most 4 MiB, with trailing newlines removed. A
   non-zero exit fails the call with the end of stderr. Nothing constrains the
   program's output, so a step with a schema parses and checks it afterward
-  (`structure: checked afterward only` in the record). Prose, a code fence, or a
-  mismatch make the step `invalid`, which `retry` and `fallback` handle as for
-  any model.
+  (`structure: checked afterward only` in the record). An answer that is
+  exactly one ```` ```json ```` (or bare ```` ``` ````) fence is unwrapped
+  first, since agent CLIs often print one. Prose around it, a second fence, or
+  a mismatch make the step `invalid`, which `retry` and `fallback` handle as
+  for any model.
 - **Limits.** Each call is one request against `essence.requests`. Token counts
   are estimated (about four bytes per token), since a program reports none.
   `num_predict`-style caps cannot be applied. On timeout or `stop`, the

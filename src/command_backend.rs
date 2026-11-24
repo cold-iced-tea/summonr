@@ -6,7 +6,8 @@
 //! to the program's stdin, or into `${prompt}` in its arguments. Its stdout is
 //! the answer. Nothing constrains the program's decoder, so the step checks
 //! the answer against its schema afterward, exactly as for an HTTP backend:
-//! non-JSON or a mismatch makes the step `invalid`, which `retry` and
+//! non-JSON or a mismatch makes the step `invalid` (an answer that is
+//! exactly one ```` ```json ```` fence is unwrapped first), which `retry` and
 //! `on_failure` treat as they do for any model. The program runs without a
 //! shell, in its own process group, which is killed on timeout or cancel.
 use crate::backend::{ChatReq, ChatResp};
@@ -162,6 +163,19 @@ pub(crate) fn fingerprint(name: &str, label: &str, p: &ProviderConfig) -> Value 
     })
 }
 
+/// The JSON inside an answer that is one Markdown code fence and nothing else
+/// (```` ```json ```` or a bare ```` ``` ````), which agent CLIs often print
+/// even when told not to. Prose around the fence, a second fence, or another
+/// language tag is left alone for the schema check to refuse.
+fn unfence(text: &str) -> Option<&str> {
+    let body = text.trim().strip_prefix("```")?.strip_suffix("```")?;
+    let (tag, inner) = body.split_once('\n')?;
+    if !matches!(tag.trim(), "" | "json" | "JSON") || inner.contains("```") {
+        return None;
+    }
+    Some(inner.trim_end_matches(['\n', '\r']))
+}
+
 fn estimate_tokens(text: &str) -> u64 {
     (text.len() as u64).div_ceil(4)
 }
@@ -199,7 +213,12 @@ pub(crate) fn chat(name: &str, label: &str, p: &ProviderConfig, cfg: Option<&Con
     if stdout.len() > MAX_OUTPUT {
         return Err(format!("provider `{name}` wrote more than {} MiB to stdout", MAX_OUTPUT >> 20));
     }
-    let content = stdout.trim_end_matches(['\n', '\r']).to_string();
+    let mut content = stdout.trim_end_matches(['\n', '\r']).to_string();
+    if req.schema.is_some() {
+        if let Some(inner) = unfence(&content) {
+            content = inner.to_string();
+        }
+    }
     let total_ms = started.elapsed().as_millis() as u64;
     Ok(ChatResp {
         prompt_tokens: estimate_tokens(&prompt),
@@ -278,6 +297,27 @@ mod tests {
         assert_eq!(r.payload["prompt"], r.content.as_str());
         let answer = provider(&script(&d, "json.sh", "cat >/dev/null\necho '{\"label\": \"spam\"}'"));
         assert_eq!(ask(&answer, Some(&schema), "x").unwrap().content, "{\"label\": \"spam\"}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn an_answer_wrapped_in_one_code_fence_is_unwrapped() {
+        let d = tmp();
+        let schema = json!({"type": "object"});
+        let answer = |name: &str, body: &str| {
+            let p = provider(&script(&d, name, &format!("cat >/dev/null\nprintf '%s' '{body}'")));
+            ask(&p, Some(&schema), "x").unwrap().content
+        };
+        assert_eq!(answer("json.sh", "```json\n{\"a\": 1}\n```\n"), "{\"a\": 1}");
+        assert_eq!(answer("bare.sh", "\n```\n{\"a\": \"x\\ny\"}\n```"), "{\"a\": \"x\\ny\"}");
+        // Prose around the fence, or several fences, stay as they are: the
+        // schema check then refuses them.
+        assert_eq!(answer("prose.sh", "Here:\n```json\n{}\n```"), "Here:\n```json\n{}\n```");
+        assert_eq!(answer("two.sh", "```\n{}\n```\n```\n{}\n```"), "```\n{}\n```\n```\n{}\n```");
+        assert_eq!(answer("rust.sh", "```rust\n{}\n```"), "```rust\n{}\n```");
+        // Without a schema the answer is text and is left alone.
+        let p = provider(&script(&d, "text.sh", "cat >/dev/null\nprintf '%s' '```\nhi\n```'"));
+        assert_eq!(ask(&p, None, "x").unwrap().content, "```\nhi\n```");
         let _ = std::fs::remove_dir_all(&d);
     }
 
