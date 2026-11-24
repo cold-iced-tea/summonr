@@ -574,6 +574,8 @@ pub struct Drill {
     #[serde(default = "cwd")]
     #[allow(dead_code)]
     pub cwd: String,
+    #[serde(default)]
+    pub inputs: serde_json::Map<String, Value>,
 }
 impl Validate for Drill {
     fn validate(&self) -> Result<(), String> {

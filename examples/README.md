@@ -33,9 +33,7 @@ Examples 02–05 name `ollama/qwen3:4b`. Use another model with `--model ollama/
 summonr inscribe examples/08-sight/describe-image.yaml
 summonr allow describe-image --from sight --select read_image --under "$PWD/examples/08-sight"
 summonr run describe-image --arg root="$PWD/examples/08-sight/fixtures" --arg path=dot.png --wait   # needs ollama/qwen2.5vl:7b
-# drill takes no --arg, so point the drill case's root at your checkout once:
-sed "s|/absolute/path/to/summonr|$PWD|" examples/08-sight/describe-image.drill.yaml > "$SUMMONR_HOME/describe-image.drill.yaml"
-summonr drill describe-image against "$SUMMONR_HOME/describe-image.drill.yaml"
+summonr drill describe-image against examples/08-sight/describe-image.drill.yaml --arg root="$PWD/examples/08-sight/fixtures"
 summonr core stop
 ```
 

@@ -902,4 +902,27 @@ return: {from_form: "${steps.f.output.category}"}
         assert_eq!(out["touchstone_errors"], 0, "{out}");
     }
 
+    #[test]
+    fn drill_accepts_input_overrides() {
+        let h = route_form();
+        let file = h.root.join("override.drill.yaml");
+        std::fs::write(
+            &file,
+            "drill: d\nritual: route-form\ncases:\n  - id: overridden\n    inputs: {}\n    model: {judged: [{category: press}]}\n    expect: {outcome: returned, result: {from_model: press}, model_calls: 1}\n",
+        )
+        .unwrap();
+        let out = h
+            .core
+            .dispatch(
+                "drill",
+                json!({
+                    "ritual": "route-form",
+                    "against": file.to_str().unwrap(),
+                    "inputs": {"form": "{\"category\":\"other\",\"message\":\"hello\"}"},
+                }),
+            )
+            .unwrap();
+        assert_eq!(out["passed"], 1, "{out}");
+        assert_eq!(out["failed"], 0, "{out}");
+    }
 }

@@ -17,8 +17,15 @@ impl Core {
         let path = PathBuf::from(&p.cwd).join(&p.against);
         let text = std::fs::read_to_string(&path)
             .map_err(|e| RpcErr::not_found(format!("cannot read {}: {e}", path.display())))?;
-        let file =
+        let mut file =
             drill::parse(&text).map_err(|e| RpcErr::invalid(format!("{}: {e}", path.display())))?;
+        if !p.inputs.is_empty() {
+            for case in &mut file.cases {
+                for (k, v) in &p.inputs {
+                    case.inputs.insert(k.clone(), v.clone());
+                }
+            }
+        }
         let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
         self.run_drill_file(&p.ritual, version, &file, &path.display().to_string(), Some(&dir), None)
     }

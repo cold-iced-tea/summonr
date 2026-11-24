@@ -92,7 +92,13 @@ pub(crate) fn drill(op: &Op, client: &mut Client) -> i32 {
         })?;
         client.call(
             "drill",
-            json!({"ritual": name, "version": op.version, "against": against, "cwd": cwd()}),
+            json!({
+                "ritual": name,
+                "version": op.version,
+                "against": against,
+                "cwd": cwd(),
+                "inputs": op.args,
+            }),
         )
     });
     let code = match res.as_ref().ok().map(|d| {
