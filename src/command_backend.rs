@@ -107,18 +107,28 @@ fn render_args(name: &str, label: &str, p: &ProviderConfig, prompt: Option<&str>
     }
     let mut out = Vec::with_capacity(p.args.len());
     for a in &p.args {
-        let mut s = a.replace("${model}", label);
-        if a.contains("${prompt}") {
-            let prompt = prompt.unwrap_or("${prompt}");
-            if prompt.contains(['\n', '\r', '\0']) {
+        let prompt = prompt.unwrap_or("${prompt}");
+        if a.contains("${prompt}") && prompt.contains(['\n', '\r', '\0']) {
                 return Err(format!(
                     "provider `{name}` passes the prompt as an argument, which cannot span lines; \
                      this step's prompt has several lines (its schema and instructions are part of it). \
                      Set `stdin: prompt` if the program can read the prompt from standard input"
                 ));
-            }
-            s = s.replace("${prompt}", prompt);
         }
+        let mut s = String::new();
+        let mut rest = a.as_str();
+        while let Some(start) = rest.find("${") {
+            let after = &rest[start + 2..];
+            let Some(end) = after.find('}') else { break };
+            s.push_str(&rest[..start]);
+            match &after[..end] {
+                "model" => s.push_str(label),
+                "prompt" => s.push_str(prompt),
+                _ => s.push_str(&rest[start..start + 3 + end]),
+            }
+            rest = &after[end + 1..];
+        }
+        s.push_str(rest);
         if s.starts_with('-') && !a.starts_with('-') {
             return Err(format!("provider `{name}`: argument `{a}` would begin with `-` (`{}`), which the program could read as an option", s.chars().take(40).collect::<String>()));
         }
@@ -243,6 +253,18 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+
+    #[test]
+    fn rendered_arguments_preserve_literal_placeholder_text_in_values() {
+        let p = ProviderConfig {
+            args: vec!["${model}/${prompt}".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            render_args("local", "literal-${prompt}", &p, Some("hello")).unwrap(),
+            ["literal-${prompt}/hello"],
+        );
+    }
 
     fn script(dir: &Path, name: &str, body: &str) -> String {
         let path = dir.join(name);
