@@ -51,10 +51,18 @@ chmod -R a-w "$snap"
 export SUMMONR_HOME="$lab/home"
 mkdir -p "$SUMMONR_HOME/config" "$SUMMONR_HOME/rituals" "$lab/bin"
 # Tiny stdin-to-flag wrapper so agy -p works as a first-class kind: command
-# model provider with multi-line prompts on stdin.
+# model provider with multi-line prompts on stdin. The prompt becomes one
+# argument, so cap it well under the kernel's 128 KiB per-argument limit and
+# fail with a clear message instead of E2BIG.
 cat > "$lab/bin/agy-stdin" <<'SH'
 #!/bin/sh
-prompt="$(cat)"
+max=65536
+prompt="$(head -c $((max + 1)); printf x)"; prompt="${prompt%x}"
+if [ "$(printf %s "$prompt" | wc -c)" -gt "$max" ]; then
+  cat >/dev/null
+  echo "agy-stdin: prompt is over $max bytes; shorten the step's prompt" >&2
+  exit 2
+fi
 exec agy --model gemini-4-neon-medium --sandbox --disable-slash-commands --print-timeout 600s -p "$prompt"
 SH
 chmod +x "$lab/bin/agy-stdin"
@@ -81,8 +89,9 @@ providers:
   codex:
     kind: command
     program: codex
-    args: [exec, --sandbox, read-only, --skip-git-repo-check, -C, $target, "-"]
-    cwd: $target
+    # The read-only snapshot, like gemini: never the checkout trial uses.
+    args: [exec, --sandbox, read-only, --skip-git-repo-check, -C, $snap, "-"]
+    cwd: $snap
     env: [HOME, PATH]
     stdin: prompt
     timeout_ms: 600000
