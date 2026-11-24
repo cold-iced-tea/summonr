@@ -12,13 +12,17 @@ pub fn write_frame(s: &mut UnixStream, v: &Value) -> std::io::Result<()> {
     s.flush()
 }
 
-pub fn read_frame(s: &mut UnixStream) -> std::io::Result<Option<Value>> {
+pub fn read_frame(s: &mut impl Read) -> std::io::Result<Option<Value>> {
     let mut len = [0u8; 4];
-    match s.read_exact(&mut len) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => return Err(e),
+    loop {
+        match s.read(&mut len[..1]) {
+            Ok(0) => return Ok(None),
+            Ok(_) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
     }
+    s.read_exact(&mut len[1..])?;
     let n = u32::from_be_bytes(len) as usize;
     if n > MAX_FRAME {
         return Err(std::io::Error::other("frame too large"));
@@ -28,4 +32,19 @@ pub fn read_frame(s: &mut UnixStream) -> std::io::Result<Option<Value>> {
     serde_json::from_slice(&body)
         .map(Some)
         .map_err(std::io::Error::other)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::ErrorKind;
+
+    #[test]
+    fn partial_header_is_not_clean_eof() {
+        let mut reader = &[0, 0][..];
+        assert_eq!(
+            read_frame(&mut reader).unwrap_err().kind(),
+            ErrorKind::UnexpectedEof
+        );
+    }
 }
