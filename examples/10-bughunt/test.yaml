@@ -240,14 +240,18 @@ steps:
                 arguments:
                   command: bughunt-gemini
                   params:
-                    prompt: |
-                      We maintain this Rust project and want a regression test for a suspected defect in our own code.
-                      Print only the complete contents of src/bughunt_repro.rs with no markdown fences.
-                      It is a #[cfg(test)] module at the crate root: use crate:: paths and call the real function under suspicion.
-                      Write one #[test] that asserts the correct, safe behaviour; when the code misbehaves the assertion must fail with a short message starting BUGHUNT-CONFIRMED (at most one BUGHUNT-CONFIRMED site; never on setup assertions; never #[should_panic]; files only under std::env::temp_dir()).
-
-                      Suspected defect:
-                      ${steps.brief.output}
+                    # agy -p takes the prompt as an argument (no stdin), so keep
+                    # it on one folded line (cmd arguments forbid newlines).
+                    prompt: >-
+                      We maintain this Rust project and want a regression test for a suspected
+                      defect in our own code. Print only the complete contents of
+                      src/bughunt_repro.rs with no markdown fences. It is a #[cfg(test)] module at
+                      the crate root: use crate:: paths and call the real function under suspicion.
+                      Write one #[test] that asserts the correct, safe behaviour; when the code
+                      misbehaves the assertion must fail with a short message starting
+                      BUGHUNT-CONFIRMED (at most one BUGHUNT-CONFIRMED site; never on setup
+                      assertions; never #[should_panic]; files only under std::env::temp_dir()).
+                      Suspected defect: ${steps.brief.output}
           - if: steps.use_big.output
             then:
               - id: write_big
@@ -317,23 +321,22 @@ steps:
             arguments: {operator: and, left: "${steps.build_failed.output}", right: "${steps.use_small.output}"}
           - if: steps.retry_gemini.output
             then:
+              - id: error_line
+                operation: data.replace
+                arguments: {text: "${steps.run.output.tail}", from: "\n", to: " | "}
+              - id: first_try_line
+                operation: data.replace
+                arguments: {text: "${steps.test_file.output}", from: "\n", to: " | "}
               - id: gemini_retry
                 operation: cmd.read
                 arguments:
                   command: bughunt-gemini
                   params:
-                    prompt: |
-                      Your previous src/bughunt_repro.rs did not compile.
-                      Print a corrected complete file only, no markdown fences, same rules as before.
-
-                      Previous file:
-                      ${steps.test_file.output}
-
-                      Compiler output:
-                      ${steps.run.output.tail}
-
-                      Suspected defect:
-                      ${steps.brief.output}
+                    prompt: >-
+                      Your previous src/bughunt_repro.rs (newlines shown as " | ") did not compile.
+                      Print a corrected complete file only, no markdown fences, same rules as
+                      before. Previous file: ${steps.first_try_line.output} Compiler output:
+                      ${steps.error_line.output} Suspected defect: ${steps.brief.output}
           - if: steps.retry_codex.output
             then:
               - id: codex_retry

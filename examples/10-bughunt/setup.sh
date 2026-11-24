@@ -66,12 +66,12 @@ repos:
 commands:
   bughunt-gemini:
     # Gemini 4 Neon through the Antigravity CLI, print mode, sandboxed.
+    # agy -p requires the prompt as a flag argument (does not read stdin).
     program: agy
-    args: [-p, --model, gemini-4-neon-medium, --sandbox, --disable-slash-commands, --print-timeout, 600s]
+    args: [--model, gemini-4-neon-medium, --sandbox, --disable-slash-commands, --print-timeout, 600s, -p, "\${prompt}"]
     cwd: $snap
     effect: read
     env: [HOME, PATH]
-    stdin: prompt
     params:
       prompt: {max_length: 20000}
   bughunt-codex:
