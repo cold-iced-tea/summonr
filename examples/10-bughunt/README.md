@@ -10,20 +10,21 @@ not say is in [LIMITS.md](LIMITS.md).
 
 | Ritual | Does | Model |
 | --- | --- | --- |
-| `bughunt-hunt` | Lists source files in `dirs` and runs `bughunt-scan-file` on each; reports `files_failed` and `chunks_failed`, and fails if every file failed (model or backend down) | |
+| `bughunt-hunt` | Lists source files with extension `ext` (default `.rs`) in `dirs` and runs `bughunt-scan-file` on each; reports `files_failed` and `chunks_failed`, and fails if every file failed (model or backend down) | |
 | `bughunt-scan-file` | Reads one file up to `stop_at` (`data.index_of`) in dynamic `data.range` chunks, asks for findings from one `angle`; marks each finding `quoted` when its snippet (8+ characters) really appears in the code; uses `each` `keep:` so file text never leaves the loop | `Qwen3.6-35B-A3B`, one call per chunk (override with `--model`) |
 | `bughunt-gather` | Merges hunts (`data.flatten`), drops unquoted, below-`min_confidence` (`data.filter` `params:`), angle-echo, and no-bug findings, collapses duplicates (`data.unique_by`), `pass` when `count ≥ min_batch` | none |
 | `bughunt-batch-ready` | Touchstone gate on gather's `pass` | none |
-| `bughunt-test` | Per finding (first `max_batch`, default 25, `keep: [result]`): optional `triage` re-reads a wider code window on `Qwen3.6-35B-A3B` and dismisses false leads before building; otherwise writes `src/bughunt_repro.rs`, `trial` runs it in a throwaway worktree (300 s timeout), one retry on build failure; cleanup never fails the run | `qwen3:4b` for low/medium, `Qwen3.6-35B-A3B` for triage and high/critical, optional Codex/Gemini for critical |
-| `bughunt-verdict` | `confirmed` (failed with `BUGHUNT-CONFIRMED`), `refuted` (one test ran and passed), else `untestable`; rejects copied-logic tests (accepting both `<module>::` and `reagent::call`/`authorize` for `*_reagent.rs`), `#[should_panic]`, multiple `BUGHUNT-CONFIRMED` branches, and setup-deserialization markers | none |
+| `bughunt-test` | Per finding (first `max_batch`, default 25, `keep: [result]`): optional `triage` re-reads a wider code window on `Qwen3.6-35B-A3B` and dismisses false leads before building; otherwise writes `src/bughunt_repro.rs` (`lang=python`: `test_bughunt_repro.py`), `trial` runs it in a throwaway worktree (300 s timeout), one retry on build failure; cleanup never fails the run | `qwen3:4b` for low/medium, `Qwen3.6-35B-A3B` for triage and high/critical, optional Codex/Gemini for critical |
+| `bughunt-verdict` | `confirmed` (failed with `BUGHUNT-CONFIRMED`), `refuted` (one test ran and passed), else `untestable`; rejects copied-logic tests (accepting both `<module>::` and `reagent::call`/`authorize` for `*_reagent.rs`), `#[should_panic]`, multiple `BUGHUNT-CONFIRMED` branches, and setup-deserialization markers. `lang=python` reads a unittest run instead (see [Python targets](#python-targets)) | none |
 | `bughunt-score` | Hits and noise against a gold set (normalizes per-line indentation so multi-line snippets match) | none |
-| `bughunt-bench` | One hunt per angle, gather, and score against a gold file; reports failed hunts | as hunt |
+| `bughunt-bench` | One hunt per angle (forwarding `ext` and `stop_at`), gather, and score against a gold file; reports failed hunts | as hunt |
 | `bughunt.rite.yaml` | Three hunts → gather (gated) → test | |
 
 ## Set up a lab
 
 The target must be a git repository; the repro harness assumes Rust with
-`src/main.rs` or `src/lib.rs`. Paths must not contain spaces. You need the
+`src/main.rs` or `src/lib.rs` unless you pass `--lang python` (see
+[Python targets](#python-targets)). Paths must not contain spaces. You need the
 models and the target's crates locally:
 
 ```bash
@@ -56,6 +57,28 @@ trial does not spend its time compiling:
 # use --lib instead of --bins if the project has src/lib.rs
 ```
 
+### Python targets
+
+```bash
+examples/10-bughunt/setup.sh ~/bughunt-py /path/to/project COMMIT "$PWD/target/release/summonr" src --lang python
+```
+
+The fifth argument is the import root put on `PYTHONPATH` (default: `src`
+if the repository has one, else the root). The harness is an empty
+`test_bughunt_repro.py` at the repository root; a repro is one
+`unittest.TestCase` that imports the code as its users do and fails with
+`AssertionError("BUGHUNT-CONFIRMED: …")`, and trial runs
+`python3 -m unittest test_bughunt_repro` in the throwaway worktree. The
+lab's rituals default to Python: hunts read `.py` files with no test-module
+marker (`ext=.py`, `stop_at=""`), and `bughunt-test` and `bughunt-verdict`
+take `lang=python`. The verdict then wants `Ran 1 test` and `OK` to refute,
+and `FAILED (failures=1)` with the marker to confirm (an uncaught exception
+is `untestable`); an import or syntax error is the build failure that gets
+one rewrite. The target must need only the standard library.
+
+On a Rust lab or your own core, the same rituals take the inputs directly:
+`bughunt-bench --arg ext=.py --arg stop_at=`, `bughunt-test --arg lang=python`.
+
 ## Run
 
 ```bash
@@ -81,7 +104,10 @@ retried once by the same model.
 
 `benchmark/make_gold.py fix REPO COMMIT` turns a real fix commit into a gold
 set at its parent: each `src/` hunk the fix changed (old side plus context)
-is one item. These are bugs someone fixed, so they are real. Run a bench at
+is one item. Test code never counts: Rust's `mod tests {` and `*_tests.rs`,
+Python's `test_*.py`, `*_test.py` and `conftest.py`, Shell's `test_*.sh`,
+`*_test.sh` and `*.bats`, and anything under `tests/` (or `test/`, for
+Python and Shell). These are bugs someone fixed, so they are real. Run a bench at
 the parent commit (its own lab).
 
 `benchmark/make_gold.py gemini REPO AUDIT.md 5fb6bbe [DIR...]` turns the
@@ -139,6 +165,26 @@ Each case names its `repo_name`, `repo_url`, `crate_path` (workspace
 crates), and the `dirs` a hunt scans; `verify_repros.py` replays confirmed
 repros at the parent and the fix of that crate.
 
+### Python suite
+
+`benchmark/python-suite.json` holds 6 real fix commits in two
+standard-library-only projects, `packaging` and `tomli`: marker recursion
+depth, drive-relative licence paths, a line break absorbed into a URL
+requirement, an unanchored wheel build-tag regex, quadratic dotted keys, and
+duplicate inline-table keys. Every case is `"lang": "python"` with an
+`import_root` and a `module`; `fetch_external.py` imports that module at the
+parent and the fix instead of fetching crates, `run.sh` passes `ext=.py
+stop_at=` (and `--lang python` to an isolated lab), and `verify_repros.py`
+replays repros with unittest:
+
+```bash
+examples/10-bughunt/benchmark/fetch_external.py ~/bughunt-py --suite examples/10-bughunt/benchmark/python-suite.json
+examples/10-bughunt/benchmark/run.sh ~/bughunt-py ~/bughunt-py/out "$PWD/target/release/summonr" \
+  --suite examples/10-bughunt/benchmark/python-suite.json --gold-dir ~/bughunt-py/gold --shared-core
+examples/10-bughunt/benchmark/verify_repros.py ~/bughunt-py \
+  --suite examples/10-bughunt/benchmark/python-suite.json --name py-packaging-2602dd0 TEST_RESULT.json
+```
+
 ## Drills
 
 ```bash
@@ -146,7 +192,8 @@ examples/10-bughunt/drill.sh "$PWD/target/release/summonr"
 ```
 
 Runs every `*.drill.yaml` offline with scripted model answers against
-`fixtures/` (including `test.drill.yaml`, which uses `sandbox: {repos:
+`fixtures/` (Python cases use `fixtures/target/pkg/auth.py` and a fake
+unittest trial; `test.drill.yaml` uses `sandbox: {repos:
 [bughunt-target]}` to drill the real worktree/write/trial/cleanup path on
 disposable copies) and checks that all inscribed rituals produce zero
 compile-time lint warnings.

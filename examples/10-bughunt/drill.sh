@@ -14,6 +14,7 @@ trap '"$bin" core stop --json >/dev/null 2>&1 || true; rm -rf "$home"' EXIT
 repo="$home/target"
 cp -a "$here/fixtures/target" "$repo"
 : > "$repo/src/bughunt_repro.rs"
+: > "$repo/test_bughunt_repro.py"
 git -C "$repo" init -q -b bughunt-base
 git -C "$repo" config user.name bughunt
 git -C "$repo" config user.email bughunt@localhost
@@ -23,9 +24,21 @@ git init -q --bare "$home/remote.git"
 git -C "$repo" remote add lab "$home/remote.git"
 git -C "$repo" push -q lab bughunt-base
 
-# Lightweight deterministic trial runner for test.drill.yaml (no cargo build).
+# Lightweight deterministic trial runner for test.drill.yaml (no cargo build,
+# no unittest run). A non-empty test_bughunt_repro.py is a lang=python case.
 cat > "$home/fake-trial.py" <<'PY'
 import pathlib, sys
+py = pathlib.Path("test_bughunt_repro.py")
+if py.exists() and py.read_text().strip():
+    src = py.read_text()
+    if "PASS_CASE" in src:
+        print(".\n----------------------------------------------------------------------\nRan 1 test in 0.001s\n\nOK", file=sys.stderr)
+        sys.exit(0)
+    if "BUGHUNT-CONFIRMED" in src:
+        print("F\n======================================================================\nFAIL: test_repro (test_bughunt_repro.Repro.test_repro)\nAssertionError: True is not false : BUGHUNT-CONFIRMED: simulated failure\n\n----------------------------------------------------------------------\nRan 1 test in 0.001s\n\nFAILED (failures=1)", file=sys.stderr)
+        sys.exit(1)
+    print("E\n======================================================================\nERROR: test_bughunt_repro (unittest.loader._FailedTest.test_bughunt_repro)\nImportError: cannot import name 'nope' from 'pkg.auth'\n\n----------------------------------------------------------------------\nRan 1 test in 0.000s\n\nFAILED (errors=1)", file=sys.stderr)
+    sys.exit(1)
 src = pathlib.Path("src/bughunt_repro.rs").read_text()
 if "PASS_CASE" in src:
     print("running 1 test\n.\ntest result: ok. 1 passed; 0 failed; 0 ignored")

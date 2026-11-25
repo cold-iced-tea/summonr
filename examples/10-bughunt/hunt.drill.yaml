@@ -105,3 +105,18 @@ cases:
     expect:
       outcome: invalid
       model_calls: 1
+  # A Python tree: ext=.py walks only .py files, and stop_at="" scans every
+  # line (Python tests live in their own files, not a trailing module).
+  - id: python-files-with-ext-and-no-stop-marker
+    inputs: {dirs: [pkg], angle: authority bypass, ext: .py, stop_at: ""}
+    model:
+      scan:
+        - findings:
+            - {kind: bypass, severity: high, confidence: 0.9, claim: Any role starting with admin passes, trigger: role "adminx", snippet: 'return role.startswith("admin") or role == "owner"'}
+    expect:
+      outcome: returned
+      result:
+        angle: authority bypass
+        findings:
+          - {kind: bypass, severity: high, confidence: 0.9, claim: Any role starting with admin passes, trigger: role "adminx", snippet: 'return role.startswith("admin") or role == "owner"', file: pkg/auth.py, start: 0, quoted: true}
+      model_calls: 1

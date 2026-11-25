@@ -16,13 +16,20 @@ every dependency (dev-dependencies included) that `cargo test --offline`
 needs in a lab at either commit. Rerunning is cheap: clones are reused and
 only fetched again when a pinned commit is missing.
 
+A `"lang": "python"` case (python-suite.json) has no build step: instead both
+commits are exported and its `module` is imported from its `import_root`
+with this Python, so a lab can run unittest repros at either commit. Python
+cases must be standard-library only.
+
 Then run a case, e.g.:
   setup.sh LAB CACHE_DIR/rust-url PARENT_COMMIT summonr url
   benchmark/run.sh CACHE_DIR OUT summonr --suite benchmark/external-suite.json \\
       --gold-dir CACHE_DIR/gold --tier smoke
+  setup.sh LAB CACHE_DIR/packaging PARENT_COMMIT summonr src --lang python
 """
 import argparse
 import json
+import os
 import pathlib
 import shutil
 import subprocess
@@ -69,14 +76,34 @@ def clone(cache, name, url, shas):
     return dest
 
 
-def cargo_fetch(repo, rev, crate_path, scratch):
-    """Export REV and fetch its dependencies into the shared Cargo cache."""
+def export(repo, rev, scratch):
     out = scratch / rev
     out.mkdir(parents=True)
     archive = subprocess.Popen(["git", "-C", str(repo), "archive", rev], stdout=subprocess.PIPE)
     subprocess.run(["tar", "-x", "-C", str(out)], stdin=archive.stdout, check=True)
     if archive.wait() != 0:
         sys.exit(f"git archive {rev} failed in {repo}")
+    return out
+
+
+def python_check(repo, rev, case, scratch):
+    """Export REV and import the case's module the way a lab's unittest does."""
+    out = export(repo, rev, scratch)
+    module = case.get("module")
+    if not module:
+        sys.exit(f"{case['name']}: a python case needs `module` (the package to import)")
+    root = out / (case.get("import_root") or ".")
+    env = {"PATH": os.environ.get("PATH", ""), "PYTHONPATH": str(root), "PYTHONDONTWRITEBYTECODE": "1"}
+    # Run from the export, as unittest runs from the worktree root.
+    p = subprocess.run([sys.executable, "-c", f"import {module}"], cwd=out, env=env, capture_output=True, text=True)
+    shutil.rmtree(out)
+    if p.returncode != 0:
+        sys.exit(f"{case['name']}@{rev}: import {module} failed\n{p.stderr.strip()}")
+
+
+def cargo_fetch(repo, rev, crate_path, scratch):
+    """Export REV and fetch its dependencies into the shared Cargo cache."""
+    out = export(repo, rev, scratch)
     manifest = out / (crate_path or ".") / "Cargo.toml"
     if not manifest.is_file():
         sys.exit(f"{repo.name}@{rev}: no Cargo.toml at {crate_path or '.'}")
@@ -94,7 +121,7 @@ def main():
     p.add_argument("--repo", action="append", default=[], help="only this repo_name (repeatable)")
     p.add_argument("--case", action="append", default=[], help="only this case name (repeatable)")
     p.add_argument("--tier", choices=sorted(TIERS, key=TIERS.get), help="this tier and below")
-    p.add_argument("--no-cargo", action="store_true", help="skip pre-fetching Cargo dependencies")
+    p.add_argument("--no-cargo", action="store_true", help="skip pre-fetching Cargo dependencies (and the Python import check)")
     args = p.parse_args()
 
     suite = json.load(open(args.suite, encoding="utf-8"))
@@ -124,8 +151,12 @@ def main():
                 repo = clones[c["repo_name"]]
                 for rev in (f"{c['fix_commit']}^", c["fix_commit"]):
                     sha = run(["git", "-C", str(repo), "rev-parse", "--short=12", rev])
-                    print(f"[{c['name']}] cargo fetch at {sha}")
-                    cargo_fetch(repo, sha, c.get("crate_path"), pathlib.Path(tmp))
+                    if c.get("lang", "rust") == "python":
+                        print(f"[{c['name']}] import {c.get('module')} at {sha}")
+                        python_check(repo, sha, c, pathlib.Path(tmp))
+                    else:
+                        print(f"[{c['name']}] cargo fetch at {sha}")
+                        cargo_fetch(repo, sha, c.get("crate_path"), pathlib.Path(tmp))
 
     # make_gold.py builds every case in the suite file it is given, so give
     # it only the selected ones.

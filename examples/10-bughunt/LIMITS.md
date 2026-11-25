@@ -98,7 +98,7 @@ how much they cost the build.
 14. **Summonr is a binary crate**, so a repro in `tests/` could reach no
     internals. *Workaround:* the base branch commits an empty
     `src/bughunt_repro.rs` declared as `#[cfg(test)] mod bughunt_repro;`.
-    This harness is Rust-specific; nothing in the language describes "how
+    Each harness is language-specific; nothing in the language describes "how
     to run one test in this project".
     For a crate in a Cargo workspace (`setup.sh ... CRATE_PATH`), the file
     stays at the repository's `src/bughunt_repro.rs` (the path the rituals
@@ -106,6 +106,13 @@ how much they cost the build.
     crate also gets `#[cfg(test)] extern crate std;`, and the trial passes
     `RUSTFLAGS=--cap-lints=warn` so an old commit's `deny(warnings)` does not
     fail on lints a newer compiler added.
+    A Python target (`setup.sh ... --lang python`) needs no declaration: the
+    base branch commits an empty `test_bughunt_repro.py` at the repository
+    root, and the `test` command is
+    `timeout 300 env PYTHONPATH=IMPORT_ROOT PYTHONDONTWRITEBYTECODE=1 python3 -m unittest test_bughunt_repro`.
+    `PYTHONPATH` is relative so it names the import root of whichever
+    worktree trial runs in. Only standard-library-only targets work: nothing
+    installs a project's dependencies, and a lab has no virtualenv.
 
 ## Models
 
@@ -128,6 +135,32 @@ how much they cost the build.
 19. **Assumptions are not checkable in the language.** `target-commit` is
     a statement; nothing reads the lab's HEAD (the hunt has no `git`
     authority, and adding it only for this would widen the grant).
+
+## Other languages
+
+20. **A step's `bind:` list and `schema` are fixed**, unlike its model
+    (`one_of`/`choose`, 15). A Rust and a Python repro need different
+    guides and answer fields, so `bughunt-test` has two writer steps
+    (`write_repro` and `write_repro_py`, likewise the rewrite) in `if`
+    branches with the prompt duplicated, and `data.coalesce` picks
+    whichever ran. The triage guides stay Rust-worded; a Python run puts a
+    short translation note in front of the prompt (empty for Rust, so
+    Rust prompts are unchanged).
+    *Proposal:* `bind:` entries chosen by a reference, as `choose` does for
+    models, from a fixed set of bindings.
+21. **A lab cannot set a ritual's input defaults.** A Python lab wants
+    `ext=.py`, `stop_at=""` and `lang=python` everywhere (and the rite's
+    stages do not pass them). *Workaround:* `setup.sh --lang python`
+    rewrites those exact input lines while staging the rituals, so a
+    changed line silently stops being flipped. *Proposal:* per-home input
+    defaults in `config.yaml`, recorded in each run.
+22. **The verdict's honesty checks are substring tests.** For Python, an
+    `import`/`from` line must name the suspect module (or its package:
+    `src/packaging/_parser.py` imported as `packaging.markers`); the marker
+    counts only on `FAILED (failures=1)`, so an uncaught exception that
+    happens to quote it is `untestable`; `expectedFailure`, `unittest.skip`
+    and `skipTest` make a test dishonest. A module whose name is a substring
+    of another import (`auth` in `oauthlib`) passes the import check.
 
 ## Rough edges met on the way
 

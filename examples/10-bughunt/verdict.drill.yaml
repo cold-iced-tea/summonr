@@ -129,3 +129,84 @@ cases:
       passed: false
       tail: "BUGHUNT-CONFIRMED: panicked\ntest result: FAILED. 0 passed; 1 failed"
     expect: {outcome: returned, result: {verdict: untestable, honest: false}}
+  # lang: python reads a unittest run of test_bughunt_repro.py.
+  - id: python-marker-failure-confirms
+    inputs:
+      lang: python
+      file: pkg/auth.py
+      test_file: "import unittest\nfrom pkg.auth import allowed\n\nclass Repro(unittest.TestCase):\n    def test_repro(self):\n        self.assertFalse(allowed(\"adminx\"), \"BUGHUNT-CONFIRMED: prefix\")\n"
+      passed: false
+      tail: "F\n======================================================================\nFAIL: test_repro (test_bughunt_repro.Repro.test_repro)\nAssertionError: True is not false : BUGHUNT-CONFIRMED: prefix\n\n----------------------------------------------------------------------\nRan 1 test in 0.001s\n\nFAILED (failures=1)"
+    expect: {outcome: returned, result: {verdict: confirmed, build_failed: false, honest: true}, model_calls: 0}
+  - id: python-one-test-ok-refutes
+    inputs:
+      lang: python
+      file: pkg/auth.py
+      test_file: "import unittest\nfrom pkg.auth import allowed\n\nclass Repro(unittest.TestCase):\n    def test_repro(self):\n        self.assertTrue(allowed(\"admin\"))\n"
+      passed: true
+      tail: ".\n----------------------------------------------------------------------\nRan 1 test in 0.000s\n\nOK"
+    expect: {outcome: returned, result: {verdict: refuted, build_failed: false}}
+  - id: python-no-tests-ran-is-untestable
+    inputs:
+      lang: python
+      file: pkg/auth.py
+      test_file: "import unittest\nfrom pkg.auth import allowed\n"
+      passed: false
+      tail: "\n----------------------------------------------------------------------\nRan 0 tests in 0.000s\n\nNO TESTS RAN"
+    expect: {outcome: returned, result: {verdict: untestable, build_failed: false}}
+  - id: python-import-error-is-a-build-failure
+    inputs:
+      lang: python
+      file: pkg/auth.py
+      test_file: "import unittest\nfrom pkg.auth import nope\n"
+      passed: false
+      tail: "E\n======================================================================\nERROR: test_bughunt_repro (unittest.loader._FailedTest.test_bughunt_repro)\nImportError: cannot import name 'nope' from 'pkg.auth'\n\n----------------------------------------------------------------------\nRan 1 test in 0.000s\n\nFAILED (errors=1)"
+    expect: {outcome: returned, result: {verdict: untestable, build_failed: true}}
+  - id: python-marker-in-an-uncaught-error-is-untestable
+    inputs:
+      lang: python
+      file: pkg/auth.py
+      test_file: "import unittest\nfrom pkg.auth import allowed\n\nclass Repro(unittest.TestCase):\n    def test_repro(self):\n        raise ValueError(\"BUGHUNT-CONFIRMED: wrong kind\")\n"
+      passed: false
+      tail: "E\n======================================================================\nERROR: test_repro (test_bughunt_repro.Repro.test_repro)\nValueError: BUGHUNT-CONFIRMED: wrong kind\n\n----------------------------------------------------------------------\nRan 1 test in 0.000s\n\nFAILED (errors=1)"
+    expect: {outcome: returned, result: {verdict: untestable, build_failed: false}}
+  - id: python-test-that-never-imports-the-module-cannot-confirm
+    inputs:
+      lang: python
+      file: pkg/auth.py
+      test_file: "import unittest\n\nclass Repro(unittest.TestCase):\n    def test_repro(self):\n        # copied from pkg/auth.py\n        bad = \"adminx\".startswith(\"admin\")\n        self.assertFalse(bad, \"BUGHUNT-CONFIRMED: copied logic\")\n"
+      passed: false
+      tail: "AssertionError: True is not false : BUGHUNT-CONFIRMED: copied logic\n\nRan 1 test in 0.000s\n\nFAILED (failures=1)"
+    expect: {outcome: returned, result: {verdict: untestable, honest: false}}
+  - id: python-expected-failure-cannot-refute
+    inputs:
+      lang: python
+      file: pkg/auth.py
+      test_file: "import unittest\nfrom pkg.auth import allowed\n\nclass Repro(unittest.TestCase):\n    @unittest.expectedFailure\n    def test_repro(self):\n        self.assertFalse(allowed(\"adminx\"))\n"
+      passed: true
+      tail: "x\n----------------------------------------------------------------------\nRan 1 test in 0.000s\n\nOK (expected failures=1)"
+    expect: {outcome: returned, result: {verdict: untestable, honest: false}}
+  - id: python-package-import-reaches-a-private-module
+    inputs:
+      lang: python
+      file: src/packaging/_parser.py
+      test_file: "import unittest\nfrom packaging.markers import Marker, InvalidMarker\n\nclass Repro(unittest.TestCase):\n    def test_repro(self):\n        try:\n            Marker(\"(\" * 5000 + 'python_version > \"1\"' + \")\" * 5000)\n            kind = None\n        except InvalidMarker:\n            kind = \"invalid\"\n        except RecursionError:\n            kind = \"recursion\"\n        self.assertNotEqual(kind, \"recursion\", \"BUGHUNT-CONFIRMED: RecursionError\")\n"
+      passed: false
+      tail: "AssertionError: 'recursion' == 'recursion' : BUGHUNT-CONFIRMED: RecursionError\n\n----------------------------------------------------------------------\nRan 1 test in 0.004s\n\nFAILED (failures=1)"
+    expect: {outcome: returned, result: {verdict: confirmed, honest: true}}
+  - id: python-init-is-named-by-its-package
+    inputs:
+      lang: python
+      file: src/tomli/__init__.py
+      test_file: "import unittest\nimport tomli\n\nclass Repro(unittest.TestCase):\n    def test_repro(self):\n        self.assertEqual(tomli.loads(\"a = 1\"), {\"a\": 1})\n"
+      passed: true
+      tail: ".\n----------------------------------------------------------------------\nRan 1 test in 0.000s\n\nOK"
+    expect: {outcome: returned, result: {verdict: refuted, honest: true}}
+  - id: python-hash-comment-quoting-marker-does-not-break-honesty
+    inputs:
+      lang: python
+      file: pkg/auth.py
+      test_file: "import unittest\nfrom pkg.auth import allowed\n\nclass Repro(unittest.TestCase):\n    def test_repro(self):\n        # fail with BUGHUNT-CONFIRMED only when the bug happens\n        self.assertFalse(allowed(\"adminx\"), \"BUGHUNT-CONFIRMED: prefix\")\n"
+      passed: false
+      tail: "AssertionError: True is not false : BUGHUNT-CONFIRMED: prefix\n\nRan 1 test in 0.000s\n\nFAILED (failures=1)"
+    expect: {outcome: returned, result: {verdict: confirmed, honest: true}}

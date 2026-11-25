@@ -1,0 +1,139 @@
+{
+ "version": 1,
+ "description": "External bughunt suite for Python: real fix commits in two standard-library-only Python projects (packaging, tomli). No third-party source is stored here; benchmark/fetch_external.py clones the pinned commits, checks the package imports at both commits, and builds the gold sets locally. Each case is \"lang\": \"python\": hunts scan .py files with no test-module marker, and repros are unittest modules run from `import_root`.",
+ "categories": [
+  "input-validation",
+  "parser-framing",
+  "path-traversal",
+  "recursion-dos",
+  "resource-dos"
+ ],
+ "cases": [
+  {
+   "name": "py-packaging-4d7875f",
+   "lang": "python",
+   "repo_name": "packaging",
+   "repo_url": "https://github.com/pypa/packaging",
+   "fix_commit": "4d7875f85e64aa9d56fe69af5eb017e796659fd1",
+   "gold": "py-packaging-4d7875f.json",
+   "dirs": [
+    "src/packaging"
+   ],
+   "import_root": "src",
+   "module": "packaging",
+   "category": "recursion-dos",
+   "tags": [
+    "markers",
+    "recursive-descent",
+    "nesting"
+   ],
+   "tier": "smoke",
+   "summary": "Parenthesized marker groups recursed without a depth limit, so a deeply nested marker raised RecursionError instead of InvalidMarker"
+  },
+  {
+   "name": "py-packaging-022ae6c",
+   "lang": "python",
+   "repo_name": "packaging",
+   "repo_url": "https://github.com/pypa/packaging",
+   "fix_commit": "022ae6c6fe5c2ef9615875d0ecfab1ae4024720f",
+   "gold": "py-packaging-022ae6c.json",
+   "dirs": [
+    "src/packaging"
+   ],
+   "import_root": "src",
+   "module": "packaging",
+   "category": "path-traversal",
+   "tags": [
+    "metadata",
+    "license-files",
+    "windows-drive"
+   ],
+   "tier": "smoke",
+   "summary": "License-File validation accepted Windows drive-relative paths (C:LICENSE), which escape the project root when joined"
+  },
+  {
+   "name": "py-tomli-e1fdb94",
+   "lang": "python",
+   "repo_name": "tomli",
+   "repo_url": "https://github.com/hukkin/tomli",
+   "fix_commit": "e1fdb94bc998377f1c2545c7cd4f70ff2a3fb4e4",
+   "gold": "py-tomli-e1fdb94.json",
+   "dirs": [
+    "src/tomli"
+   ],
+   "import_root": "src",
+   "module": "tomli",
+   "category": "resource-dos",
+   "tags": [
+    "keys",
+    "quadratic",
+    "dotted-keys"
+   ],
+   "tier": "core",
+   "summary": "A dotted key could have any number of parts, and a pathologically long one took quadratic time to parse"
+  },
+  {
+   "name": "py-packaging-2602dd0",
+   "lang": "python",
+   "repo_name": "packaging",
+   "repo_url": "https://github.com/pypa/packaging",
+   "fix_commit": "2602dd07d8bd5d6c54a3ce0e212f52eb2e127f3e",
+   "gold": "py-packaging-2602dd0.json",
+   "dirs": [
+    "src/packaging"
+   ],
+   "import_root": "src",
+   "module": "packaging",
+   "category": "parser-framing",
+   "tags": [
+    "requirements",
+    "url",
+    "tokenizer",
+    "whitespace"
+   ],
+   "tier": "core",
+   "summary": "The URL token matched any run of non-space, non-tab text, so a line break in a URL requirement was absorbed into the URL and later serialized as a second requirement line"
+  },
+  {
+   "name": "py-tomli-22834cf",
+   "lang": "python",
+   "repo_name": "tomli",
+   "repo_url": "https://github.com/hukkin/tomli",
+   "fix_commit": "22834cf3eddb19fa8252145d1d2be21ae24613f6",
+   "gold": "py-tomli-22834cf.json",
+   "dirs": [
+    "tomli"
+   ],
+   "import_root": "",
+   "module": "tomli",
+   "category": "input-validation",
+   "tags": [
+    "inline-table",
+    "duplicate-keys"
+   ],
+   "tier": "full",
+   "summary": "An inline table silently kept the last of two duplicate keys instead of raising TOMLDecodeError"
+  },
+  {
+   "name": "py-packaging-0625596",
+   "lang": "python",
+   "repo_name": "packaging",
+   "repo_url": "https://github.com/pypa/packaging",
+   "fix_commit": "0625596e502163179b9a82796aee82c178efc16d",
+   "gold": "py-packaging-0625596.json",
+   "dirs": [
+    "src/packaging"
+   ],
+   "import_root": "src",
+   "module": "packaging",
+   "category": "parser-framing",
+   "tags": [
+    "wheel-filename",
+    "regex",
+    "anchoring"
+   ],
+   "tier": "full",
+   "summary": "The wheel build-tag regex was not anchored at the end, so a filename with a newline inside the build tag (foo-1.0-1\\nabc-py3-none-any.whl) parsed as valid"
+  }
+ ]
+}
