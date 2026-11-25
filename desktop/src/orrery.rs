@@ -262,8 +262,8 @@ impl Orrery {
         let Some(b) = self.bounds.get() else { return };
         let c = b.center();
         let r = f32::from(b.size.width.min(b.size.height)) * 0.42;
-        if pick {
-            if let Some((_, star)) = dial
+        if pick
+            && let Some((_, star)) = dial
                 .stars
                 .iter()
                 .map(|s| {
@@ -272,10 +272,9 @@ impl Orrery {
                 })
                 .filter(|(dist, _)| *dist <= 8.)
                 .min_by(|a, b| a.0.total_cmp(&b.0))
-            {
-                self.select(star.id.clone(), cx);
-                return;
-            }
+        {
+            self.select(star.id.clone(), cx);
+            return;
         }
         let f = (f32::from(p.y - c.y).atan2(f32::from(p.x - c.x)) - PI / 2.).rem_euclid(TAU) / TAU;
         self.cursor = Some(
@@ -305,6 +304,25 @@ impl Render for Orrery {
                             .any(|(s, e, _)| *s < end && e.unwrap_or(now) >= start))
             })
             .collect();
+        let ended = visible
+            .iter()
+            .filter(|run| {
+                run.end
+                    .is_some_and(|finished| (start..end).contains(&finished))
+            })
+            .count();
+        let active = visible
+            .iter()
+            .filter(|run| overlap(run.start, run.end, now.min(end - 1)))
+            .count();
+        let selection = visible
+            .iter()
+            .find(|run| Some(&run.id) == self.selected.as_ref())
+            .map(|run| {
+                let duration =
+                    super::elapsed(run.end.unwrap_or(now).saturating_sub(run.start).max(0));
+                format!("{}  ·  {}  ·  {}", run.ritual, duration, run.state)
+            });
         let mut names: Vec<_> = visible.iter().map(|r| r.ritual.as_str()).collect();
         names.sort_unstable();
         names.dedup();
@@ -460,12 +478,15 @@ impl Render for Orrery {
             )
             .child(type_line(
                 format!(
-                    "{}   ·   noon to noon   ·   local time",
+                    "{}   ·   noon to noon   ·   {active} active at cutoff   ·   {ended} ended",
                     date.format("%a %d %b %Y")
                 ),
                 13.,
                 DIM,
             ))
+            .when_some(selection, |el, selected| {
+                el.child(type_line(selected, 13., APRICOT))
+            })
             .when(!self.error.is_empty(), |e| {
                 e.child(type_line(self.error.clone(), 13., APRICOT))
             })

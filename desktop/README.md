@@ -49,3 +49,10 @@ Click **Orrery** on the board or enter `orrery` to open its independent window. 
 Active run windows check for new ledger events after 160 ms and immediately fetch additional full pages. The active directory polls after 300 ms. Idle polling and run metadata refreshes use a one-second interval. Run windows keep the most recent 64 ledger entries they have read. Rite windows show each stage and its gate state. When disconnected the console and windows identify their last observation.
 
 To build the optional client directly, run `cargo build --manifest-path desktop/Cargo.toml --locked`. Its GPUI dependencies are pinned to the gpui-pre 0.3.12 snapshot. To install locally, install both Cargo packages and copy `summonr-desktop.desktop` into your applications directory with the installed binaries on your desktop PATH.
+
+
+### Run oversight
+
+With the command prompt empty, press `/` to search the directory and `Esc` to clear it. Search terms match ritual names, run ID prefixes, and outcomes or states such as `held`. Multiple terms narrow the list together. Arrow keys and Alt+1–9 follow the displayed order. The directory reads up to 1,000 active summons and the latest 1,000 ended top-level summons, plus rites. Child counts in the preview come from the selected run’s direct children.
+
+The Orrery shows the runs that finished during the displayed local noon-to-noon window and those still active at its cutoff. Select a star to see its ritual, duration, and recorded outcome.
