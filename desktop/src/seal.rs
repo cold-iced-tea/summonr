@@ -39,10 +39,11 @@ impl Seal {
     pub fn observe(&mut self, name: &str, text: &str) {
         let i = self.reserve(name);
         self.sites[i].evidence = Some(text.into());
-        if let Some(prev) = self.last {
-            if prev != i && !self.strokes.contains(&(prev, i)) {
-                self.strokes.push((prev, i));
-            }
+        if let Some(prev) = self.last
+            && prev != i
+            && !self.strokes.contains(&(prev, i))
+        {
+            self.strokes.push((prev, i));
         }
         self.last = Some(i);
     }
