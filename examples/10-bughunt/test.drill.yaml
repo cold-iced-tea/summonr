@@ -15,7 +15,7 @@ cases:
       triage_context:
         - {needs_file: "", symbol: ""}
       triaged:
-        - {real_bug: false, diagnosis: "Code is safe.", target_fn: "allowed", test_strategy: "none"}
+        - {assessment: safe, diagnosis: "Code is safe.", target_fn: "allowed", test_strategy: "none"}
     expect:
       outcome: returned
       result: {confirmed: 0, dismissed: 1, untested: 0}
@@ -29,7 +29,23 @@ cases:
       triage_context:
         - {needs_file: "lib/withtests.rs", symbol: "fn"}
       triaged:
-        - {real_bug: true, diagnosis: "prefix match allows adminx", target_fn: "crate::auth::allowed", test_strategy: "call allowed(\"adminx\")"}
+        - {assessment: real_bug, diagnosis: "prefix match allows adminx", target_fn: "crate::auth::allowed", test_strategy: "call allowed(\"adminx\")"}
+      write_repro:
+        - rust_source: "use crate::auth::allowed;\n#[test]\nfn repro() {\n    assert!(!allowed(\"adminx\"), \"BUGHUNT-CONFIRMED: prefix bypass\");\n}\n"
+    expect:
+      outcome: returned
+      result: {confirmed: 1, dismissed: 0, untested: 0}
+      model_calls: 3
+  - id: uncertain-triage-still-writes-repro
+    inputs:
+      triage: true
+      findings:
+        - {kind: bypass, severity: high, confidence: 0.9, claim: "unseen caller bound", trigger: "x", snippet: "role.starts_with(\"admin\")", file: src/auth.rs, start: 0, quoted: true}
+    model:
+      triage_context:
+        - {needs_file: "", symbol: ""}
+      triaged:
+        - {assessment: uncertain, diagnosis: "depends on caller", target_fn: "crate::auth::allowed", test_strategy: "call allowed(\"adminx\")"}
       write_repro:
         - rust_source: "use crate::auth::allowed;\n#[test]\nfn repro() {\n    assert!(!allowed(\"adminx\"), \"BUGHUNT-CONFIRMED: prefix bypass\");\n}\n"
     expect:
@@ -45,7 +61,7 @@ cases:
       triage_context:
         - {needs_file: "src/does_not_exist.rs", symbol: "foo"}
       triaged:
-        - {real_bug: false, diagnosis: "No bug found.", target_fn: "allowed", test_strategy: "none"}
+        - {assessment: safe, diagnosis: "No bug found.", target_fn: "allowed", test_strategy: "none"}
     expect:
       outcome: returned
       result: {confirmed: 0, dismissed: 1, untested: 0}

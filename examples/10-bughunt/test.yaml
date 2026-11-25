@@ -16,9 +16,12 @@ inputs:
   # code window (with file header + optional sibling file) before writing a
   # test; false positives are dismissed without spending build budget.
   triage: {type: boolean, default: true}
-  # When true and escalate != none, run free local triage first and only send
-  # surviving real_bug leads to the cloud test writer.
+  # When true and escalate != none, run free local triage first and send
+  # surviving real_bug and uncertain leads to the cloud test writer.
   escalate_after_triage: {type: boolean, default: false}
+  # When true and escalate != none, run triage on the escalated cloud model
+  # instead of local 35B.
+  cloud_triage: {type: boolean, default: false}
   # Each finding costs one to four model calls and up to two builds; the
   # rest are reported as untested rather than left to exhaust the run.
   max_batch: {type: integer, default: 25, min: 1, max: 200}
@@ -44,10 +47,10 @@ defs:
       symbol: {type: string, maxLength: 120}
   triage_verdict:
     type: object
-    required: [real_bug, diagnosis, target_fn, test_strategy]
+    required: [assessment, diagnosis, target_fn, test_strategy]
     additionalProperties: false
     properties:
-      real_bug: {type: boolean}
+      assessment: {type: string, enum: [real_bug, uncertain, safe]}
       diagnosis: {type: string, maxLength: 500}
       target_fn: {type: string, maxLength: 120}
       test_strategy: {type: string, maxLength: 500}
@@ -77,14 +80,19 @@ bindings:
       code. Do NOT stop just because the scanner's claim is wrong: first
       independently audit the Rust code shown (including any sibling file
       context provided) for ANY real security bypass, injection, panic,
-      overflow, or logic bug before deciding it is safe.
-      - Only if the code shown is genuinely sound, set real_bug: false and
-        explain briefly why it is safe.
-      - If there IS a real bug or bypass in the code shown (even if the real
-        bug differs completely from the scanner's claim!), set real_bug: true,
-        state the exact root cause in diagnosis, name the reachable Rust
-        function in target_fn, and give a concrete unit-test plan in
-        test_strategy.
+      overflow, unbounded recursion, or logic bug.
+      - Set assessment: "safe" ONLY if you can point to an explicit guard,
+        depth/size bound, or Rust type invariant VISIBLE IN THE CODE SHOWN
+        that prevents any bug here. NEVER assume an unseen caller, parser,
+        or config limits input depth or size.
+      - Set assessment: "uncertain" if safety depends on an unseen caller,
+        external invariant, or subtle edge case you cannot prove safe from
+        the code shown — give your best target_fn and test_strategy so a
+        test can settle it.
+      - Set assessment: "real_bug" if you see a concrete bug or bypass in the
+        code shown (even if it differs from the scanner's claim!), state the
+        exact root cause in diagnosis, name the reachable Rust function in
+        target_fn, and give a concrete unit-test plan in test_strategy.
       Answer with JSON matching the schema.
   harness:
     content: |
@@ -313,9 +321,31 @@ steps:
             operation: data.select
             arguments: {condition: "${steps.fetch_sibling.output}", then: "${steps.sib_block_inner.output}", else: ""}
           # Step 2 of triage: independently judge with primary + sibling context.
+          - id: triage_use_codex
+            operation: data.logic
+            arguments: {operator: and, left: "${inputs.cloud_triage}", right: "${steps.use_codex.output}"}
+          - id: triage_use_gemini
+            operation: data.logic
+            arguments: {operator: and, left: "${inputs.cloud_triage}", right: "${steps.use_gemini.output}"}
+          - id: triage_after_codex
+            operation: data.select
+            arguments:
+              condition: "${steps.triage_use_codex.output}"
+              then: codex/default
+              else: ollama/hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M
+          - id: triage_model
+            operation: data.select
+            arguments:
+              condition: "${steps.triage_use_gemini.output}"
+              then: gemini/default
+              else: "${steps.triage_after_codex.output}"
           - id: triaged
             model:
-              name: ollama/hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M
+              one_of:
+                - ollama/hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M
+                - codex/default
+                - gemini/default
+              choose: "${steps.triage_model.output}"
               bind: [triage_guide]
               prompt: |
                 Scanner lead: ${steps.brief.output}
@@ -323,6 +353,9 @@ steps:
                 ${steps.header_block.output}Code from ${found.file}, lines from ${steps.win_start.output}:
                 ${steps.code.output}${steps.sib_block.output}
               schema: {$ref: "#/$defs/triage_verdict"}
+          - id: triage_not_safe
+            operation: data.compare
+            arguments: {left: "${steps.triaged.output.assessment}", right: safe, operator: ne}
       - id: sibling_context
         operation: data.select
         arguments: {condition: "${steps.run_triage.output}", then: "${steps.sib_block.output}", else: ""}
@@ -330,7 +363,7 @@ steps:
         operation: data.select
         arguments:
           condition: "${steps.run_triage.output}"
-          then: "${steps.triaged.output.real_bug}"
+          then: "${steps.triage_not_safe.output}"
           else: true
       - id: diagnosis_text
         operation: data.select

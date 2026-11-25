@@ -58,6 +58,20 @@ steps:
   - id: names_module
     operation: data.contains
     arguments: {value: "${inputs.test_file}", needle: "${steps.needle.output}"}
+  # Also accept re-exported parent module paths (e.g. src/uri/authority.rs
+  # imported as crate::uri::Authority).
+  - id: has_parent_mod
+    operation: data.compare
+    arguments: {left: "${steps.prev.output}", right: src, operator: ne}
+  - id: names_parent_raw
+    operation: data.contains
+    arguments: {value: "${inputs.test_file}", needle: "${steps.prev.output}::"}
+  - id: names_parent
+    operation: data.logic
+    arguments: {operator: and, left: "${steps.has_parent_mod.output}", right: "${steps.names_parent_raw.output}"}
+  - id: names_module_or_parent
+    operation: data.logic
+    arguments: {operator: or, left: "${steps.names_module.output}", right: "${steps.names_parent.output}"}
   # For src/reagents/<name>_reagent.rs, also accept honest calls through
   # reagent::call / reagent::authorize naming "<name>".
   - id: is_reagent_file
@@ -89,7 +103,7 @@ steps:
     arguments: {values: ["${steps.is_reagent_file.output}", "${steps.calls_dispatcher.output}", "${steps.names_reagent.output}"]}
   - id: names_code
     operation: data.logic
-    arguments: {operator: or, left: "${steps.names_module.output}", right: "${steps.via_dispatcher.output}"}
+    arguments: {operator: or, left: "${steps.names_module_or_parent.output}", right: "${steps.via_dispatcher.output}"}
   - id: should_panic
     operation: data.contains
     arguments: {value: "${inputs.test_file}", needle: should_panic}
@@ -201,9 +215,16 @@ steps:
   - id: failed_with_marker
     operation: data.logic
     arguments: {operator: and, left: "${steps.marker.output}", right: "${steps.test_failed.output}"}
+  # A real stack overflow aborts the test binary before Rust prints test result:.
+  - id: stack_overflow
+    operation: data.contains
+    arguments: {value: "${inputs.tail}", needle: "fatal runtime error: stack overflow"}
+  - id: confirmed_crash
+    operation: data.logic
+    arguments: {operator: or, left: "${steps.failed_with_marker.output}", right: "${steps.stack_overflow.output}"}
   - id: failed_as_claimed
     operation: data.logic
-    arguments: {operator: and, left: "${steps.not_passed.output}", right: "${steps.failed_with_marker.output}"}
+    arguments: {operator: and, left: "${steps.not_passed.output}", right: "${steps.confirmed_crash.output}"}
   - id: is_confirmed
     operation: data.logic
     arguments: {operator: and, left: "${steps.failed_as_claimed.output}", right: "${steps.honest.output}"}

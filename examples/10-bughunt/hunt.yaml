@@ -2,8 +2,8 @@ language_version: 1
 ritual: bughunt-hunt
 description: >-
   Recursively walk source files beneath one or more directories using file.walk,
-  scan each file chunk by chunk, and ask a small model for bugs or ways around
-  the system from one angle. Read-only.
+  deduplicate overlapping paths across dirs, scan each file chunk by chunk, and
+  ask a small model for bugs or ways around the system from one angle. Read-only.
 inputs:
   root: {type: string, default: /absolute/path/to/target}
   dirs: {type: list, default: [src]}
@@ -15,88 +15,67 @@ requires:
   - {reagent: file, action: read_text, on: {root: "${inputs.root}"}}
 essence: {requests: 400, time: 3h}
 steps:
-  - id: per_dir
+  - id: walked
     each: dir in inputs.dirs
-    keep: [dir_findings, dir_chunks_failed, dir_files_failed, dir_files_wanted]
+    keep: [paths]
     steps:
       - id: listing
         operation: file.walk
         arguments: {root: "${inputs.root}", path: "${dir}", ext: "${inputs.ext}"}
-      # An unreadable file (not UTF-8, over 1 MiB) is skipped, not fatal.
-      - id: per_file
-        each: file_path in steps.listing.output.paths
-        on_failure: continue
-        keep: [scanned]
-        steps:
-          - id: scanned
-            ritual: bughunt-scan-file
-            arguments: {root: "${inputs.root}", path: "${file_path}", angle: "${inputs.angle}", chunk: "${inputs.chunk}"}
-      - id: files_ok
-        operation: data.filter
-        arguments: {values: "${steps.per_file.output}", predicate: 'item.status == "returned"'}
-      - id: file_lists
-        operation: data.map
-        arguments:
-          values: "${steps.files_ok.output}"
-          operation: data.get
-          arguments: {value: "${item}", path: /outputs/scanned/findings}
-      - id: dir_findings
-        operation: data.flatten
-        arguments: {values: "${steps.file_lists.output}"}
-      - id: file_fail_counts
-        operation: data.map
-        arguments:
-          values: "${steps.files_ok.output}"
-          operation: data.get
-          arguments: {value: "${item}", path: /outputs/scanned/chunks_failed}
-      - id: dir_chunks_failed
-        operation: data.sum_integers
-        arguments: {values: "${steps.file_fail_counts.output}"}
-      - id: dir_files_failed_list
-        operation: data.filter
-        arguments: {values: "${steps.per_file.output}", predicate: 'item.status != "returned"'}
-      - id: dir_files_failed
-        operation: data.count
-        arguments: {value: "${steps.dir_files_failed_list.output}"}
-      - id: dir_files_wanted
-        operation: data.count
-        arguments: {value: "${steps.listing.output.paths}"}
-  - id: dir_finding_lists
+      - id: paths
+        operation: data.get
+        arguments: {value: "${steps.listing.output}", path: /paths}
+  - id: path_lists
     operation: data.map
     arguments:
-      values: "${steps.per_dir.output}"
+      values: "${steps.walked.output}"
       operation: data.get
-      arguments: {value: "${item}", path: /outputs/dir_findings}
+      arguments: {value: "${item}", path: /outputs/paths}
+  - id: all_paths
+    operation: data.flatten
+    arguments: {values: "${steps.path_lists.output}"}
+  - id: unique_paths
+    operation: data.unique
+    arguments: {values: "${steps.all_paths.output}"}
+  # An unreadable file (not UTF-8, over 1 MiB) is skipped, not fatal.
+  - id: per_file
+    each: file_path in steps.unique_paths.output
+    on_failure: continue
+    keep: [scanned]
+    steps:
+      - id: scanned
+        ritual: bughunt-scan-file
+        arguments: {root: "${inputs.root}", path: "${file_path}", angle: "${inputs.angle}", chunk: "${inputs.chunk}"}
+  - id: files_ok
+    operation: data.filter
+    arguments: {values: "${steps.per_file.output}", predicate: 'item.status == "returned"'}
+  - id: file_lists
+    operation: data.map
+    arguments:
+      values: "${steps.files_ok.output}"
+      operation: data.get
+      arguments: {value: "${item}", path: /outputs/scanned/findings}
   - id: all_findings
     operation: data.flatten
-    arguments: {values: "${steps.dir_finding_lists.output}"}
-  - id: dir_cf_list
+    arguments: {values: "${steps.file_lists.output}"}
+  - id: file_fail_counts
     operation: data.map
     arguments:
-      values: "${steps.per_dir.output}"
+      values: "${steps.files_ok.output}"
       operation: data.get
-      arguments: {value: "${item}", path: /outputs/dir_chunks_failed}
+      arguments: {value: "${item}", path: /outputs/scanned/chunks_failed}
   - id: chunks_failed
     operation: data.sum_integers
-    arguments: {values: "${steps.dir_cf_list.output}"}
-  - id: dir_ff_list
-    operation: data.map
-    arguments:
-      values: "${steps.per_dir.output}"
-      operation: data.get
-      arguments: {value: "${item}", path: /outputs/dir_files_failed}
+    arguments: {values: "${steps.file_fail_counts.output}"}
+  - id: files_failed_list
+    operation: data.filter
+    arguments: {values: "${steps.per_file.output}", predicate: 'item.status != "returned"'}
   - id: files_failed
-    operation: data.sum_integers
-    arguments: {values: "${steps.dir_ff_list.output}"}
-  - id: dir_fw_list
-    operation: data.map
-    arguments:
-      values: "${steps.per_dir.output}"
-      operation: data.get
-      arguments: {value: "${item}", path: /outputs/dir_files_wanted}
+    operation: data.count
+    arguments: {value: "${steps.files_failed_list.output}"}
   - id: files_wanted
-    operation: data.sum_integers
-    arguments: {values: "${steps.dir_fw_list.output}"}
+    operation: data.count
+    arguments: {value: "${steps.unique_paths.output}"}
   - id: some_wanted
     operation: data.compare
     arguments: {left: "${steps.files_wanted.output}", right: 0, operator: gt}

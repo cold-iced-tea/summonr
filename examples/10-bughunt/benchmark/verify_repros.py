@@ -114,7 +114,10 @@ def inject_and_test(wt: pathlib.Path, test_source: str, timeout: int, crate_path
             or "error[E" in output
             or "aborting due to" in output
         )
-        confirmed_marker = "BUGHUNT-CONFIRMED" in output and rc != 0
+        confirmed_marker = (
+            "BUGHUNT-CONFIRMED" in output
+            or "fatal runtime error: stack overflow" in output
+        ) and rc != 0
         return {
             "returncode": rc,
             "compiled": compiled,
