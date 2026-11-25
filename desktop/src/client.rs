@@ -1,7 +1,7 @@
 use crate::{ipc_frame, window_design::WindowDesign};
 use serde_json::{Value, json};
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, HashSet, VecDeque},
     ffi::OsString,
     os::unix::net::UnixStream,
     path::{Path, PathBuf},
@@ -88,6 +88,28 @@ pub struct Board {
     pub items: Vec<Item>,
 }
 
+impl Board {
+    pub fn filtered(&self, query: &str) -> Vec<&Item> {
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            return self.items.iter().collect();
+        }
+        self.items
+            .iter()
+            .filter(|item| {
+                let name = item.name.to_lowercase();
+                let id = item.id.to_lowercase();
+                query.split_whitespace().all(|term| {
+                    name.contains(term)
+                        || id.starts_with(term)
+                        || item.status.eq_ignore_ascii_case(term)
+                        || (term == "held" && item.held)
+                })
+            })
+            .collect()
+    }
+}
+
 pub fn board(path: &Path) -> Result<Board, String> {
     let mut rpc = Reader::connect(path)?;
     let status = rpc.call("ping", json!({}))?;
@@ -97,15 +119,16 @@ pub fn board(path: &Path) -> Result<Board, String> {
         Value::Null
     };
     let mut items = Vec::new();
+    let mut seen = HashSet::new();
     for (method, params) in [
-        ("list", json!({"scope":"active","limit":100})),
+        ("list", json!({"scope":"active","limit":1000})),
         ("rite_list", json!({})),
-        ("list", json!({"scope":"ended","limit":35})),
+        ("list", json!({"scope":"ended","limit":1000})),
     ] {
         let list = rpc.call(method, params)?;
         for r in list.as_array().ok_or("Invalid run list")? {
             let id = r["id"].as_str().ok_or("Missing run ID")?;
-            if !items.iter().any(|i: &Item| i.id == id) {
+            if seen.insert(id.to_owned()) {
                 let started = r["started"].as_i64();
                 items.push(Item {
                     held: pending.as_array().into_iter().flatten().any(|p| {
@@ -201,6 +224,20 @@ impl Monitor {
                 .map(|stage| (stage.into(), format!("Accept stage {stage}?")))
                 .collect();
             self.waiting = !self.questions.is_empty();
+            // Rites expose their receipts as stage outputs.
+            self.record["result"] = r["stages"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .rev()
+                .find_map(|stage| stage.get("output").filter(|v| !v.is_null()))
+                .cloned()
+                .unwrap_or(Value::Null);
+            self.result = if self.record["result"].is_null() {
+                String::new()
+            } else {
+                self.record["result"].to_string()
+            };
             self.lines = r["stages"]
                 .as_array()
                 .ok_or("Missing rite stages")?
@@ -333,6 +370,58 @@ impl Monitor {
         Ok(())
     }
 }
+pub fn result_summary(result: &Value) -> Vec<String> {
+    let mut summary = Vec::new();
+    if let Some(verdict) = result["verdict"].as_str().filter(|s| !s.trim().is_empty()) {
+        let verdict: String = verdict.chars().take(80).collect();
+        summary.push(format!("Verdict: {}", verdict.replace('_', " ")));
+    }
+    for (key, label) in [("raw", "Raw gold"), ("after_gather", "Gathered gold")] {
+        if let Some(hit) = result[key]["gold_hit"].as_u64() {
+            let score = result[key]["gold_total"]
+                .as_u64()
+                .map_or_else(|| hit.to_string(), |total| format!("{hit}/{total}"));
+            summary.push(format!("{label}: {score}"));
+        }
+    }
+    for key in ["findings", "confirmed", "dismissed"] {
+        if let Some(count) = result[key]
+            .as_u64()
+            .or_else(|| result[key].as_array().map(|items| items.len() as u64))
+        {
+            summary.push(format!("{count} {key}"));
+        }
+    }
+    summary
+}
+
+pub fn child_progress(children: &Value) -> Option<String> {
+    let children = children.as_array().filter(|rows| !rows.is_empty())?;
+    let mut counts = BTreeMap::new();
+    for child in children {
+        let status = child["outcome"]
+            .as_str()
+            .or_else(|| child["status"].as_str())
+            .or_else(|| {
+                child
+                    .get("outcome")
+                    .filter(|v| v.is_null())
+                    .map(|_| "running")
+            })
+            .unwrap_or("unknown");
+        *counts.entry(status).or_insert(0usize) += 1;
+    }
+    Some(format!(
+        "{} children · {}",
+        children.len(),
+        counts
+            .into_iter()
+            .map(|(status, count)| format!("{count} {status}"))
+            .collect::<Vec<_>>()
+            .join(" · ")
+    ))
+}
+
 fn design(r: &Value) -> Result<WindowDesign, String> {
     match r.get("window") {
         Some(v) => serde_json::from_value(v.clone()).map_err(|e| e.to_string()),
@@ -343,6 +432,82 @@ fn design(r: &Value) -> Result<WindowDesign, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn directory_matches_terms_in_order_without_renumbering_gaps() {
+        let board = Board {
+            items: vec![
+                Item {
+                    id: "s-ab123".into(),
+                    name: "Bughunt-bench".into(),
+                    status: "returned".into(),
+                    ..Item::default()
+                },
+                Item {
+                    id: "s-cd456".into(),
+                    name: "bughunt-hunt".into(),
+                    status: "running".into(),
+                    held: true,
+                    ..Item::default()
+                },
+                Item {
+                    id: "s-ef789".into(),
+                    name: "commit-work".into(),
+                    status: "invalid".into(),
+                    ..Item::default()
+                },
+            ],
+            ..Board::default()
+        };
+        let ids = |query| {
+            board
+                .filtered(query)
+                .into_iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids("   "), ["s-ab123", "s-cd456", "s-ef789"]);
+        assert_eq!(ids("BUGHUNT returned"), ["s-ab123"]);
+        assert_eq!(ids("s-CD running held"), ["s-cd456"]);
+        assert_eq!(ids("invalid"), ["s-ef789"]);
+        assert!(ids("456").is_empty());
+    }
+
+    #[test]
+    fn structured_results_accept_counts_and_lists_and_ignore_unrelated_fields() {
+        assert_eq!(
+            result_summary(&json!({
+                "raw":{"gold_hit":2,"gold_total":3},
+                "after_gather":{"gold_hit":1},
+                "findings":[{},{}],
+                "confirmed":0,"dismissed":1,
+                "verdict":"verified_fix"
+            })),
+            [
+                "Verdict: verified fix",
+                "Raw gold: 2/3",
+                "Gathered gold: 1",
+                "2 findings",
+                "0 confirmed",
+                "1 dismissed"
+            ]
+        );
+        assert!(
+            result_summary(&json!({"findings":true,"verdict":3,"raw":{"gold_hit":-1}})).is_empty()
+        );
+    }
+
+    #[test]
+    fn child_counts_support_brief_and_older_records() {
+        assert_eq!(child_progress(&Value::Null), None);
+        assert_eq!(
+            child_progress(&json!([
+                {"outcome":"returned"},{"outcome":null},{"status":"running"},{"id":"unknown"}
+            ]))
+            .as_deref(),
+            Some("4 children · 1 returned · 2 running · 1 unknown")
+        );
+    }
 
     #[test]
     fn monitor_reads_the_recorded_version_and_tracks_its_event_cursor() {
@@ -418,14 +583,14 @@ pub fn orbit_history(path: &Path) -> Result<Vec<OrbitRun>, String> {
     }
     let petitions = rpc.call("petitions", json!({"status":"all"}))?;
     for p in petitions.as_array().ok_or("Invalid petition history")? {
-        if let Some(run) = p["summon"].as_str().and_then(|id| runs.get_mut(id)) {
-            if let Some(created) = p["created"].as_i64() {
-                run.petitions.push((
-                    created,
-                    p["decided"].as_i64(),
-                    p["operation"].as_str().unwrap_or("petition").into(),
-                ));
-            }
+        if let Some(run) = p["summon"].as_str().and_then(|id| runs.get_mut(id))
+            && let Some(created) = p["created"].as_i64()
+        {
+            run.petitions.push((
+                created,
+                p["decided"].as_i64(),
+                p["operation"].as_str().unwrap_or("petition").into(),
+            ));
         }
     }
     let mut runs: Vec<_> = runs.into_values().collect();

@@ -317,8 +317,20 @@ impl Render for RunWindow {
                     )
                     .child(type_line(step, 14., INK))
                 })
+                .when_some(
+                    client::child_progress(&d.record["children"]),
+                    |el, progress| el.child(type_line(progress, 12., DIM).mt_2()),
+                )
                 .when(d.run_error.is_none() && !d.result.is_empty(), |el| {
+                    let summary = client::result_summary(&d.record["result"]);
                     el.child(type_line("Result", 12., DIM).mt_3())
+                        .when(!summary.is_empty(), |el| {
+                            el.child(
+                                type_line(summary.join("  ·  "), 13., VIOLET)
+                                    .bg(rgb(ROW))
+                                    .p_2(),
+                            )
+                        })
                         .child(type_line(d.result.clone(), 13., INK))
                 })
                 .child(type_line(if rite { "Stages" } else { "Recent evidence" }, 12., DIM).mt_3())
@@ -458,6 +470,8 @@ impl Render for RunWindow {
 }
 
 struct Console {
+    filter: Entity<InputState>,
+    search_open: bool,
     orrery: Option<WindowHandle<orrery::Orrery>>,
     marain: bool,
     translation: Option<Task<()>>,
@@ -482,6 +496,15 @@ impl Console {
             InputState::new(window, cx)
                 .placeholder("run NAME …   /   rite start FILE   /   open ID")
         });
+        let filter =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Ritual, run ID or status"));
+        cx.subscribe_in(&filter, window, |this, _, event: &InputEvent, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.directory_scroll.set_offset(point(px(0.), px(0.)));
+                cx.notify();
+            }
+        })
+        .detach();
         input.read(cx).focus_handle(cx).focus(window, cx);
         cx.subscribe_in(&input, window, |this, _, ev: &InputEvent, win, cx| {
             if matches!(ev, InputEvent::PressEnter { .. }) {
@@ -568,6 +591,8 @@ impl Console {
             })
         });
         Self {
+            filter,
+            search_open: false,
             marain: !still,
             translation,
             orrery: None,
@@ -609,17 +634,16 @@ impl Console {
         cx.notify();
     }
     fn open(&mut self, id: String, focus: bool, cx: &mut Context<Self>) {
-        if let Some(handle) = self.windows.get(&id) {
-            if handle
+        if let Some(handle) = self.windows.get(&id)
+            && handle
                 .update(cx, |_, w, _| {
                     if focus {
                         w.activate_window();
                     }
                 })
                 .is_ok()
-            {
-                return;
-            }
+        {
+            return;
         }
         let Some(path) = self.socket.clone() else {
             self.message = "Waiting for core socket".into();
@@ -719,13 +743,12 @@ impl Render for Console {
         let width = f32::from(window.viewport_size().width);
         let wide = width >= 620.;
         let split = width >= 1000.;
-        if !self
-            .board
-            .items
+        let items = self.board.filtered(&self.filter.read(cx).value());
+        if !items
             .iter()
-            .any(|i| Some(&i.id) == self.selected.as_ref())
+            .any(|item| Some(&item.id) == self.selected.as_ref())
         {
-            self.selected = self.board.items.first().map(|i| i.id.clone());
+            self.selected = items.first().map(|item| item.id.clone());
         }
         if split {
             if let (Some(id), Some(path)) = (&self.selected, &self.socket) {
@@ -773,11 +796,12 @@ impl Render for Console {
                     .overflow_y_scroll()
                     .flex_1()
                     .min_h_0()
-                    .children(self.board.items.iter().enumerate().map(|(index, item)| {
+                    .children(items.iter().enumerate().map(|(index, item)| {
                         let id = item.id.clone();
                         let open = self.windows.contains_key(&id);
                         let hover_id = id.clone();
-                        let selected = split && self.selected.as_ref() == Some(&id);
+                        let selected =
+                            (split || self.search_open) && self.selected.as_ref() == Some(&id);
                         div()
                             .id(SharedString::from(id.clone()))
                             .px_2()
@@ -849,31 +873,48 @@ impl Render for Console {
                     })),
             );
         page(cx)
-            .capture_key_down(cx.listener(move |v, event: &KeyDownEvent, _, cx| {
+            .capture_key_down(cx.listener(move |v, event: &KeyDownEvent, w, cx| {
                 let key = &event.keystroke;
-                if split
-                    && key.modifiers == Modifiers::default()
-                    && v.input.read(cx).value().is_empty()
-                    && !v.board.items.is_empty()
+                let plain = key.modifiers == Modifiers::default();
+                let command_empty = v.input.read(cx).value().is_empty();
+                if plain && key.key == "/" && !v.search_open && command_empty {
+                    v.search_open = true;
+                    v.filter.read(cx).focus_handle(cx).focus(w, cx);
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
+                if plain && key.key == "escape" && v.search_open {
+                    v.search_open = false;
+                    v.filter.update(cx, |input, cx| input.set_value("", w, cx));
+                    v.input.read(cx).focus_handle(cx).focus(w, cx);
+                    v.directory_scroll.set_offset(point(px(0.), px(0.)));
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
+                let items = v.board.filtered(&v.filter.read(cx).value());
+                if plain
+                    && !items.is_empty()
+                    && (v.search_open && v.filter.read(cx).focus_handle(cx).is_focused(w)
+                        || split && command_empty)
                 {
-                    let index = v
-                        .board
-                        .items
+                    let index = items
                         .iter()
-                        .position(|i| Some(&i.id) == v.selected.as_ref())
+                        .position(|item| Some(&item.id) == v.selected.as_ref())
                         .unwrap_or(0);
                     let next = match key.key.as_str() {
                         "up" => Some(index.saturating_sub(1)),
-                        "down" => Some((index + 1).min(v.board.items.len() - 1)),
+                        "down" => Some((index + 1).min(items.len() - 1)),
                         "enter" => {
-                            v.open(v.board.items[index].id.clone(), true, cx);
+                            v.open(items[index].id.clone(), true, cx);
                             cx.stop_propagation();
                             return;
                         }
                         _ => None,
                     };
                     if let Some(i) = next {
-                        v.selected = Some(v.board.items[i].id.clone());
+                        v.selected = Some(items[i].id.clone());
                         v.directory_scroll.scroll_to_item(i);
                         cx.stop_propagation();
                         cx.notify();
@@ -884,18 +925,16 @@ impl Render for Console {
                     && !key.modifiers.control
                     && !key.modifiers.platform
                     && !key.modifiers.shift
-                {
-                    if let Some(item) = key
+                    && let Some(item) = key
                         .key
                         .parse::<usize>()
                         .ok()
                         .filter(|n| (1..=9).contains(n))
-                        .and_then(|n| v.board.items.get(n - 1))
-                    {
-                        let id = item.id.clone();
-                        cx.stop_propagation();
-                        v.open(id, true, cx);
-                    }
+                        .and_then(|n| items.get(n - 1))
+                {
+                    let id = item.id.clone();
+                    cx.stop_propagation();
+                    v.open(id, true, cx);
                 }
             }))
             .child(
@@ -1054,22 +1093,41 @@ impl Render for Console {
                     .child(type_line(
                         if !self.board.items.is_empty() && wide {
                             if split {
-                                "RUN DIRECTORY   ↑↓ preview   Enter open"
+                                "RUN DIRECTORY   / search   ↑↓ preview   Enter open"
                             } else {
-                                "RUN DIRECTORY   [alt + 1–9]"
+                                "RUN DIRECTORY   / search   [alt + 1–9]"
                             }
                         } else {
-                            "RUN DIRECTORY"
+                            "RUN DIRECTORY   / search"
                         },
                         13.,
                         INK,
                     ))
                     .child(type_line(
-                        format!("{} active   {} held", self.board.active, self.board.held),
+                        format!(
+                            "{} / {}   ·   {} active   {} held",
+                            items.len(),
+                            self.board.items.len(),
+                            self.board.active,
+                            self.board.held
+                        ),
                         12.,
                         DIM,
                     )),
             )
+            .when(self.search_open, |el| {
+                el.child(
+                    div().border_b_1().border_color(rgb(APRICOT)).child(
+                        Input::new(&self.filter)
+                            .appearance(false)
+                            .bordered(false)
+                            .focus_bordered(false),
+                    ),
+                )
+            })
+            .when(!self.board.items.is_empty() && items.is_empty(), |el| {
+                el.child(type_line("No matching runs.", 13., DIM))
+            })
             .when(!self.connection.is_empty(), |el| {
                 el.child(type_line(self.connection.clone(), 12., DIM))
             })
@@ -1099,15 +1157,15 @@ impl Render for Console {
                     }),
             )
             .when(
-                wide && self.board.items.iter().any(|i| i.duration_ms.is_some()),
+                wide && items.iter().any(|i| i.duration_ms.is_some()),
                 |el| {
-                    let mut ended: Vec<_> = self
-                        .board
-                        .items
+                    let mut ended: Vec<_> = items
                         .iter()
+                        .copied()
                         .filter(|i| i.duration_ms.is_some())
                         .collect();
                     ended.sort_by_key(|i| i.started);
+                    let ended = &ended[ended.len().saturating_sub(35)..];
                     let peak = ended
                         .iter()
                         .filter_map(|i| i.duration_ms)
@@ -1159,7 +1217,7 @@ impl Render for Console {
                                                         v.selected = Some(id.clone());
                                                         if let Some(i) = v
                                                             .board
-                                                            .items
+                                                            .filtered(&v.filter.read(cx).value())
                                                             .iter()
                                                             .position(|r| r.id == id)
                                                         {
