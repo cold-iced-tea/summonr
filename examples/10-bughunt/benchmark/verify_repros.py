@@ -20,6 +20,7 @@ Verdict per confirmed finding:
 
 Usage:
   verify_repros.py REPO FIX_COMMIT TEST_JSON [--crate-path crates/foo] [--out VERIFY_JSON] [--timeout 120]
+  verify_repros.py REPO FIX_COMMIT TEST_JSON --lang python [--import-root src]
   verify_repros.py REPO --suite SUITE_JSON --name CASE_NAME TEST_JSON [--out VERIFY_JSON]
 
 With --suite, a case's `crate_path` is used, and when the case names a
@@ -29,6 +30,14 @@ repository's src/bughunt_repro.rs, declared from the crate's src/lib.rs (or
 src/main.rs), through #[path] for a workspace crate. Each commit is tested
 with `cargo test --offline` on that crate only; dependencies must already be
 in the Cargo cache.
+
+With --lang python (or a suite case's "lang": "python"), the repro is
+test_bughunt_repro.py at the repository root, run there with
+`python3 -m unittest test_bughunt_repro` and the case's import root (default:
+src if present, else the root) on PYTHONPATH, as setup.sh --lang python does.
+"Compiled" then means the test module imported and ran (no _FailedTest,
+SyntaxError or ImportError), and the marker counts only on a unittest failure
+(FAILED (failures=1)), as in bughunt-verdict.
 """
 import argparse
 import json
@@ -133,6 +142,36 @@ def inject_and_test(wt: pathlib.Path, test_source: str, timeout: int, crate_path
             src_dir.rmdir()
 
 
+PY_LOAD_ERRORS = ("unittest.loader._FailedTest", "SyntaxError:", "ImportError:", "ModuleNotFoundError:")
+
+
+def inject_and_test_python(wt: pathlib.Path, test_source: str, timeout: int, import_root: str = ""):
+    repro_path = wt / "test_bughunt_repro.py"
+    if not import_root:
+        import_root = "src" if (wt / "src").is_dir() else "."
+    existed = repro_path.exists()
+    orig = repro_path.read_text(encoding="utf-8") if existed else None
+    env = dict(os.environ, PYTHONPATH=import_root, PYTHONDONTWRITEBYTECODE="1")
+    try:
+        repro_path.write_text(test_source, encoding="utf-8")
+        rc, output = run([sys.executable, "-m", "unittest", "test_bughunt_repro"], cwd=wt, timeout=timeout, env=env)
+        tail = "\n".join(output.strip().splitlines()[-25:])
+        compiled = not any(e in output for e in PY_LOAD_ERRORS)
+        confirmed_marker = rc != 0 and "BUGHUNT-CONFIRMED" in output and "FAILED (failures=1)" in output
+        return {
+            "returncode": rc,
+            "compiled": compiled,
+            "passed": rc == 0,
+            "confirmed_marker": confirmed_marker,
+            "tail": tail,
+        }
+    finally:
+        if existed:
+            repro_path.write_text(orig, encoding="utf-8")
+        elif repro_path.exists():
+            repro_path.unlink()
+
+
 def extract_results(doc):
     if isinstance(doc, dict):
         if isinstance(doc.get("results"), list):
@@ -155,6 +194,8 @@ def main():
     p.add_argument("--name")
     p.add_argument("--out", type=pathlib.Path)
     p.add_argument("--crate-path", default="", help="the crate's directory inside a Cargo workspace")
+    p.add_argument("--lang", choices=["rust", "python"], help="the repro harness (default: the case's lang, else rust)")
+    p.add_argument("--import-root", default="", help="python: the directory put on PYTHONPATH (default: src if present)")
     p.add_argument("--timeout", type=int, default=180)
     args = p.parse_args()
 
@@ -162,6 +203,8 @@ def main():
     case_name = args.name
     category = None
     crate_path = args.crate_path.strip("/")
+    lang = args.lang
+    import_root = args.import_root.strip("/")
     if args.suite and args.name:
         suite = json.load(open(args.suite, encoding="utf-8"))
         match = next((c for c in suite.get("cases", []) if c["name"] == args.name), None)
@@ -170,11 +213,19 @@ def main():
         fix_commit = fix_commit or match.get("fix_commit")
         category = match.get("category")
         crate_path = crate_path or (match.get("crate_path") or "").strip("/")
+        lang = lang or match.get("lang")
+        import_root = import_root or (match.get("import_root") or "").strip("/")
         name = match.get("repo_name")
         if name and not (args.repo / ".git").exists() and (args.repo / name / ".git").exists():
             args.repo = args.repo / name
     if not fix_commit:
         sys.exit("fix_commit is required (pass positionally or via --suite + --name)")
+    lang = lang or "rust"
+
+    def test_at(wt, src, target_dir):
+        if lang == "python":
+            return inject_and_test_python(wt, src, args.timeout, import_root)
+        return inject_and_test(wt, src, args.timeout, crate_path, target_dir)
 
     parent_commit = git_rev(args.repo, f"{fix_commit}^")
     fix_short = git_rev(args.repo, fix_commit)
@@ -187,7 +238,9 @@ def main():
         "category": category,
         "parent_commit": parent_commit,
         "fix_commit": fix_short,
+        "lang": lang,
         "crate_path": crate_path or None,
+        "import_root": (import_root or None) if lang == "python" else None,
         "total_results": len(results),
         "confirmed_input": len(confirmed),
         "counts": {
@@ -231,14 +284,14 @@ def main():
                     summary["items"].append(entry)
                     continue
 
-                on_parent = inject_and_test(wt_parent, src, args.timeout, crate_path, target_dir)
+                on_parent = test_at(wt_parent, src, target_dir)
                 entry["parent"] = on_parent
                 if not on_parent["compiled"]:
                     status = "compile_error_on_parent"
                 elif not on_parent["confirmed_marker"]:
                     status = "passed_on_parent"
                 else:
-                    on_fix = inject_and_test(wt_fix, src, args.timeout, crate_path, target_dir)
+                    on_fix = test_at(wt_fix, src, target_dir)
                     entry["fix"] = on_fix
                     if not on_fix["compiled"]:
                         status = "compile_error_on_fix"

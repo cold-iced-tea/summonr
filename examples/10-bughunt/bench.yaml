@@ -10,6 +10,9 @@ inputs:
   dirs: {type: list, default: [src]}
   angles: list
   gold: {type: string, default: gold.json}
+  # Forwarded to every hunt; a Python target passes ext=.py and stop_at="".
+  ext: {type: string, default: ".rs"}
+  stop_at: {type: string, default: "mod tests {"}
 requires:
   - {reagent: file, action: walk, on: {root: "${inputs.root}"}}
   - {reagent: file, action: read_text, on: {root: "${inputs.root}"}}
@@ -25,7 +28,7 @@ steps:
     steps:
       - id: hunt
         ritual: bughunt-hunt
-        arguments: {root: "${inputs.root}", dirs: "${inputs.dirs}", angle: "${angle}"}
+        arguments: {root: "${inputs.root}", dirs: "${inputs.dirs}", angle: "${angle}", ext: "${inputs.ext}", stop_at: "${inputs.stop_at}"}
   - id: hunts_ok
     operation: data.filter
     arguments: {values: "${steps.per_angle.output}", predicate: 'item.status == "returned"'}

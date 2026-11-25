@@ -8,8 +8,13 @@ description: >-
   trial runs it in a throwaway worktree, and the result becomes confirmed,
   refuted, dismissed, or untestable. One retry with the compiler output when
   the first test does not build. Worktree cleanup always runs in finally:.
+  lang: python writes test_bughunt_repro.py (a unittest module at the
+  repository root) instead, and the verdict reads a unittest run.
 inputs:
   findings: list
+  # rust: src/bughunt_repro.rs, a #[cfg(test)] module (setup.sh). python:
+  # test_bughunt_repro.py at the repository root, run with unittest.
+  lang: {type: string, enum: [rust, python], default: rust}
   chunk: {type: integer, default: 240, min: 1, max: 2000}
   escalate: {type: string, enum: [none, codex, gemini], default: none}
   # When true (default), findings are re-diagnosed by the 35B model on a wider
@@ -60,6 +65,12 @@ defs:
     additionalProperties: false
     properties:
       rust_source: {type: string, minLength: 20, maxLength: 20000}
+  repro_py:
+    type: object
+    required: [python_source]
+    additionalProperties: false
+    properties:
+      python_source: {type: string, minLength: 20, maxLength: 20000}
 bindings:
   context_guide:
     content: |
@@ -125,7 +136,54 @@ bindings:
       You must call the real code under suspicion; a test that copies the
       logic into itself proves nothing and is rejected.
       Answer with JSON: {"rust_source": "<the whole Rust file, as code>"}.
+  harness_py:
+    content: |
+      You write one Python unittest that proves or disproves a suspected bug.
+      Your file becomes test_bughunt_repro.py at the repository root and runs
+      there as `python3 -m unittest test_bughunt_repro`, with the project's
+      import root (often src/) already on the path. Import the code under
+      suspicion the way its users do (for src/tomli/_parser.py: `import tomli`
+      or `from tomli import _parser`); never edit sys.path or load files by
+      path.
+      Write the complete file: imports, then one unittest.TestCase subclass
+      with exactly one test method. The test must fail with a message
+      starting BUGHUNT-CONFIRMED ONLY at the single final assertion when the
+      bug really happens, for example:
+        self.assertFalse(bad, "BUGHUNT-CONFIRMED: <what happened>")
+      Never place BUGHUNT-CONFIRMED in more than one branch or on setup
+      assertions. Keep the marker message to one short line (under 80
+      characters). If the code behaves correctly the test must pass.
+      An uncaught exception is an error, not a confirmation: to check whether
+      the code raises (or wrongly does not raise), catch it with try/except,
+      record what happened, and assert on that at the end. Never use
+      expectedFailure, unittest.skip or skipTest.
+      For unbounded work (deep recursion, quadratic time), build an input big
+      enough that the bug shows plainly (a RecursionError, or a call far over
+      a budget such as 2 seconds by time.monotonic()) and assert on that.
+      Write any files only under tempfile.gettempdir(). Use only the
+      standard library and the project's own code. No network.
+      You must call the real code under suspicion; a test that copies the
+      logic into itself proves nothing and is rejected.
+      Answer with JSON: {"python_source": "<the whole Python file, as code>"}.
 steps:
+  - id: is_python
+    operation: data.compare
+    arguments: {left: "${inputs.lang}", right: python, operator: eq}
+  - id: is_rust
+    operation: data.logic
+    arguments: {operator: not, left: "${steps.is_python.output}"}
+  # Where the repro goes in the throwaway worktree (setup.sh commits it empty).
+  - id: repro_path
+    operation: data.select
+    arguments: {condition: "${steps.is_python.output}", then: test_bughunt_repro.py, else: src/bughunt_repro.rs}
+  # The triage guides speak Rust; a Python run says so first. Empty for Rust,
+  # so its prompts are unchanged.
+  - id: lang_note
+    operation: data.select
+    arguments:
+      condition: "${steps.is_python.output}"
+      then: "The code under review is Python, not Rust. Read the guide's Rust terms as their Python equivalents: a panic is an uncaught exception, overflow is unbounded recursion or work, a reachable function is one importable from the package.\n\n"
+      else: ""
   - id: add
     operation: git.worktree_add
     arguments: {repo: bughunt-target, branch: repro}
@@ -238,7 +296,7 @@ steps:
               name: ollama/hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M
               bind: [context_guide]
               prompt: |
-                Scanner lead: ${steps.brief.output}
+                ${steps.lang_note.output}Scanner lead: ${steps.brief.output}
 
                 ${steps.header_block.output}Code from ${found.file}, lines from ${steps.win_start.output}:
                 ${steps.code.output}
@@ -348,7 +406,7 @@ steps:
               choose: "${steps.triage_model.output}"
               bind: [triage_guide]
               prompt: |
-                Scanner lead: ${steps.brief.output}
+                ${steps.lang_note.output}Scanner lead: ${steps.brief.output}
 
                 ${steps.header_block.output}Code from ${found.file}, lines from ${steps.win_start.output}:
                 ${steps.code.output}${steps.sib_block.output}
@@ -406,40 +464,10 @@ steps:
               else: "${steps.after_codex.output}"
           # One retry: an answer that is not JSON matching the schema (prose
           # from a cloud agent) would otherwise drop this finding.
-          - id: write_repro
-            retry: 1
-            model:
-              one_of:
-                - ollama/qwen3:4b
-                - ollama/hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M
-                - codex/default
-                - gemini/default
-              choose: "${steps.repro_model.output}"
-              bind: [harness]
-              prompt: |
-                Diagnosis: ${steps.diagnosis_text.output}
-                Target function: ${steps.target_fn_text.output}
-                Test strategy: ${steps.strategy_text.output}
-                Original lead: ${steps.brief.output}
-
-                ${steps.header_block.output}Code from ${found.file}, lines from ${steps.win_start.output}:
-                ${steps.code.output}${steps.sibling_context.output}
-              schema: {$ref: "#/$defs/repro"}
-          - id: write
-            operation: file.write_text
-            arguments: {root: /absolute/path/to/target-repro, path: src/bughunt_repro.rs, text: "${steps.write_repro.output.rust_source}"}
-          - id: run
-            operation: trial.run
-            arguments: {repo: bughunt-target, worktree: /absolute/path/to/target-repro}
-          - id: judged
-            ritual: bughunt-verdict
-            arguments: {file: "${found.file}", test_file: "${steps.write_repro.output.rust_source}", passed: "${steps.run.output.passed}", tail: "${steps.run.output.tail}"}
-          - id: build_failed
-            operation: data.get
-            arguments: {value: "${steps.judged.output}", path: /build_failed}
-          - if: steps.build_failed.output
+          - if: steps.is_rust.output
             then:
-              - id: rewrite_repro
+              - id: write_repro
+                retry: 1
                 model:
                   one_of:
                     - ollama/qwen3:4b
@@ -451,33 +479,117 @@ steps:
                   prompt: |
                     Diagnosis: ${steps.diagnosis_text.output}
                     Target function: ${steps.target_fn_text.output}
+                    Test strategy: ${steps.strategy_text.output}
+                    Original lead: ${steps.brief.output}
+
                     ${steps.header_block.output}Code from ${found.file}, lines from ${steps.win_start.output}:
                     ${steps.code.output}${steps.sibling_context.output}
-
-                    Your previous file did not compile:
-                    ${steps.write_repro.output.rust_source}
-
-                    Compiler output (tail):
-                    ${steps.run.output.tail}
                   schema: {$ref: "#/$defs/repro"}
+          - if: steps.is_python.output
+            then:
+              - id: write_repro_py
+                retry: 1
+                model:
+                  one_of:
+                    - ollama/qwen3:4b
+                    - ollama/hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M
+                    - codex/default
+                    - gemini/default
+                  choose: "${steps.repro_model.output}"
+                  bind: [harness_py]
+                  prompt: |
+                    Diagnosis: ${steps.diagnosis_text.output}
+                    Target function or entry point: ${steps.target_fn_text.output}
+                    Test strategy: ${steps.strategy_text.output}
+                    Original lead: ${steps.brief.output}
+
+                    ${steps.header_block.output}Code from ${found.file}, lines from ${steps.win_start.output}:
+                    ${steps.code.output}${steps.sibling_context.output}
+                  schema: {$ref: "#/$defs/repro_py"}
+          - id: repro_src
+            operation: data.coalesce
+            arguments: {values: ["${steps.write_repro.output.rust_source}", "${steps.write_repro_py.output.python_source}"]}
+          - id: write
+            operation: file.write_text
+            arguments: {root: /absolute/path/to/target-repro, path: "${steps.repro_path.output}", text: "${steps.repro_src.output}"}
+          - id: run
+            operation: trial.run
+            arguments: {repo: bughunt-target, worktree: /absolute/path/to/target-repro}
+          - id: judged
+            ritual: bughunt-verdict
+            arguments: {file: "${found.file}", test_file: "${steps.repro_src.output}", passed: "${steps.run.output.passed}", tail: "${steps.run.output.tail}", lang: "${inputs.lang}"}
+          - id: build_failed
+            operation: data.get
+            arguments: {value: "${steps.judged.output}", path: /build_failed}
+          - if: steps.build_failed.output
+            then:
+              - if: steps.is_rust.output
+                then:
+                  - id: rewrite_repro
+                    model:
+                      one_of:
+                        - ollama/qwen3:4b
+                        - ollama/hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M
+                        - codex/default
+                        - gemini/default
+                      choose: "${steps.repro_model.output}"
+                      bind: [harness]
+                      prompt: |
+                        Diagnosis: ${steps.diagnosis_text.output}
+                        Target function: ${steps.target_fn_text.output}
+                        ${steps.header_block.output}Code from ${found.file}, lines from ${steps.win_start.output}:
+                        ${steps.code.output}${steps.sibling_context.output}
+
+                        Your previous file did not compile:
+                        ${steps.write_repro.output.rust_source}
+
+                        Compiler output (tail):
+                        ${steps.run.output.tail}
+                      schema: {$ref: "#/$defs/repro"}
+              - if: steps.is_python.output
+                then:
+                  - id: rewrite_repro_py
+                    model:
+                      one_of:
+                        - ollama/qwen3:4b
+                        - ollama/hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M
+                        - codex/default
+                        - gemini/default
+                      choose: "${steps.repro_model.output}"
+                      bind: [harness_py]
+                      prompt: |
+                        Diagnosis: ${steps.diagnosis_text.output}
+                        Target function or entry point: ${steps.target_fn_text.output}
+                        ${steps.header_block.output}Code from ${found.file}, lines from ${steps.win_start.output}:
+                        ${steps.code.output}${steps.sibling_context.output}
+
+                        Your previous file did not run (an import, syntax or name error):
+                        ${steps.write_repro_py.output.python_source}
+
+                        unittest output (tail):
+                        ${steps.run.output.tail}
+                      schema: {$ref: "#/$defs/repro_py"}
+              - id: rewrite_src
+                operation: data.coalesce
+                arguments: {values: ["${steps.rewrite_repro.output.rust_source}", "${steps.rewrite_repro_py.output.python_source}"]}
               - id: rewrite_write
                 operation: file.write_text
-                arguments: {root: /absolute/path/to/target-repro, path: src/bughunt_repro.rs, text: "${steps.rewrite_repro.output.rust_source}"}
+                arguments: {root: /absolute/path/to/target-repro, path: "${steps.repro_path.output}", text: "${steps.rewrite_src.output}"}
               - id: rerun
                 operation: trial.run
                 arguments: {repo: bughunt-target, worktree: /absolute/path/to/target-repro}
               - id: rejudged
                 ritual: bughunt-verdict
-                arguments: {file: "${found.file}", test_file: "${steps.rewrite_repro.output.rust_source}", passed: "${steps.rerun.output.passed}", tail: "${steps.rerun.output.tail}"}
+                arguments: {file: "${found.file}", test_file: "${steps.rewrite_src.output}", passed: "${steps.rerun.output.passed}", tail: "${steps.rerun.output.tail}", lang: "${inputs.lang}"}
           - id: restore
             operation: file.write_text
-            arguments: {root: /absolute/path/to/target-repro, path: src/bughunt_repro.rs, text: ""}
+            arguments: {root: /absolute/path/to/target-repro, path: "${steps.repro_path.output}", text: ""}
           - id: tested_verdict
             operation: data.select
             arguments: {condition: "${steps.build_failed.output}", then: "${steps.rejudged.output.verdict}", else: "${steps.judged.output.verdict}"}
           - id: tested_file
             operation: data.select
-            arguments: {condition: "${steps.build_failed.output}", then: "${steps.rewrite_repro.output.rust_source}", else: "${steps.write_repro.output.rust_source}"}
+            arguments: {condition: "${steps.build_failed.output}", then: "${steps.rewrite_src.output}", else: "${steps.repro_src.output}"}
           - id: tested_tail
             operation: data.select
             arguments: {condition: "${steps.build_failed.output}", then: "${steps.rerun.output.tail}", else: "${steps.run.output.tail}"}
@@ -527,7 +639,7 @@ finally:
     then:
       - id: clean
         operation: file.write_text
-        arguments: {root: /absolute/path/to/target-repro, path: src/bughunt_repro.rs, text: ""}
+        arguments: {root: /absolute/path/to/target-repro, path: "${steps.repro_path.output}", text: ""}
       - id: remove
         operation: git.remove_worktree
         arguments: {repo: bughunt-target, path: /absolute/path/to/target-repro}

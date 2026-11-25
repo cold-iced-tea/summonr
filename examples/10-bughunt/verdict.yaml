@@ -9,15 +9,40 @@ description: >-
   #[should_panic], places BUGHUNT-CONFIRMED in multiple branches, or trips
   BUGHUNT-CONFIRMED on deserialization/parse setup failure. Also reports
   build_failed, for the retry.
+
+  lang: python reads a unittest run of test_bughunt_repro.py instead: confirmed
+  is a failed run ("FAILED (failures=1)") whose tail carries the marker;
+  refuted is "Ran 1 test" then OK. Honest means an import line names the
+  suspect module or its package, with no expectedFailure or skip. An import
+  or syntax error (or NameError, AttributeError) with no marker is
+  build_failed.
 inputs:
   file: string        # the suspect source file, e.g. src/reagents/x.rs
   test_file: string   # the repro test source that ran
   passed: boolean
   tail: string
+  lang: {type: string, enum: [rust, python], default: rust}
 essence: {requests: 0, time: 10s}
 steps:
+  - id: is_python
+    operation: data.compare
+    arguments: {left: "${inputs.lang}", right: python, operator: eq}
+  - id: is_rust
+    operation: data.logic
+    arguments: {operator: not, left: "${steps.is_python.output}"}
+  - id: src_ext
+    operation: data.select
+    arguments: {condition: "${steps.is_python.output}", then: .py, else: .rs}
+  # A package's own module file: mod.rs, or __init__.py.
+  - id: pkg_stem
+    operation: data.select
+    arguments: {condition: "${steps.is_python.output}", then: __init__, else: mod}
+  - id: comment_prefix
+    operation: data.select
+    arguments: {condition: "${steps.is_python.output}", then: "#", else: //}
   # The suspect module's name as a test would write it: the file's stem,
-  # its directory for mod.rs, and the crate root for main.rs / lib.rs.
+  # its directory for mod.rs (__init__.py), and the crate root for main.rs /
+  # lib.rs.
   # Matching the last segment ("x::") also accepts re-exported paths.
   - id: parts
     operation: data.split
@@ -42,22 +67,41 @@ steps:
     arguments: {value: "${steps.parts.output}", path: "/${steps.prev_i.output}"}
   - id: stem
     operation: data.replace
-    arguments: {text: "${steps.last.output}", from: .rs, to: ""}
+    arguments: {text: "${steps.last.output}", from: "${steps.src_ext.output}", to: ""}
   - id: is_mod
     operation: data.compare
-    arguments: {left: "${steps.stem.output}", right: mod, operator: eq}
+    arguments: {left: "${steps.stem.output}", right: "${steps.pkg_stem.output}", operator: eq}
   - id: module
     operation: data.select
     arguments: {condition: "${steps.is_mod.output}", then: "${steps.prev.output}", else: "${steps.stem.output}"}
-  - id: is_root
+  - id: is_root_name
     operation: data.contains
     arguments: {value: [main, lib], needle: "${steps.stem.output}"}
+  - id: is_root
+    operation: data.logic
+    arguments: {operator: and, left: "${steps.is_rust.output}", right: "${steps.is_root_name.output}"}
   - id: needle
     operation: data.select
     arguments: {condition: "${steps.is_root.output}", then: "crate::", else: "${steps.module.output}::"}
   - id: names_module
     operation: data.contains
     arguments: {value: "${inputs.test_file}", needle: "${steps.needle.output}"}
+  # Reject tests that plant BUGHUNT-CONFIRMED in multiple code branches (e.g.
+  # both arms of an if/else) so they fail no matter what the code does. Ignore
+  # comment lines (`//`, or `#` in Python) so quoting the prompt in a comment
+  # does not false-trip. The import check below reads the same lines.
+  - id: test_lines
+    operation: data.lines
+    arguments: {text: "${inputs.test_file}"}
+  - id: code_lines
+    operation: data.filter
+    arguments:
+      values: "${steps.test_lines.output}"
+      predicate: 'not starts_with(trim(item), params.comment)'
+      params: {comment: "${steps.comment_prefix.output}"}
+  - id: code_only
+    operation: data.join
+    arguments: {values: "${steps.code_lines.output}", separator: "\n"}
   # Also accept re-exported parent module paths (e.g. src/uri/authority.rs
   # imported as crate::uri::Authority).
   - id: has_parent_mod
@@ -69,9 +113,34 @@ steps:
   - id: names_parent
     operation: data.logic
     arguments: {operator: and, left: "${steps.has_parent_mod.output}", right: "${steps.names_parent_raw.output}"}
-  - id: names_module_or_parent
+  - id: rust_names_module_or_parent
     operation: data.logic
     arguments: {operator: or, left: "${steps.names_module.output}", right: "${steps.names_parent.output}"}
+  # Python: an import line (import x / from x import y) names the module or
+  # its package (src/packaging/_parser.py imported as packaging.markers).
+  - id: import_lines
+    operation: data.filter
+    arguments:
+      values: "${steps.code_lines.output}"
+      predicate: 'starts_with(trim(item), "import ") or starts_with(trim(item), "from ")'
+  - id: imports
+    operation: data.join
+    arguments: {values: "${steps.import_lines.output}", separator: "\n"}
+  - id: py_imports_module
+    operation: data.contains
+    arguments: {value: "${steps.imports.output}", needle: "${steps.module.output}"}
+  - id: py_imports_parent_raw
+    operation: data.contains
+    arguments: {value: "${steps.imports.output}", needle: "${steps.prev.output}"}
+  - id: py_imports_parent
+    operation: data.logic
+    arguments: {operator: and, left: "${steps.has_parent_mod.output}", right: "${steps.py_imports_parent_raw.output}"}
+  - id: py_names_module
+    operation: data.logic
+    arguments: {operator: or, left: "${steps.py_imports_module.output}", right: "${steps.py_imports_parent.output}"}
+  - id: names_module_or_parent
+    operation: data.select
+    arguments: {condition: "${steps.is_python.output}", then: "${steps.py_names_module.output}", else: "${steps.rust_names_module_or_parent.output}"}
   # For src/reagents/<name>_reagent.rs, also accept honest calls through
   # reagent::call / reagent::authorize naming "<name>".
   - id: is_reagent_file
@@ -107,23 +176,28 @@ steps:
   - id: should_panic
     operation: data.contains
     arguments: {value: "${inputs.test_file}", needle: should_panic}
+  # Python's equivalents: a test marked to fail or skipped settles nothing.
+  - id: py_expected_failure
+    operation: data.contains
+    arguments: {value: "${steps.code_only.output}", needle: expectedFailure}
+  - id: py_skip_deco
+    operation: data.contains
+    arguments: {value: "${steps.code_only.output}", needle: unittest.skip}
+  - id: py_skip_call
+    operation: data.contains
+    arguments: {value: "${steps.code_only.output}", needle: skipTest(}
+  - id: py_cheat_any
+    operation: data.any
+    arguments: {values: ["${steps.py_expected_failure.output}", "${steps.py_skip_deco.output}", "${steps.py_skip_call.output}"]}
+  - id: py_cheat
+    operation: data.logic
+    arguments: {operator: and, left: "${steps.is_python.output}", right: "${steps.py_cheat_any.output}"}
+  - id: any_cheat
+    operation: data.logic
+    arguments: {operator: or, left: "${steps.should_panic.output}", right: "${steps.py_cheat.output}"}
   - id: no_should_panic
     operation: data.logic
-    arguments: {operator: not, left: "${steps.should_panic.output}"}
-  # Reject tests that plant BUGHUNT-CONFIRMED in multiple code branches (e.g.
-  # both arms of an if/else) so they fail no matter what the code does. Ignore
-  # `//` comment lines so quoting the prompt in a comment does not false-trip.
-  - id: test_lines
-    operation: data.lines
-    arguments: {text: "${inputs.test_file}"}
-  - id: code_lines
-    operation: data.filter
-    arguments:
-      values: "${steps.test_lines.output}"
-      predicate: 'not starts_with(trim(item), "//")'
-  - id: code_only
-    operation: data.join
-    arguments: {values: "${steps.code_lines.output}", separator: "\n"}
+    arguments: {operator: not, left: "${steps.any_cheat.output}"}
   - id: marker_parts
     operation: data.split
     arguments: {text: "${steps.code_only.output}", separator: BUGHUNT-CONFIRMED}
@@ -190,19 +264,67 @@ steps:
   - id: not_ran
     operation: data.logic
     arguments: {operator: not, left: "${steps.ran.output}"}
-  - id: build_failed
+  - id: rust_build_failed
     operation: data.logic
     arguments: {operator: and, left: "${steps.could_not_compile.output}", right: "${steps.not_ran.output}"}
-  # The verdict proper.
   - id: marker
     operation: data.contains
     arguments: {value: "${inputs.tail}", needle: BUGHUNT-CONFIRMED}
+  - id: no_marker
+    operation: data.logic
+    arguments: {operator: not, left: "${steps.marker.output}"}
+  # Python has no build: an error importing the test module (unittest's
+  # _FailedTest) or a broken test body is what the retry can fix.
+  - id: py_load_failed
+    operation: data.contains
+    arguments: {value: "${inputs.tail}", needle: _FailedTest}
+  - id: py_syntax
+    operation: data.contains
+    arguments: {value: "${inputs.tail}", needle: "SyntaxError:"}
+  - id: py_import
+    operation: data.contains
+    arguments: {value: "${inputs.tail}", needle: "ImportError:"}
+  - id: py_not_found
+    operation: data.contains
+    arguments: {value: "${inputs.tail}", needle: "ModuleNotFoundError:"}
+  - id: py_name
+    operation: data.contains
+    arguments: {value: "${inputs.tail}", needle: "NameError:"}
+  - id: py_attr
+    operation: data.contains
+    arguments: {value: "${inputs.tail}", needle: "AttributeError:"}
+  - id: py_broken
+    operation: data.any
+    arguments: {values: ["${steps.py_load_failed.output}", "${steps.py_syntax.output}", "${steps.py_import.output}", "${steps.py_not_found.output}", "${steps.py_name.output}", "${steps.py_attr.output}"]}
+  - id: py_build_failed
+    operation: data.logic
+    arguments: {operator: and, left: "${steps.py_broken.output}", right: "${steps.no_marker.output}"}
+  - id: build_failed
+    operation: data.select
+    arguments: {condition: "${steps.is_python.output}", then: "${steps.py_build_failed.output}", else: "${steps.rust_build_failed.output}"}
+  # The verdict proper. unittest reports an AssertionError as a failure and
+  # any other exception as an error, so the marker must come with failures=1.
+  - id: failed_needle
+    operation: data.select
+    arguments: {condition: "${steps.is_python.output}", then: "FAILED (failures=1)", else: "test result: FAILED"}
   - id: test_failed
     operation: data.contains
-    arguments: {value: "${inputs.tail}", needle: "test result: FAILED"}
-  - id: one_passed
+    arguments: {value: "${inputs.tail}", needle: "${steps.failed_needle.output}"}
+  - id: rust_one_passed
     operation: data.contains
     arguments: {value: "${inputs.tail}", needle: "test result: ok. 1 passed"}
+  - id: py_ran_one
+    operation: data.contains
+    arguments: {value: "${inputs.tail}", needle: "Ran 1 test in"}
+  - id: py_ok
+    operation: data.contains
+    arguments: {value: "${inputs.tail}", needle: "\nOK"}
+  - id: py_one_passed
+    operation: data.logic
+    arguments: {operator: and, left: "${steps.py_ran_one.output}", right: "${steps.py_ok.output}"}
+  - id: one_passed
+    operation: data.select
+    arguments: {condition: "${steps.is_python.output}", then: "${steps.py_one_passed.output}", else: "${steps.rust_one_passed.output}"}
   - id: ran_and_passed
     operation: data.logic
     arguments: {operator: and, left: "${inputs.passed}", right: "${steps.one_passed.output}"}

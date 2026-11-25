@@ -78,3 +78,37 @@ cases:
       outcome: returned
       result: {confirmed: 0, dismissed: 0, untested: 0}
       model_calls: 1
+  # lang: python: the repro is test_bughunt_repro.py, written by write_repro_py
+  # and judged as a unittest run (drill.sh's fake trial prints one).
+  - id: python-triage-and-repro-proves-bug
+    inputs:
+      lang: python
+      triage: true
+      findings:
+        - {kind: bypass, severity: high, confidence: 0.9, claim: "prefix match", trigger: "x", snippet: 'role.startswith("admin")', file: pkg/auth.py, start: 0, quoted: true}
+    model:
+      triage_context:
+        - {needs_file: "", symbol: ""}
+      triaged:
+        - {assessment: real_bug, diagnosis: "prefix match allows adminx", target_fn: "pkg.auth.allowed", test_strategy: "call allowed(\"adminx\")"}
+      write_repro_py:
+        - python_source: "import unittest\nfrom pkg.auth import allowed\n\n\nclass Repro(unittest.TestCase):\n    def test_repro(self):\n        self.assertFalse(allowed(\"adminx\"), \"BUGHUNT-CONFIRMED: prefix bypass\")\n"
+    expect:
+      outcome: returned
+      result: {confirmed: 1, dismissed: 0, untested: 0}
+      model_calls: 3
+  - id: python-import-error-retries-then-refutes
+    inputs:
+      lang: python
+      triage: false
+      findings:
+        - {kind: bug, severity: low, confidence: 0.8, claim: "maybe wrong", trigger: "x", snippet: 'role.startswith("admin")', file: pkg/auth.py, start: 0, quoted: true}
+    model:
+      write_repro_py:
+        - python_source: "import unittest\nfrom pkg.auth import nope\n\n\nclass Repro(unittest.TestCase):\n    def test_repro(self):\n        nope()\n"
+      rewrite_repro_py:
+        - python_source: "import unittest\nfrom pkg.auth import allowed\n\n\nclass Repro(unittest.TestCase):\n    def test_repro(self):\n        # PASS_CASE\n        self.assertTrue(allowed(\"admin\"))\n"
+    expect:
+      outcome: returned
+      result: {confirmed: 0, dismissed: 0, untested: 0}
+      model_calls: 2

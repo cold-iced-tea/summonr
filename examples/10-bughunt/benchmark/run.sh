@@ -8,7 +8,9 @@
 # unless NAMEs or --category are given). For external-suite.json, REPO is the
 # fetch_external.py cache (one clone per repo_name) and --gold-dir the gold
 # sets it built there. Fix-commit gold sets run at the fix's parent commit;
-# audit sets run at their target_commit.
+# audit sets run at their target_commit. A `"lang": "python"` case
+# (python-suite.json) hunts .py files with no test-module marker (ext=.py,
+# stop_at="") and its isolated lab is set up with --lang python.
 #
 # Two ways to run:
 #   --isolated (default)  One standalone lab per case (setup.sh): its own clone,
@@ -98,25 +100,26 @@ PY
   )
 }
 
-run_bench() {  # name dirs gold root benchmark_root  (SUMMONR_HOME already set)
-  local name="$1" dirs="$2" gold="$3" root="$4" broot="$5"
+run_bench() {  # name dirs gold root benchmark_root lang  (SUMMONR_HOME already set)
+  local name="$1" dirs="$2" gold="$3" root="$4" broot="$5" lang="$6" by_lang=()
+  [ "$lang" = python ] && by_lang=(--arg ext=.py --arg stop_at=)
   # --brief keeps the reply small but the result whole; --cancel-on-drop
   # stops the summon if this script is killed or stops waiting.
   "$bin" run bughunt-bench --arg "root=$root" --arg "benchmark_root=$broot" \
-    --arg "dirs=$dirs" --arg "angles=$angles" --arg "gold=$gold" "${model[@]}" \
+    --arg "dirs=$dirs" --arg "angles=$angles" --arg "gold=$gold" "${by_lang[@]}" "${model[@]}" \
     --wait --brief --cancel-on-drop --json --timeout 4h > "$out/run-$name.json" 2>"$out/run-$name.err"
 }
 
-isolated_bench() {  # name commit gold dirs case_repo crate_path
-  local name="$1" commit="$2" gold="$3" dirs="$4" case_repo="$5" crate_path="$6" lab="$out/$1"
-  "$here/../setup.sh" "$lab" "$case_repo" "$commit" "$bin" "$crate_path" >/dev/null || { echo "$name: setup failed"; return; }
+isolated_bench() {  # name commit gold dirs case_repo lang path
+  local name="$1" commit="$2" gold="$3" dirs="$4" case_repo="$5" lang="$6" path="$7" lab="$out/$1"
+  "$here/../setup.sh" "$lab" "$case_repo" "$commit" "$bin" "$path" --lang "$lang" >/dev/null || { echo "$name: setup failed"; return; }
   if [ -n "$gold_dir" ]; then
     [ -f "$gold_dir/$gold" ] || { echo "$name: no $gold in $gold_dir"; return; }
     cp "$gold_dir/$gold" "$lab/benchmark/"
   fi
   echo "[$name] watch live: SUMMONR_HOME=\"$lab/home\" $bin console"
   local s=$SECONDS
-  SUMMONR_HOME="$lab/home" run_bench "$name" "$dirs" "$gold" "$lab/target" "$lab/benchmark"
+  SUMMONR_HOME="$lab/home" run_bench "$name" "$dirs" "$gold" "$lab/target" "$lab/benchmark" "$lang"
   extract "$name" "$out/run-$name.json" "$lab/home"
   summary "$name" "$((SECONDS - s))"
   SUMMONR_HOME="$lab/home" "$bin" core stop --json >/dev/null 2>&1 || true
@@ -139,8 +142,8 @@ shared_setup() {
   allow bughunt-bench --from file --select read_json --under "$broot"
 }
 
-shared_bench() {  # name commit gold dirs case_repo crate_path
-  local name="$1" commit="$2" gold="$3" dirs="$4" case_repo="$5" case_dir="$out/$1"
+shared_bench() {  # name commit gold dirs case_repo lang path
+  local name="$1" commit="$2" gold="$3" dirs="$4" case_repo="$5" lang="$6" case_dir="$out/$1"
   [ -f "$broot/$gold" ] || { echo "$name: no $gold in $broot"; return; }
   local target="$case_dir/target" want
   want="$(git -C "$case_repo" rev-parse "$commit^{commit}")" || { echo "$name: no commit $commit in $case_repo"; return; }
@@ -155,7 +158,7 @@ shared_bench() {  # name commit gold dirs case_repo crate_path
   fi
   echo "[$name] watch live: $bin console"
   local s=$SECONDS
-  run_bench "$name" "$dirs" "$gold" "$target" "$broot"
+  run_bench "$name" "$dirs" "$gold" "$target" "$broot" "$lang"
   extract "$name" "$out/run-$name.json"
   summary "$name" "$((SECONDS - s))"
 }
@@ -187,8 +190,11 @@ for c in suite.get("cases", []):
     else:
         commit = c["target_commit"]
     dirs = json.dumps(c["dirs"])
-    # crate_path last: an empty trailing field survives `read`.
-    print(f"{c['name']}\t{commit}\t{c['gold']}\t{dirs}\t{case_repo}\t{c.get('crate_path', '')}")
+    lang = c.get("lang", "rust")
+    # The crate (Rust) or import root (Python) last: an empty trailing field
+    # survives `read`.
+    path = c.get("import_root", "") if lang == "python" else c.get("crate_path", "")
+    print(f"{c['name']}\t{commit}\t{c['gold']}\t{dirs}\t{case_repo}\t{lang}\t{path}")
 PY
 )
 
@@ -203,8 +209,8 @@ if [ "$mode" = shared ]; then
 fi
 
 for row in "${selected[@]}"; do
-  IFS=$'\t' read -r name commit gold dirs case_repo crate_path <<< "$row"
-  "${mode}_bench" "$name" "$commit" "$gold" "$dirs" "$case_repo" "$crate_path"
+  IFS=$'\t' read -r name commit gold dirs case_repo lang path <<< "$row"
+  "${mode}_bench" "$name" "$commit" "$gold" "$dirs" "$case_repo" "$lang" "$path"
 done
 
 echo ""

@@ -18,7 +18,13 @@ Gold format: {"target": COMMIT, "source": ..., "total": N,
       Generate all fix-commit gold files declared in SUITE_JSON into OUT_DIR.
       When a case names a `repo_name` (external-suite.json), REPO is the cache
       directory holding one clone per repo_name (see fetch_external.py). A
-      case's `paths` default to `CRATE_PATH/src` or `src`.
+      case's `paths` default to `CRATE_PATH/src` or `src`; for a
+      `"lang": "python"` case, to its `dirs`.
+
+  Test code is never gold: a Rust file's `mod tests {` and the files under
+  tests/ or benches/, *_tests.rs and tests.rs; Python's test_*.py, *_test.py,
+  conftest.py and anything under tests/ or test/; Shell's test_*.sh,
+  *_test.sh and *.bats.
 
   make_gold.py gemini REPO AUDIT_MD COMMIT [DIR...] > gold.json
       Each finding's file#Lx-Ly link in the audit markdown becomes a gold
@@ -43,16 +49,23 @@ def add(by_file, file, item):
     by_file.setdefault(file, []).append(item)
 
 
-# A file's own unit-test module, where the fix's new tests go: `mod tests {`
-# or `mod test {` at the top level of the file.
+# A Rust file's own unit-test module, where the fix's new tests go:
+# `mod tests {` or `mod test {` at the top level of the file.
 TEST_MODULE = re.compile(r"^mod tests? \{")
 
 
 def is_test_file(file):
     name = file.rsplit("/", 1)[-1]
-    parts = file.split("/")
+    dirs = file.split("/")[:-1]
+    if name.endswith(".py"):
+        return (name.startswith("test_") or name.endswith("_test.py")
+                or name == "conftest.py" or "tests" in dirs or "test" in dirs)
+    if name.endswith(".sh") or name.endswith(".bats"):
+        return (name.startswith("test_") or name.endswith("_test.sh")
+                or name.endswith(".bats") or "tests" in dirs or "test" in dirs)
+    # Rust (and anything else): the rule the Rust suites were built with.
     return (name.endswith("_tests.rs") or name == "tests.rs"
-            or "tests" in parts[:-1] or "benches" in parts[:-1])
+            or "tests" in dirs or "benches" in dirs)
 
 
 def default_paths(crate_path=None):
@@ -82,7 +95,7 @@ def fix_gold(repo, commits, paths=("src",), category=None, tags=None, summary=No
                 if file and is_test_file(file):
                     file = None  # test code is not where a bug lives
                 tests_at = None
-                if file:
+                if file and file.endswith(".rs"):
                     src = git(repo, "show", f"{c}^:{file}").splitlines()
                     tests_at = next((i + 1 for i, l in enumerate(src) if TEST_MODULE.match(l)), None)
             elif line.startswith("+++ "):
@@ -158,7 +171,10 @@ def build_suite(repo, suite_path, out_dir):
         if not fix_commit:
             continue
         crate_path = case.get("crate_path")
-        paths = tuple(case.get("paths") or default_paths(crate_path))
+        if case.get("lang", "rust") == "python":
+            paths = tuple(case.get("paths") or case.get("dirs") or ("src",))
+        else:
+            paths = tuple(case.get("paths") or default_paths(crate_path))
         case_repo = repo
         if case.get("repo_name"):
             case_repo = os.path.join(repo, case["repo_name"])
@@ -171,7 +187,7 @@ def build_suite(repo, suite_path, out_dir):
             category=case.get("category"),
             tags=case.get("tags"),
             summary=case.get("summary"),
-            extra={k: case.get(k) for k in ("repo_name", "repo_url", "crate_path")},
+            extra={k: case.get(k) for k in ("repo_name", "repo_url", "crate_path", "lang", "import_root")},
         )
         if not gold["total"]:
             sys.exit(f"{case['name']}: the fix changed no non-test lines under {', '.join(paths)}")
